@@ -1,0 +1,10 @@
+{
+  "description": "Enables users to generate polite, context-aware responses quickly, enhancing communication efficiency and professionalism across various platforms.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

@@ -1,0 +1,5 @@
+import { requireSupabase } from '../../services/supabase/client'
+export type BookingListItem = { id: string; reference: string; customerName: string; seatLabel?: string; packageName?: string; status: string; createdAt: string }
+export const bookingService = {
+  async list(eventId: string, page: number, pageSize: number): Promise<{ rows: BookingListItem[]; count: number }> { const from = page * pageSize; const { data, count, error } = await requireSupabase().from('bookings').select('id,reference,status,created_at,customers(full_name),seats(label),packages(name)', { count: 'exact' }).eq('event_id', eventId).range(from, from + pageSize - 1).order('created_at', { ascending: false }); if (error) throw error; return { count: count ?? 0, rows: (data ?? []).map(row => ({ id: String(row.id), reference: String(row.reference), customerName: String((row.customers as { full_name?: string } | null)?.full_name ?? 'Unknown'), seatLabel: (row.seats as { label?: string } | null)?.label, packageName: (row.packages as { name?: string } | null)?.name, status: String(row.status), createdAt: String(row.created_at) })) } },
+}
