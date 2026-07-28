@@ -5,6 +5,7 @@ import { requireOrganizationId } from '../../services/supabase/workspace'
 export type TicketRecord = {
   id: string
   ticketNumber: string
+  qrToken?: string
   bookingReference: string
   eventId: string
   eventName: string
@@ -42,6 +43,7 @@ function fromPublicSnapshot(row: Record<string, unknown>): TicketRecord {
   return {
     id: String(row.id),
     ticketNumber: String(row.ticketNumber ?? ''),
+    qrToken: row.qrToken ? String(row.qrToken) : undefined,
     bookingReference: String(row.bookingReference ?? ''),
     eventId: String(row.eventId ?? ''),
     eventName: String(row.eventName ?? ''),
@@ -76,6 +78,7 @@ function fromAdminRow(row: Record<string, unknown>): TicketRecord {
   return fromPublicSnapshot({
     id: row.id,
     ticketNumber: row.ticket_number,
+    qrToken: row.qr_token,
     status: row.status,
     createdAt: row.created_at,
     approvedAt: row.status === 'approved' || row.status === 'validated' ? row.updated_at : undefined,
@@ -129,7 +132,7 @@ export const ticketStore = {
       requireOrganizationId()
       const { data, error } = await supabase
         .from('tickets')
-        .select('id,ticket_number,status,created_at,updated_at,bookings!inner(reference,event_id,total_amount,metadata,customers!inner(full_name,email),events!inner(name,banner_path,venue,starts_at,studio,organization_id))')
+        .select('id,ticket_number,qr_token,status,created_at,updated_at,bookings!inner(reference,event_id,total_amount,metadata,customers!inner(full_name,email),events!inner(name,banner_path,venue,starts_at,studio,organization_id))')
         .is('deleted_at', null)
         .order('created_at', { ascending: false })
       if (error) throw error

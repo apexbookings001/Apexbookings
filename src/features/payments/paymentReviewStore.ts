@@ -4,6 +4,7 @@ import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
 
 export type PaymentReviewRecord = { id: string; reference: string; eventId: string; eventName: string; customer: string; email: string; method: PaymentMethod; seatLabel: string; packageName: string; amount: number; status: PaymentStatus; createdAt: string; expiresAt?: string; proofUrls: string[]; notes: string }
+export type PaymentReviewUpdateResult = { ticketId?: string; ticketNumber?: string; qrToken?: string }
 
 const cache = createProtectedMemoryStore<PaymentReviewRecord[]>(() => [])
 
@@ -32,7 +33,7 @@ function fromRow(row: Record<string, unknown>): PaymentReviewRecord {
   }
 }
 
-async function persist(record: PaymentReviewRecord) {
+async function persist(record: PaymentReviewRecord): Promise<PaymentReviewUpdateResult> {
   if (!supabase) throw new Error('Supabase is not configured.')
   requireOrganizationId()
   const { data, error } = await supabase.from('payments').update({
@@ -52,9 +53,11 @@ async function persist(record: PaymentReviewRecord) {
   const bookingResult = await supabase.from('bookings').update({ payment_state: paymentState, status: record.status }).eq('id', data.booking_id)
   if (bookingResult.error) throw bookingResult.error
   if (record.status === 'approved' || record.status === 'rejected') {
-    const ticketResult = await supabase.from('tickets').update({ status: record.status === 'approved' ? 'approved' : 'declined' }).eq('booking_id', data.booking_id)
+    const ticketResult = await supabase.from('tickets').update({ status: record.status === 'approved' ? 'approved' : 'declined' }).eq('booking_id', data.booking_id).select('id,ticket_number,qr_token').single()
     if (ticketResult.error) throw ticketResult.error
+    return { ticketId: ticketResult.data.id, ticketNumber: ticketResult.data.ticket_number, qrToken: ticketResult.data.qr_token }
   }
+  return {}
 }
 
 export const paymentReviewStore = {
@@ -96,6 +99,11 @@ export const paymentReviewStore = {
   update: (record: PaymentReviewRecord) => {
     const next = cache.get().map(item => item.id === record.id ? record : item)
     void cache.optimistic(next, () => persist(record)).catch(() => undefined)
+  },
+  updateAsync: async (record: PaymentReviewRecord) => {
+    const result = await persist(record)
+    cache.set(cache.get().map(item => item.id === record.id ? record : item))
+    return result
   },
   clear: cache.reset,
 }

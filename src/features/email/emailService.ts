@@ -5,7 +5,7 @@ import { requireOrganizationId } from '../../services/supabase/workspace'
 export type EmailStatus = 'connected' | 'disconnected' | 'configuration_error' | 'invalid_credentials'
 export type EmailKind = 'booking_started' | 'payment_proof_submitted' | 'payment_approved' | 'payment_declined' | 'bank_transfer_requested' | 'bank_details_ready' | 'transfer_expired' | 'support_reply' | 'ticket_ready' | 'welcome' | 'test'
 export type EmailConfiguration = { provider: 'gmail_smtp'; host: string; port: number; senderEmail: string; senderName: string; replyTo: string; testRecipient: string; status: EmailStatus }
-export type EmailEvent = { kind: EmailKind; to: string; subject: string; data: Record<string, string>; deepLink?: string }
+export type EmailEvent = { kind: EmailKind; to: string; subject: string; data: Record<string, string>; deepLink?: string; actionLabel?: string }
 export type EmailLog = EmailEvent & { id: string; createdAt: string; state: 'queued' | 'sent' | 'failed' }
 
 type EmailState = { configuration: EmailConfiguration; logs: EmailLog[] }
@@ -20,7 +20,7 @@ async function persistConfiguration(configuration: EmailConfiguration) {
 
 async function enqueueRemote(event: EmailEvent): Promise<string> {
   if (!supabase) throw new Error('Supabase is not configured.')
-  const { data: job, error } = await supabase.from('email_queue').insert({ organization_id: requireOrganizationId(), kind: event.kind, recipient: event.to, subject: event.subject, payload: { ...event.data, actionUrl: event.deepLink } }).select('id').single()
+  const { data: job, error } = await supabase.from('email_queue').insert({ organization_id: requireOrganizationId(), kind: event.kind, recipient: event.to, subject: event.subject, payload: { ...event.data, actionUrl: event.deepLink, actionLabel: event.actionLabel } }).select('id').single()
   if (error || !job) throw error ?? new Error('Email could not be queued.')
   const delivery = await supabase.functions.invoke('app-api', { body: { action: 'send-email', emailId: job.id } })
   if (delivery.error) throw delivery.error
@@ -50,7 +50,7 @@ export const emailService = {
       const configuration = { ...fallback, ...template.configuration }
       const logs = (logsResult.data ?? []).map(row => {
         const payload = (row.payload ?? {}) as Record<string, string>
-        return { id: row.id, kind: row.kind as EmailKind, to: row.recipient, subject: row.subject, data: payload, deepLink: payload.actionUrl, createdAt: row.created_at, state: row.status === 'sent' ? 'sent' as const : row.status === 'failed' ? 'failed' as const : 'queued' as const }
+        return { id: row.id, kind: row.kind as EmailKind, to: row.recipient, subject: row.subject, data: payload, deepLink: payload.actionUrl, actionLabel: payload.actionLabel, createdAt: row.created_at, state: row.status === 'sent' ? 'sent' as const : row.status === 'failed' ? 'failed' as const : 'queued' as const }
       })
       cache.set({ configuration, logs })
       return cache.get()

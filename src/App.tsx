@@ -807,6 +807,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const { msg: seatMsg, show: showSeatMsg } = useToast()
   const bookingId = useRef(`APEX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`).current
   const contentRef = useRef<HTMLDivElement>(null)
+  const ticketDownloadRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const serviceFee = payments.pricing.serviceFee || 0
@@ -1461,7 +1462,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   )
 
   const currentTicket = ticketId ? ticketStore.findById(ticketId) : null
-  const ticketRefUrl = currentTicket ? `${window.location.origin}/ticket/${currentTicket.id}` : ''
+  const ticketRefUrl = currentTicket ? `${window.location.origin}/ticket/${currentTicket.qrToken ?? currentTicket.id}` : ''
 
   const handleShare = async () => {
     if (navigator.share) {
@@ -1474,9 +1475,19 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     }
   }
 
-  const handleDownload = () => {
-    // Simulated download
-    showSeatMsg(tr.toast.downloaded)
+  const handleDownload = async () => {
+    if (!ticketDownloadRef.current) return
+    try {
+      const { toPng } = await import('html-to-image')
+      const image = await toPng(ticketDownloadRef.current, { cacheBust: true, pixelRatio: 2, backgroundColor: t.isDark ? '#111113' : '#FFFFFF' })
+      const link = document.createElement('a')
+      link.download = `apex-ticket-${currentTicket?.ticketNumber || bookingId}.png`
+      link.href = image
+      link.click()
+      showSeatMsg(tr.toast.downloaded)
+    } catch {
+      showSeatMsg('Ticket image could not be downloaded. Please try again.')
+    }
   }
 
   const StepDone = () => (
@@ -1490,7 +1501,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         <h3 className="font-serif text-3xl font-bold mb-2" style={{ color: t.text }}>{tr.done.heading} {data.hero?.title || ''}</h3>
         <p className="text-sm mb-8" style={{ color: t.textSub }}>{tr.done.subtitle.replace('{email}', info.email || 'your email')}</p>
         
-        <div className="premium-issued-ticket max-w-md mx-auto overflow-hidden relative" style={{ '--ticket-accent': tier.accent, background: t.isDark ? 'linear-gradient(145deg,#111113,#1a1a1f)' : t.card, border: `1px solid ${t.isDark ? `${tier.accent}55` : t.accent}`, boxShadow: t.isDark ? `0 28px 80px ${tier.glow}` : `0 24px 60px ${t.accentGlow}` } as React.CSSProperties}>
+        <div ref={ticketDownloadRef} className="premium-issued-ticket max-w-md mx-auto overflow-hidden relative" style={{ '--ticket-accent': tier.accent, background: t.isDark ? 'linear-gradient(145deg,#111113,#1a1a1f)' : t.card, border: `1px solid ${t.isDark ? `${tier.accent}55` : t.accent}`, boxShadow: t.isDark ? `0 28px 80px ${tier.glow}` : `0 24px 60px ${t.accentGlow}` } as React.CSSProperties}>
           <div className="premium-ticket-banner h-40 relative">
             <img src={data.hero?.images?.[0] || ''} alt={data.hero?.title} className="w-full h-full object-cover" />
             <div className="absolute inset-0 bg-gradient-to-t from-[#111113] to-transparent opacity-90" />
@@ -1504,7 +1515,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
             <div className="flex justify-between items-start mb-6">
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.customerName}</div>
-                <div className="font-bold text-lg" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{info.name || 'Alex Morgan'}</div>
+                <div className="font-bold text-lg" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{currentTicket?.customerName || info.name || 'Alex Morgan'}</div>
               </div>
               <div className="text-right">
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.ticketNo}</div>
