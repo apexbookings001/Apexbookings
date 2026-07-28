@@ -16,6 +16,12 @@ import { getPaymentIcon, getSupportedCryptocurrencies } from './features/payment
 import { platformPaymentStore, type PlatformPaymentSettings } from './features/payments/platformPaymentStore'
 import { emailService, type EmailConfiguration } from './features/email/emailService'
 import movieTicketLogo from '../icons/movie-ticket.gif'
+import { useAuth } from './features/auth/AuthContext'
+import { teamService, type TeamMember } from './features/auth/teamService'
+import type { OrganizationRole } from './services/supabase/workspace'
+import { adminSettingsStore, type OrganizationSettings } from './features/settings/adminSettingsStore'
+import { NotificationCenter } from './features/notifications/NotificationCenter'
+import { EventCatalogPage as SupabaseEventCatalogPage } from './features/events/EventCatalogPage'
 
 const T = {
   bg: '#09090B', bg2: '#111113', bg3: '#18181B', bg4: '#1E1E21',
@@ -182,23 +188,30 @@ const COUPONS = [
 
 */
 type AdminBooking = { id: string; customer: string; email: string; avatar: string; event: string; tier: string; section: string; qty: number; total: number; status: string; payment: string; date: string; phone: string; country: string }
-type AdminCustomer = { id: string; name: string; email: string; avatar: string; color: string; bookings: number; spent: number; vip: boolean; status: string; joined: string; lastSeen: string; tags: string[] }
+type AdminCustomer = { id: string; name: string; email: string; avatar: string; color: string; bookings: number; spent: number; vip: boolean; status: string; joined: string; lastSeen: string; tags: string[]; country: string }
 type AdminPayment = { id: string; customer: string; amount: number; method: string; status: string; date: string; booking: string }
 type AdminChat = { id: string; customer: string; avatar: string; color: string; preview: string; time: string; unread: number; priority: string; agent: string | null; status: string; messages: { id: string; from: 'customer' | 'agent'; text: string; time: string }[] }
 
 const initials = (value: string) => value.split(/\s+/).filter(Boolean).map(part => part[0]).join('').slice(0, 2).toUpperCase() || 'AG'
-const adminBookings = (): AdminBooking[] => ticketStore.list().map(ticket => ({ id: ticket.bookingReference, customer: ticket.customerName, email: ticket.customerEmail, avatar: initials(ticket.customerName), event: ticket.eventName, tier: ticket.packageName, section: ticket.seatLabel, qty: 1, total: ticket.amount, status: ticket.status === 'approved' ? 'confirmed' : ticket.status, payment: ticket.paymentMethod, date: new Date(ticket.createdAt).toLocaleDateString(), phone: '', country: 'Unknown' }))
-const adminCustomers = (): AdminCustomer[] => Array.from(ticketStore.list().reduce((customers, ticket) => { const current = customers.get(ticket.customerEmail) ?? { id: ticket.customerEmail, name: ticket.customerName, email: ticket.customerEmail, avatar: initials(ticket.customerName), color: '#00FF88', bookings: 0, spent: 0, vip: false, status: 'active', joined: new Date(ticket.createdAt).toLocaleDateString(), lastSeen: new Date(ticket.createdAt).toLocaleString(), tags: [] as string[] }; current.bookings += 1; current.spent += ticket.amount; current.vip ||= /vvip|vip/i.test(ticket.packageName); current.tags = Array.from(new Set([...current.tags, ticket.packageName])); customers.set(ticket.customerEmail, current); return customers }, new Map<string, AdminCustomer>()).values())
+const adminBookings = (): AdminBooking[] => ticketStore.list().map(ticket => ({ id: ticket.bookingReference, customer: ticket.customerName, email: ticket.customerEmail, avatar: initials(ticket.customerName), event: ticket.eventName, tier: ticket.packageName, section: ticket.seatLabel, qty: 1, total: ticket.amount, status: ticket.status === 'approved' ? 'confirmed' : ticket.status, payment: ticket.paymentMethod, date: new Date(ticket.createdAt).toLocaleDateString(), phone: '', country: ticket.country ?? 'Unknown' }))
+const adminCustomers = (): AdminCustomer[] => Array.from(ticketStore.list().reduce((customers, ticket) => { const current = customers.get(ticket.customerEmail) ?? { id: ticket.customerEmail, name: ticket.customerName, email: ticket.customerEmail, avatar: initials(ticket.customerName), color: '#00FF88', bookings: 0, spent: 0, vip: false, status: 'active', joined: new Date(ticket.createdAt).toLocaleDateString(), lastSeen: new Date(ticket.createdAt).toLocaleString(), tags: [] as string[], country: ticket.country ?? 'Unknown' }; current.bookings += 1; current.spent += ticket.amount; current.vip ||= /vvip|vip/i.test(ticket.packageName); current.tags = Array.from(new Set([...current.tags, ticket.packageName])); current.country = ticket.country ?? current.country; customers.set(ticket.customerEmail, current); return customers }, new Map<string, AdminCustomer>()).values())
 const adminPayments = (): AdminPayment[] => paymentReviewStore.list().map(record => ({ id: record.id, customer: record.customer, amount: record.amount, method: record.method, status: record.status, date: new Date(record.createdAt).toLocaleDateString(), booking: record.reference }))
 const adminChats = (): AdminChat[] => supportStore.list().map(conversation => ({ id: conversation.id, customer: conversation.customer, avatar: initials(conversation.customer), color: conversation.avatarColor ?? '#00FF88', preview: conversation.messages.at(-1)?.body ?? 'No messages yet', time: new Date(conversation.lastActivity).toLocaleString(), unread: conversation.unread, priority: conversation.unread > 2 ? 'high' : 'normal', agent: null, status: conversation.status, messages: conversation.messages.map(message => ({ id: message.id, from: message.from === 'admin' ? 'agent' : 'customer', text: message.body, time: new Date(message.createdAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) })) }))
 const revenueData = () => { const months = Array.from({ length: 7 }, (_, offset) => { const date = new Date(); date.setMonth(date.getMonth() - (6 - offset)); return { label: date.toLocaleString('en', { month: 'short' }), v: 0 } }); ticketStore.list().filter(ticket => ticket.status === 'approved').forEach(ticket => { const date = new Date(ticket.createdAt); const index = months.findIndex(month => month.label === date.toLocaleString('en', { month: 'short' })); if (index >= 0) months[index].v += ticket.amount }); return months }
-const MOCK_BOOKINGS = adminBookings()
-const MOCK_CUSTOMERS = adminCustomers()
-const MOCK_PAYMENTS = adminPayments()
-const MOCK_CHATS = adminChats()
-const CHAT_MESSAGES = adminChats()[0]?.messages ?? []
-const REVENUE_DATA = revenueData()
-const COUPONS: { code: string; discount: string; uses: number; max: number; expires: string; status: string }[] = []
+const SUPPORTED_AUDIENCE_COUNTRIES = [
+  { country: 'United States', flag: 'US', currency: 'USD' },
+  { country: 'Canada', flag: 'CA', currency: 'CAD' },
+  { country: 'United Kingdom', flag: 'GB', currency: 'GBP' },
+  { country: 'France', flag: 'FR', currency: 'EUR' },
+  { country: 'Germany', flag: 'DE', currency: 'EUR' },
+  { country: 'Italy', flag: 'IT', currency: 'EUR' },
+  { country: 'Spain', flag: 'ES', currency: 'EUR' },
+  { country: 'Brazil', flag: 'BR', currency: 'BRL' },
+  { country: 'Mexico', flag: 'MX', currency: 'MXN' },
+  { country: 'Australia', flag: 'AU', currency: 'AUD' },
+  { country: 'Colombia', flag: 'CO', currency: 'COP' },
+]
+const emptyCoupons: { code: string; discount: string; uses: number; max: number; expires: string; status: string }[] = []
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 export type Page = 'dashboard' | 'bookings' | 'events' | 'payments' | 'media' | 'chat' | 'notifications' | 'settings' | 'documentation'
@@ -409,7 +422,7 @@ function TopNav({ page, onExitAdmin, collapsed, show, onHamburger, onCreateEvent
           onClick={onExitAdmin} title="Exit Admin">AX</div>
       </header>
 
-      {notificationsOpen && <div className="fixed right-5 top-16 z-50 w-[min(23rem,calc(100vw-2.5rem))] overflow-hidden rounded-2xl shadow-2xl" style={{ background: T.bg2, border: `1px solid ${T.cardBorder}` }}>
+      {notificationsOpen && <div className="fixed right-5 top-16 z-50 w-[min(23rem,calc(100%_-_2.5rem))] overflow-hidden rounded-2xl shadow-2xl" style={{ background: T.bg2, border: `1px solid ${T.cardBorder}` }}>
         <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}><div className="text-sm font-semibold" style={{ color: T.text }}>Notifications</div><button onClick={() => { setNotificationsOpen(false); onOpenNotifications() }} className="text-xs" style={{ color: T.emerald }}>View all</button></div>
         {ADMIN_NOTIFICATIONS.length === 0 ? <div className="p-5 text-center"><div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: T.inputBg, color: T.textMuted }}><Icons.bell/></div><div className="text-sm font-medium" style={{ color: T.text }}>You’re all caught up</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>New booking, payment, and support alerts will appear here.</div></div> : ADMIN_NOTIFICATIONS.map(notification => <button key={notification.id} onClick={() => { setNotificationsOpen(false); onOpenNotifications() }} className="w-full px-4 py-3 text-left border-b" style={{ borderColor: T.border }}><div className="text-xs font-semibold" style={{ color: T.text }}>{notification.title}</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>{notification.detail}</div><div className="mt-1 text-[10px]" style={{ color: T.textMuted }}>{notification.createdAt}</div></button>)}
       </div>}
@@ -624,7 +637,7 @@ function DashboardPage({ show }: { show: (m: string) => void }) {
   const customers = useCountUp(customerList.length)
   const pending = useCountUp(payments.filter(payment => payment.status === 'pending').length)
   const recentActivity = [...bookings.map(booking => ({ icon: '🎟️', text: `${booking.id} — ${booking.customer} selected ${booking.tier}`, time: booking.date, color: T.emerald })), ...payments.filter(payment => payment.status === 'pending').map(payment => ({ icon: '💳', text: `Payment ${payment.booking} is awaiting review`, time: payment.date, color: T.gold })), ...chats.filter(chat => chat.unread > 0).map(chat => ({ icon: '💬', text: `${chat.customer} sent a support message`, time: chat.time, color: T.cyan }))].slice(0, 6)
-  const countries = Array.from(bookings.reduce((items, booking) => { const current = items.get(booking.country) ?? { country: booking.country, flag: '◎', currency: '—', users: 0, activity: 'Recent booking activity' }; current.users += 1; current.activity = `${current.users} recent booking${current.users === 1 ? '' : 's'} from this country`; items.set(booking.country, current); return items }, new Map<string, { country: string; flag: string; currency: string; users: number; activity: string }>()).values())
+  const countries = SUPPORTED_AUDIENCE_COUNTRIES.map(country => { const users = customerList.filter(customer => customer.country === country.country).length; return { ...country, users, activity: users ? `${users} recent user${users === 1 ? '' : 's'} interacted through booking records` : 'No recent identified user activity' } })
   const tierStats = Array.from(bookings.reduce((items, booking) => { const current = items.get(booking.tier) ?? { name: booking.tier, sold: 0, cap: 0, color: T.emerald, pct: 0 }; current.sold += booking.qty; current.cap += booking.qty; items.set(booking.tier, current); return items }, new Map<string, { name: string; sold: number; cap: number; color: string; pct: number }>()).values())
   const paymentStats = Array.from(bookings.reduce((items, booking) => { items.set(booking.payment, (items.get(booking.payment) ?? 0) + 1); return items }, new Map<string, number>()).entries()).map(([method, count]) => ({ method, pct: bookings.length ? Math.round((count / bookings.length) * 100) : 0, color: T.cyan }))
   const [selectedCountry, setSelectedCountry] = useState<{ country: string; flag: string; currency: string; users: number; activity: string } | null>(null)
@@ -737,7 +750,7 @@ function DashboardPage({ show }: { show: (m: string) => void }) {
           </div>
         </div>
       </div>
-      {selectedCountry && <div className="fixed inset-0 z-[120] grid place-items-center bg-black/70 p-4" onClick={() => setSelectedCountry(null)}><div className="w-full max-w-md rounded-3xl p-6 shadow-2xl" style={{ background: T.bg2, border: `1px solid ${T.cardBorder}` }} onClick={event => event.stopPropagation()}><div className="flex items-start justify-between"><div><div className="text-3xl">{selectedCountry.flag}</div><h2 className="mt-2 font-serif text-2xl font-bold" style={{ color: T.text }}>{selectedCountry.country}</h2><p className="text-sm" style={{ color: T.textMuted }}>{selectedCountry.currency} · {selectedCountry.users} recent users</p></div><button onClick={() => setSelectedCountry(null)} style={{ color: T.textMuted }}><Icons.x/></button></div><div className="mt-5 rounded-2xl p-4" style={{ background: T.bg3 }}><div className="text-xs font-mono uppercase" style={{ color: T.textMuted }}>Latest activity</div><div className="mt-2 text-sm" style={{ color: T.textSub }}>{selectedCountry.activity}</div></div><div className="mt-4 space-y-2">{MOCK_CUSTOMERS.slice(0, 3).map(customer => <div key={customer.id} className="flex items-center justify-between rounded-xl px-3 py-2" style={{ background: T.inputBg }}><span className="text-xs font-semibold" style={{ color: T.text }}>{customer.name}</span><span className="text-[11px]" style={{ color: T.textMuted }}>{customer.lastSeen}</span></div>)}</div></div></div>}
+      {selectedCountry && <div className="fixed inset-0 z-[120] grid place-items-center bg-black/70 p-4" onClick={() => setSelectedCountry(null)}><div className="w-full max-w-md rounded-3xl p-6 shadow-2xl" style={{ background: T.bg2, border: `1px solid ${T.cardBorder}` }} onClick={event => event.stopPropagation()}><div className="flex items-start justify-between"><div><div className="text-3xl">{selectedCountry.flag}</div><h2 className="mt-2 font-serif text-2xl font-bold" style={{ color: T.text }}>{selectedCountry.country}</h2><p className="text-sm" style={{ color: T.textMuted }}>{selectedCountry.currency} · {selectedCountry.users} recent users</p></div><button onClick={() => setSelectedCountry(null)} style={{ color: T.textMuted }}><Icons.x/></button></div><div className="mt-5 rounded-2xl p-4" style={{ background: T.bg3 }}><div className="text-xs font-mono uppercase" style={{ color: T.textMuted }}>Latest activity</div><div className="mt-2 text-sm" style={{ color: T.textSub }}>{selectedCountry.activity}</div></div><div className="mt-4 space-y-2">{customerList.filter(customer => customer.country === selectedCountry.country).slice(0, 5).map(customer => <div key={customer.id} className="flex items-center justify-between rounded-xl px-3 py-2" style={{ background: T.inputBg }}><span className="text-xs font-semibold" style={{ color: T.text }}>{customer.name}</span><span className="text-[11px]" style={{ color: T.textMuted }}>{customer.lastSeen}</span></div>)}{!customerList.some(customer => customer.country === selectedCountry.country) && <div className="rounded-xl px-3 py-4 text-center text-xs" style={{ background: T.inputBg, color: T.textMuted }}>No recent identified users from this country.</div>}</div></div></div>}
     </div>
   )
 }
@@ -1195,10 +1208,10 @@ function MediaCenterPage({ show }: { show: (m: string) => void }) {
   return <div className="space-y-5"><div className="rounded-2xl p-4 flex flex-wrap gap-3 items-center" style={{background:'linear-gradient(135deg,rgba(245,158,11,.13),rgba(139,92,246,.08))',border:'1px solid rgba(245,158,11,.25)'}}><div className="text-lg">✓</div><div className="flex-1"><div className="font-semibold text-sm" style={{color:T.text}}>Verification Queue</div><div className="text-xs" style={{color:T.textMuted}}>A single visual workflow for payment proof reviews</div></div>{['Pending Proofs (18)','Gift Cards (9)','Bank Transfers (6)','Bitcoin (2)','PayPal (1)'].map(q=><button key={q} onClick={()=>setFilter('pending')} className="px-3 py-2 rounded-xl text-xs" style={{background:T.inputBg,color:T.gold}}>{q}</button>)}</div><div className="grid grid-cols-2 lg:grid-cols-4 gap-3">{[['Storage Used','2.3 GB / 10 GB'],['Images','1,284'],['PDFs','96'],['Payment Proofs','18']].map(([l,v])=><div key={l} className="rounded-2xl p-4" style={{background:T.cardSolid,border:`1px solid ${T.cardBorder}`}}><div className="text-xl font-serif font-bold" style={{color:T.text}}>{v}</div><div className="text-[10px] font-mono uppercase" style={{color:T.textMuted}}>{l}</div></div>)}</div><div className="flex flex-wrap gap-2">{['Payment Proofs','Event Images','Ticket Assets','All'].map(x=><button key={x} onClick={()=>setTab(x)} className="px-3 py-2 rounded-xl text-xs" style={{background:tab===x?'rgba(0,255,136,.12)':'transparent',color:tab===x?T.emerald:T.textMuted}}>{x}</button>)}<div className="flex-1"/><button onClick={()=>show('Upload panel opened')} className="px-4 py-2 rounded-xl text-xs font-bold" style={{background:T.emerald,color:T.bg}}>+ Upload media</button></div><div className="flex gap-2"><input placeholder="Search customer, event, booking ID…" className="px-3 py-2 rounded-xl text-xs outline-none" style={{background:T.inputBg,border:`1px solid ${T.border}`,color:T.text}}/>{['All','pending','approved','rejected'].map(x=><button key={x} onClick={()=>setFilter(x)} className="text-xs capitalize" style={{color:filter===x?T.emerald:T.textMuted}}>{x}</button>)}<button onClick={()=>show('Bulk selection enabled')} className="ml-auto text-xs" style={{color:T.cyan}}>Bulk actions</button></div><div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">{visible.map(a=><button key={a.id} onClick={()=>setSelected(a.id)} className="text-left overflow-hidden rounded-2xl" style={{background:T.cardSolid,border:`1px solid ${T.cardBorder}`}}><img src={a.image} className="w-full h-36 object-cover"/><div className="p-3"><div className="flex justify-between"><span className="text-xs font-semibold" style={{color:T.text}}>{a.customer}</span><StatusBadge status={a.status}/></div><div className="text-[11px] mt-2" style={{color:T.textSub}}>{a.event}</div><div className="text-[10px] mt-1" style={{color:T.textMuted}}>{a.method} · {a.booking}</div></div></button>)}</div>{current&&<div className="fixed inset-0 z-[100] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.75)'}} onClick={()=>setSelected(null)}><div className="w-full max-w-xl rounded-3xl overflow-hidden" style={{background:T.bg2,border:`1px solid ${T.cardBorder}`}} onClick={e=>e.stopPropagation()}><img src={current.image} className="w-full h-64 object-cover"/><div className="p-5"><div className="flex justify-between"><div><div className="font-serif text-xl font-bold" style={{color:T.text}}>{current.customer}</div><div className="text-xs" style={{color:T.textMuted}}>{current.booking} · linked booking → payment → media</div></div><button onClick={()=>setSelected(null)}><Icons.x/></button></div><textarea placeholder="Leave internal note…" className="w-full mt-4 p-3 rounded-xl text-xs" style={{background:T.inputBg,border:`1px solid ${T.border}`,color:T.text}}/><div className="grid grid-cols-2 gap-2 mt-3"><button onClick={()=>show('Payment approved')} className="py-2.5 rounded-xl text-xs font-bold" style={{background:T.emerald,color:T.bg}}>Approve payment</button><button onClick={()=>show('Payment rejected')} className="py-2.5 rounded-xl text-xs" style={{background:'rgba(239,68,68,.12)',color:T.red}}>Reject payment</button><button onClick={()=>show('Download started')} className="py-2.5 rounded-xl text-xs" style={{background:T.inputBg,color:T.textSub}}>Download</button><button onClick={()=>show('Booking opened')} className="py-2.5 rounded-xl text-xs" style={{background:T.inputBg,color:T.textSub}}>View booking</button></div></div></div></div>}</div>
 }
 function CustomersPage({ show }: { show: (m: string) => void }) {
-  const [selected, setSelected] = useState<typeof MOCK_CUSTOMERS[0] | null>(null)
+  const [selected, setSelected] = useState<AdminCustomer | null>(null)
   const [search, setSearch] = useState('')
 
-  const filtered = MOCK_CUSTOMERS.filter(c => !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.email.toLowerCase().includes(search.toLowerCase()))
+  const filtered = adminCustomers().filter(c => !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.email.toLowerCase().includes(search.toLowerCase()))
 
   return (
     <div className="flex gap-5" style={{ animation: 'fade-in-up 0.3s ease' }}>
@@ -1311,7 +1324,7 @@ function CustomersPage({ show }: { show: (m: string) => void }) {
 function PaymentsPage({ show }: { show: (m: string) => void }) {
   const [mainTab, setMainTab] = useState<'transactions'|'setup'>('transactions')
   const [tab, setTab] = useState('all')
-  const [selected, setSelected] = useState<typeof MOCK_PAYMENTS[0] | null>(null)
+  const [selected, setSelected] = useState<AdminPayment | null>(null)
   const [payDetails, setPayDetails] = useState({
     paypal: '', cashapp: '', bitcoin: '',
     bank_name: '', bank_account: '', bank_routing: '', bank_holder: '',
@@ -1331,7 +1344,8 @@ function PaymentsPage({ show }: { show: (m: string) => void }) {
   const renderPayIconLg = renderPayIcon;
   const payName: Record<string, string> = { card: 'Credit Card', apple: 'Apple Pay', apple_gift: 'Apple Gift Card', paypal: 'PayPal', crypto: 'Crypto', cryptocurrency: 'Crypto', cashapp: 'Cash App', bank: 'Bank Transfer' }
 
-  const filtered = tab === 'all' ? MOCK_PAYMENTS : MOCK_PAYMENTS.filter(p => p.status === tab)
+  const payments = adminPayments()
+  const filtered = tab === 'all' ? payments : payments.filter(p => p.status === tab)
 
   return (
     <div className="flex gap-5" style={{ animation: 'fade-in-up 0.3s ease' }}>
@@ -1535,10 +1549,10 @@ function PaymentsPage({ show }: { show: (m: string) => void }) {
 
 // ─── Chat Page ────────────────────────────────────────────────────────────────
 function ChatPage() {
-  const [activeChat, setActiveChat] = useState<typeof MOCK_CHATS[0] | null>(null)
+  const [activeChat, setActiveChat] = useState<AdminChat | null>(null)
   const [showInfo, setShowInfo] = useState(false)
   const [msg, setMsg] = useState('')
-  const [messages, setMessages] = useState(CHAT_MESSAGES)
+  const [messages, setMessages] = useState(() => adminChats()[0]?.messages ?? [])
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const send = () => {
@@ -1550,7 +1564,8 @@ function ChatPage() {
 
   const SMART_REPLIES = ["I'll look into that right away!", "Your booking has been updated.", "Is there anything else I can help you with?", "I've escalated this to our team."]
 
-  const chat = activeChat || MOCK_CHATS[0]
+  const chatList = adminChats()
+  const chat = activeChat || chatList[0]
 
   const ConversationList = () => (
     <div className="flex flex-col h-full">
@@ -1561,7 +1576,7 @@ function ChatPage() {
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-2">
-        {MOCK_CHATS.map(c => (
+        {chatList.map(c => (
           <button key={c.id} onClick={() => { setActiveChat(c); setShowInfo(false) }}
             className="w-full text-left p-3 rounded-xl mb-1 transition-colors"
             style={{ background: chat.id === c.id ? 'rgba(0,255,136,0.08)' : 'transparent', border: `1px solid ${chat.id === c.id ? 'rgba(0,255,136,0.2)' : 'transparent'}` }}>
@@ -1757,7 +1772,8 @@ function ChatPage() {
 
 // ─── Reports Page ─────────────────────────────────────────────────────────────
 function ReportsPage({ show }: { show: (m: string) => void }) {
-  const maxRev = Math.max(...REVENUE_DATA.map(d => d.v))
+  const reportRevenue = revenueData()
+  const maxRev = Math.max(1, ...reportRevenue.map(d => d.v))
   return (
     <div className="space-y-6" style={{ animation: 'fade-in-up 0.3s ease' }}>
       <div className="flex items-center justify-between">
@@ -1800,14 +1816,14 @@ function ReportsPage({ show }: { show: (m: string) => void }) {
         </div>
         <div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
           <div className="text-xs font-mono uppercase tracking-wider mb-4" style={{ color: T.textMuted }}>Top Customers by Spend</div>
-          {MOCK_CUSTOMERS.sort((a,b) => b.spent - a.spent).slice(0,5).map((c, i) => (
+          {adminCustomers().sort((a,b) => b.spent - a.spent).slice(0,5).map((c, i) => (
             <div key={c.id} className="flex items-center gap-3 mb-3">
               <div className="text-xs font-mono w-4" style={{ color: T.textMuted }}>#{i+1}</div>
               <div className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold" style={{ background: `${c.color}20`, color: c.color }}>{c.avatar}</div>
               <div className="flex-1 min-w-0">
                 <div className="text-xs font-semibold truncate" style={{ color: T.text }}>{c.name}</div>
                 <div className="h-1 rounded-full mt-1 overflow-hidden" style={{ background: T.border }}>
-                  <div className="h-full rounded-full" style={{ width: `${(c.spent/48200)*100}%`, background: c.color }}/>
+                  <div className="h-full rounded-full" style={{ width: `${Math.min(100, (c.spent / Math.max(1, ...adminCustomers().map(customer => customer.spent))) * 100)}%`, background: c.color }}/>
                 </div>
               </div>
               <div className="text-xs font-mono font-bold" style={{ color: T.emerald }}>${(c.spent/1000).toFixed(1)}k</div>
@@ -1820,7 +1836,7 @@ function ReportsPage({ show }: { show: (m: string) => void }) {
       <div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
         <div className="text-xs font-mono uppercase tracking-wider mb-4" style={{ color: T.textMuted }}>Monthly Revenue Heatmap</div>
         <div className="grid grid-cols-7 gap-2">
-          {REVENUE_DATA.map(d => {
+          {reportRevenue.map(d => {
             const pct = d.v / maxRev
             return (
               <div key={d.label} className="text-center">
@@ -1851,7 +1867,7 @@ function MarketingPage({ show }: { show: (m: string) => void }) {
             </button>
           </div>
           <div className="space-y-3">
-            {COUPONS.map(c => (
+            {emptyCoupons.map(c => (
               <div key={c.code} className="flex items-center gap-3 p-3 rounded-xl" style={{ background: T.bg3, border: `1px solid ${T.border}` }}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
@@ -2251,10 +2267,9 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
                     {/* Enable/Disable toggle */}
                     <button
                       onClick={() => toggleMethod(method.id, !method.enabled)}
-                      className="w-11 h-6 rounded-full transition-all relative shrink-0"
+                      className="h-6 w-11 shrink-0 overflow-hidden rounded-full p-1 transition-all"
                       style={{ background: method.enabled ? T.emerald : T.border }}>
-                      <span className="absolute top-1 w-4 h-4 rounded-full bg-white transition-all"
-                        style={{ left: method.enabled ? 24 : 4 }}/>
+                      <span className={`block h-4 w-4 rounded-full bg-white transition-transform ${method.enabled ? 'translate-x-5' : 'translate-x-0'}`}/>
                     </button>
                   </div>
                 </div>
@@ -2308,10 +2323,9 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
                   {/* Enable toggle */}
                   <button
                     onClick={() => updateCoin(coin.id, { enabled: !cConfig.enabled })}
-                    className="ml-auto h-6 w-11 shrink-0 rounded-full relative transition-all"
+                    className="ml-auto h-6 w-11 shrink-0 overflow-hidden rounded-full p-1 transition-all"
                     style={{ background: cConfig.enabled ? T.emerald : T.border }}>
-                    <span className="absolute top-1 w-4 h-4 rounded-full bg-white transition-all"
-                      style={{ left: cConfig.enabled ? 24 : 4 }}/>
+                    <span className={`block h-4 w-4 rounded-full bg-white transition-transform ${cConfig.enabled ? 'translate-x-5' : 'translate-x-0'}`}/>
                   </button>
                 </div>
 
@@ -2380,7 +2394,7 @@ function LocalizationSettingsPanel() {
       <div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
         <div className="text-xs font-mono uppercase tracking-wider mb-4" style={{ color: T.textMuted }}>Supported Regions (11)</div>
         <p className="text-sm mb-5 leading-relaxed" style={{ color: T.textSub }}>
-          The public booking flow automatically adapts to visitors from the following countries, providing native language translation and automatic currency conversion via live exchange rates.
+          The public booking flow uses one supported-country mapping for language and currency across booking, checkout, payment, and ticket screens.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[
@@ -2413,15 +2427,15 @@ function LocalizationSettingsPanel() {
           <div className="flex gap-3">
             <span className="text-lg">🌍</span>
             <div>
-              <div className="text-sm font-semibold" style={{ color: T.text }}>Browser Detection</div>
-              <div className="text-xs mt-1 leading-relaxed" style={{ color: T.textMuted }}>Country detection is strictly performed using privacy-preserving native browser APIs (<code>navigator.language</code> and local timezone mapping). No external tracking or paid IP lookup APIs are utilized.</div>
+              <div className="text-sm font-semibold" style={{ color: T.text }}>Country Resolution</div>
+              <div className="text-xs mt-1 leading-relaxed" style={{ color: T.textMuted }}>Resolution order is manual selection, reliable country signal, configured event country, then the United States fallback. Browser language never determines a visitor&apos;s country.</div>
             </div>
           </div>
           <div className="flex gap-3">
             <span className="text-lg">💱</span>
             <div>
               <div className="text-sm font-semibold" style={{ color: T.text }}>Currency Conversion</div>
-              <div className="text-xs mt-1 leading-relaxed" style={{ color: T.textMuted }}>Live exchange rates are synced via <code>open.er-api.com</code> and cached locally for 6 hours. If the network is unavailable, the system safely falls back to cached or baseline rates, guaranteeing zero disruption to the checkout flow.</div>
+              <div className="text-xs mt-1 leading-relaxed" style={{ color: T.textMuted }}>Live exchange rates are served through the secured currency-rates function and formatted by the shared locale service. Baseline rates keep checkout readable during a network interruption.</div>
             </div>
           </div>
         </div>
@@ -2432,22 +2446,44 @@ function LocalizationSettingsPanel() {
 
 function EmailConfigurationPanel({ show }: { show: (message: string) => void }) {
   const [settings, setSettings] = useState<EmailConfiguration>(() => emailService.configuration())
-  const [appPassword, setAppPassword] = useState('')
+  const [testState, setTestState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle')
+  const [testError, setTestError] = useState<string | null>(null)
   const set = (key: keyof EmailConfiguration, value: string | number) => setSettings(current => ({ ...current, [key]: value }))
   const field = (label: string, key: keyof EmailConfiguration, type = 'text') => <label className="block"><span className="mb-2 block text-xs font-mono uppercase tracking-wider" style={{ color: T.textMuted }}>{label}</span><input type={type} value={String(settings[key] ?? '')} onChange={event => set(key, type === 'number' ? Number(event.target.value) : event.target.value)} className="w-full rounded-xl px-4 py-3 text-sm outline-none" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}/></label>
   const save = () => { emailService.saveConfiguration(settings); show('Email configuration saved') }
   const validate = () => { emailService.saveConfiguration(settings); const status = emailService.validate(); setSettings(emailService.configuration()); show(status === 'connected' ? 'Email configuration validated' : 'Email configuration needs attention') }
-  const test = () => { if (!settings.testRecipient) return show('Enter a test recipient email'); emailService.saveConfiguration(settings); emailService.dispatch({ kind: 'test', to: settings.testRecipient, subject: 'Apex Bookings test email', data: { Status: 'Your email configuration is ready for delivery.' } }); show('Test email queued') }
+  const test = async () => { if (!settings.testRecipient) return show('Enter a test recipient email'); setTestState('sending'); setTestError(null); emailService.saveConfiguration(settings); try { await emailService.sendTest(settings.testRecipient); setTestState('sent'); show('Test email delivered successfully') } catch (error) { const message = error instanceof Error ? error.message : 'Test email delivery failed'; setTestState('failed'); setTestError(message) } }
   const statusLabel = settings.status.replaceAll('_', ' ')
-  return <div className="space-y-5"><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-mono uppercase tracking-wider" style={{ color: T.emerald }}>Production delivery</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Email Configuration</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Apex sends application events to a server-side email provider. SMTP credentials never leave the secure delivery service.</p></div><span className="rounded-full px-3 py-1 text-xs font-semibold capitalize" style={{ background: settings.status === 'connected' ? 'rgba(0,255,136,.12)' : 'rgba(245,158,11,.12)', color: settings.status === 'connected' ? T.emerald : T.gold }}>{statusLabel}</span></div><div className="mt-6 grid gap-4 md:grid-cols-2">{field('SMTP Provider', 'provider')}{field('SMTP Host', 'host')}{field('SMTP Port', 'port', 'number')}{field('Sender Email', 'senderEmail', 'email')}{field('Sender Name', 'senderName')}{field('Reply-To Email', 'replyTo', 'email')}<label className="block"><span className="mb-2 block text-xs font-mono uppercase tracking-wider" style={{ color: T.textMuted }}>Gmail App Password</span><input type="password" value={appPassword} onChange={event => setAppPassword(event.target.value)} placeholder="Stored by your server-side provider" className="w-full rounded-xl px-4 py-3 text-sm outline-none" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}/></label>{field('Test Recipient Email', 'testRecipient', 'email')}</div><div className="mt-5 flex flex-wrap gap-3"><button onClick={save} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save Configuration</button><button onClick={validate} className="rounded-xl px-4 py-2.5 text-sm font-semibold" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}>Validate Connection</button><button onClick={test} className="rounded-xl px-4 py-2.5 text-sm font-semibold" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}>Send Test Email</button></div></div><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}><h3 className="font-serif text-lg font-bold" style={{ color: T.text }}>Gmail setup guide</h3><ol className="mt-3 list-decimal space-y-2 pl-5 text-sm" style={{ color: T.textSub }}><li>Enable 2-Step Verification on the sender Gmail account.</li><li>Generate a Google App Password; normal Gmail passwords are not supported.</li><li>Paste the App Password into your secure server-side provider configuration.</li><li>Save, validate the connection, then send a test email.</li></ol></div></div>
+  return <div className="space-y-5"><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-mono uppercase tracking-wider" style={{ color: T.emerald }}>Production delivery</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Email Configuration</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Apex sends application events to the deployed app-api Edge Function. SMTP credentials remain in Supabase secrets.</p></div><span className="rounded-full px-3 py-1 text-xs font-semibold capitalize" style={{ background: settings.status === 'connected' ? 'rgba(0,255,136,.12)' : 'rgba(245,158,11,.12)', color: settings.status === 'connected' ? T.emerald : T.gold }}>{statusLabel}</span></div><div className="mt-6 grid gap-4 md:grid-cols-2">{field('SMTP Provider', 'provider')}{field('SMTP Host', 'host')}{field('SMTP Port', 'port', 'number')}{field('Sender Email', 'senderEmail', 'email')}{field('Sender Name', 'senderName')}{field('Reply-To Email', 'replyTo', 'email')}{field('Test Recipient Email', 'testRecipient', 'email')}</div><div className="mt-5 flex flex-wrap gap-3"><button onClick={save} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save Configuration</button><button onClick={validate} className="rounded-xl px-4 py-2.5 text-sm font-semibold" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}>Validate Connection</button><button disabled={testState === 'sending'} onClick={() => void test()} className="rounded-xl px-4 py-2.5 text-sm font-semibold disabled:opacity-50" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}>{testState === 'sending' ? 'Sending Test Email…' : 'Send Test Email'}</button></div>{testState === 'sent' && <p className="mt-4 rounded-xl bg-emerald-400/10 p-3 text-sm" style={{ color: T.emerald }}>Test email delivered. The delivery log has been updated.</p>}{testState === 'failed' && <p className="mt-4 rounded-xl bg-red-500/10 p-3 text-sm" style={{ color: T.red }}>{testError}</p>}</div><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}><h3 className="font-serif text-lg font-bold" style={{ color: T.text }}>Gmail setup guide</h3><ol className="mt-3 list-decimal space-y-2 pl-5 text-sm" style={{ color: T.textSub }}><li>Enable 2-Step Verification on the sender Gmail account.</li><li>Generate a Google App Password; normal Gmail passwords are not supported.</li><li>Save the App Password as the secure Supabase secret <code>GMAIL_SMTP_APP_PASSWORD</code>.</li><li>Validate the public configuration, then send a real test email.</li></ol></div></div>
+}
+
+function TeamManagementPanel({ show }: { show: (message: string) => void }) {
+  const [members, setMembers] = useState<TeamMember[]>([])
+  const [email, setEmail] = useState('')
+  const [role, setRole] = useState<OrganizationRole>('admin')
+  const [loading, setLoading] = useState(true)
+  const load = useCallback(async () => {
+    setLoading(true)
+    try { setMembers(await teamService.list()) } catch (error) { show(error instanceof Error ? error.message : 'Team members could not be loaded') } finally { setLoading(false) }
+  }, [show])
+  useEffect(() => { void load() }, [load])
+  const invite = async () => {
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) return show('Enter a valid team member email')
+    setLoading(true)
+    try { await teamService.invite(email.trim(), role); setEmail(''); show('Invitation sent'); await load() } catch (error) { show(error instanceof Error ? error.message : 'Invitation could not be sent'); setLoading(false) }
+  }
+  return <div className="space-y-5"><div><p className="font-mono text-[10px] uppercase tracking-widest" style={{ color: T.emerald }}>Owner access</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Team Management</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Invite approved admins and support users into this organization.</p></div><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}><div className="grid gap-3 md:grid-cols-[1fr_150px_auto]"><input value={email} onChange={event => setEmail(event.target.value)} type="email" placeholder="team@example.com" className="rounded-xl px-4 py-3 text-sm outline-none" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}/><select value={role} onChange={event => setRole(event.target.value as OrganizationRole)} className="rounded-xl px-3 py-3 text-sm" style={{ background: T.bg3, border: `1px solid ${T.border}`, color: T.text }}><option value="admin">Admin</option><option value="support">Support</option><option value="owner">Owner</option></select><button disabled={loading} onClick={() => void invite()} className="rounded-xl px-5 py-3 text-sm font-bold disabled:opacity-50" style={{ background: T.emerald, color: T.bg }}>Invite member</button></div></div><div className="overflow-hidden rounded-2xl" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>{members.map(member => <div key={member.userId} className="flex items-center justify-between gap-4 border-b p-4 last:border-0" style={{ borderColor: T.border }}><div className="min-w-0"><div className="truncate text-sm font-semibold" style={{ color: T.text }}>{member.email}</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>Joined {new Date(member.createdAt).toLocaleDateString()}</div></div><span className="rounded-full px-3 py-1 text-xs capitalize" style={{ background: member.role === 'owner' ? T.emeraldGlow : T.inputBg, color: member.role === 'owner' ? T.emerald : T.textSub }}>{member.role}</span></div>)}{!loading && !members.length && <div className="p-8 text-center text-sm" style={{ color: T.textMuted }}>No team members were returned.</div>}{loading && <div className="p-8 text-center text-sm" style={{ color: T.textMuted }}>Loading team…</div>}</div></div>
 }
 
 function SettingsPage({ show }: { show: (m: string) => void }) {
+  const { role } = useAuth()
   const [activeSection, setActiveSection] = useState('organization')
-  const SECTIONS = ['organization','email','branding','payments','media','notifications','social proof','localization','backup']
-  const [brand, setBrand] = useState({ name: 'Apex Events', accent: '#00FF88', tagline: 'Premium live experiences' })
-  const [notificationPrefs, setNotificationPrefs] = useState({ bookings: true, payments: true, support: true, daily: false })
+  const SECTIONS = ['organization', ...(role === 'owner' ? ['team'] : []), 'email','branding','payments','media','notifications','social proof','localization','backup']
+  const [organization, setOrganization] = useState<OrganizationSettings>(() => adminSettingsStore.get().organization)
+  const [brand, setBrand] = useState(() => adminSettingsStore.get().branding)
+  const [notificationPrefs, setNotificationPrefs] = useState(() => adminSettingsStore.get().notifications)
   const togglePref = (key: keyof typeof notificationPrefs) => setNotificationPrefs(current => ({ ...current, [key]: !current[key] }))
+  useEffect(() => adminSettingsStore.subscribe(() => { const settings = adminSettingsStore.get(); setOrganization(settings.organization); setBrand(settings.branding); setNotificationPrefs(settings.notifications) }), [])
 
   return (
     <div className="flex flex-col gap-5 lg:flex-row" style={{ animation: 'fade-in-up 0.3s ease' }}>
@@ -2464,17 +2500,18 @@ function SettingsPage({ show }: { show: (m: string) => void }) {
       </div>
 
       <div className="min-w-0 flex-1 space-y-5">
+        {activeSection === 'team' && role === 'owner' && <TeamManagementPanel show={show} />}
         {activeSection === 'organization' && (
           <div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
             <div className="text-xs font-mono uppercase tracking-wider mb-5" style={{ color: T.textMuted }}>Organization Details</div>
             <div className="space-y-4 max-w-lg">
-              {[['Organization Name','Apex Events Inc.'],['Website','https://apexevents.com'],['Support Email','support@apexevents.com'],['Phone','+1 (212) 555-0100']].map(([l,v]) => (
-                <div key={l as string}>
-                  <label className="text-xs font-mono uppercase tracking-wider block mb-2" style={{ color: T.textMuted }}>{l}</label>
-                  <input defaultValue={v as string} className="w-full px-4 py-3 rounded-xl text-sm outline-none" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}/>
+              {([['Organization Name','name'],['Website','website'],['Support Email','supportEmail'],['Phone','phone']] as const).map(([label,key]) => (
+                <div key={key}>
+                  <label className="text-xs font-mono uppercase tracking-wider block mb-2" style={{ color: T.textMuted }}>{label}</label>
+                  <input value={organization[key]} onChange={event => setOrganization(current => ({ ...current, [key]: event.target.value }))} className="w-full px-4 py-3 rounded-xl text-sm outline-none" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}/>
                 </div>
               ))}
-              <button onClick={() => show('Settings saved!')} className="px-6 py-2.5 rounded-xl text-sm font-bold" style={{ background: 'linear-gradient(135deg,#00FF88,#00C866)', color: '#09090B' }}>
+              <button onClick={() => { adminSettingsStore.saveOrganization(organization); show('Settings saved!') }} className="px-6 py-2.5 rounded-xl text-sm font-bold" style={{ background: 'linear-gradient(135deg,#00FF88,#00C866)', color: '#09090B' }}>
                 Save Changes
               </button>
             </div>
@@ -2494,11 +2531,11 @@ function SettingsPage({ show }: { show: (m: string) => void }) {
 
         {activeSection === 'email' && <EmailConfigurationPanel show={show} />}
 
-        {activeSection === 'branding' && <div className="space-y-5"><div><p className="font-mono text-[10px] uppercase tracking-widest" style={{ color: T.emerald }}>Public experience</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Branding</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Control how your booking pages look to every visitor.</p></div><div className="grid gap-5 xl:grid-cols-[1fr_.7fr]"><div className="rounded-2xl p-5 space-y-4" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>{[['Brand name','name'],['Tagline','tagline'],['Accent color','accent']].map(([label, key]) => <label key={key} className="block text-xs font-mono uppercase tracking-wider" style={{ color: T.textMuted }}>{label}<input value={brand[key as keyof typeof brand]} type={key === 'accent' ? 'color' : 'text'} onChange={event => setBrand(current => ({ ...current, [key]: event.target.value }))} className="mt-2 block h-11 w-full rounded-xl px-3 text-sm normal-case" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}/></label>)}<button onClick={() => show('Brand settings saved')} className="rounded-xl px-5 py-2.5 text-sm font-bold" style={{ background: T.emerald, color: T.bg }}>Save branding</button></div><div className="rounded-2xl p-6" style={{ background: `linear-gradient(135deg,${brand.accent}24,#18181B)`, border: `1px solid ${brand.accent}55` }}><div className="text-[10px] font-mono uppercase" style={{ color: T.textMuted }}>Live preview</div><div className="mt-10 font-serif text-3xl font-bold" style={{ color: T.text }}>{brand.name}</div><div className="mt-2 text-sm" style={{ color: T.textSub }}>{brand.tagline}</div><button className="mt-8 rounded-xl px-4 py-2 text-xs font-bold" style={{ background: brand.accent, color: T.bg }}>Book tickets</button></div></div></div>}
+        {activeSection === 'branding' && <div className="space-y-5"><div><p className="font-mono text-[10px] uppercase tracking-widest" style={{ color: T.emerald }}>Public experience</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Branding</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Control how your booking pages look to every visitor.</p></div><div className="grid gap-5 xl:grid-cols-[1fr_.7fr]"><div className="rounded-2xl p-5 space-y-4" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>{[['Brand name','name'],['Tagline','tagline'],['Accent color','accent']].map(([label, key]) => <label key={key} className="block text-xs font-mono uppercase tracking-wider" style={{ color: T.textMuted }}>{label}<input value={brand[key as keyof typeof brand]} type={key === 'accent' ? 'color' : 'text'} onChange={event => setBrand(current => ({ ...current, [key]: event.target.value }))} className="mt-2 block h-11 w-full rounded-xl px-3 text-sm normal-case" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}/></label>)}<button onClick={() => { adminSettingsStore.saveBranding(brand); show('Brand settings saved') }} className="rounded-xl px-5 py-2.5 text-sm font-bold" style={{ background: T.emerald, color: T.bg }}>Save branding</button></div><div className="rounded-2xl p-6" style={{ background: `linear-gradient(135deg,${brand.accent}24,#18181B)`, border: `1px solid ${brand.accent}55` }}><div className="text-[10px] font-mono uppercase" style={{ color: T.textMuted }}>Live preview</div><div className="mt-10 font-serif text-3xl font-bold" style={{ color: T.text }}>{brand.name}</div><div className="mt-2 text-sm" style={{ color: T.textSub }}>{brand.tagline}</div><button className="mt-8 rounded-xl px-4 py-2 text-xs font-bold" style={{ background: brand.accent, color: T.bg }}>Book tickets</button></div></div></div>}
 
         {activeSection === 'media' && <div><div className="mb-5"><p className="font-mono text-[10px] uppercase tracking-widest" style={{ color: T.emerald }}>Asset management</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Media Settings</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Upload, organize, preview, rename, and remove assets used across your event pages.</p></div><MediaLibraryPage show={show}/></div>}
 
-        {activeSection === 'notifications' && <div className="space-y-5"><div><p className="font-mono text-[10px] uppercase tracking-widest" style={{ color: T.emerald }}>Admin alerts</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Notification Settings</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Choose which real-time events deserve your attention.</p></div><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>{([{ key: 'bookings', label: 'New bookings', desc: 'Immediately alert on confirmed and pending bookings.' }, { key: 'payments', label: 'Payment reviews', desc: 'Alert when customer proof or manual review is required.' }, { key: 'support', label: 'Support messages', desc: 'Alert when a customer starts or replies to a conversation.' }, { key: 'daily', label: 'Daily performance digest', desc: 'Receive a summary of sales and visitor activity.' }] as const).map(item => <div key={item.key} className="flex items-center justify-between gap-4 border-b py-4 last:border-0" style={{ borderColor: T.border }}><div><div className="text-sm font-semibold" style={{ color: T.text }}>{item.label}</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>{item.desc}</div></div><button aria-label={`Toggle ${item.label}`} onClick={() => togglePref(item.key)} className="relative h-6 w-11 shrink-0 rounded-full" style={{ background: notificationPrefs[item.key] ? T.emerald : T.border }}><span className="absolute top-1 h-4 w-4 rounded-full bg-white transition-all" style={{ left: notificationPrefs[item.key] ? 24 : 4 }}/></button></div>)}<button onClick={() => show('Notification preferences saved')} className="mt-4 rounded-xl px-5 py-2.5 text-sm font-bold" style={{ background: T.emerald, color: T.bg }}>Save preferences</button></div></div>}
+        {activeSection === 'notifications' && <div className="space-y-5"><div><p className="font-mono text-[10px] uppercase tracking-widest" style={{ color: T.emerald }}>Admin alerts</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Notification Settings</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Choose which real-time events deserve your attention.</p></div><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>{([{ key: 'bookings', label: 'New bookings', desc: 'Immediately alert on confirmed and pending bookings.' }, { key: 'payments', label: 'Payment reviews', desc: 'Alert when customer proof or manual review is required.' }, { key: 'support', label: 'Support messages', desc: 'Alert when a customer starts or replies to a conversation.' }, { key: 'daily', label: 'Daily performance digest', desc: 'Receive a summary of sales and visitor activity.' }] as const).map(item => <div key={item.key} className="flex items-center justify-between gap-4 border-b py-4 last:border-0" style={{ borderColor: T.border }}><div><div className="text-sm font-semibold" style={{ color: T.text }}>{item.label}</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>{item.desc}</div></div><button aria-label={`Toggle ${item.label}`} onClick={() => togglePref(item.key)} className="relative h-6 w-11 shrink-0 overflow-hidden rounded-full p-1" style={{ background: notificationPrefs[item.key] ? T.emerald : T.border }}><span className={`block h-4 w-4 rounded-full bg-white transition-transform ${notificationPrefs[item.key] ? 'translate-x-5' : 'translate-x-0'}`}/></button></div>)}<button onClick={() => { adminSettingsStore.saveNotifications(notificationPrefs); show('Notification preferences saved') }} className="mt-4 rounded-xl px-5 py-2.5 text-sm font-bold" style={{ background: T.emerald, color: T.bg }}>Save preferences</button></div></div>}
 
         {activeSection === 'social proof' && <SocialProofPage show={show}/>} 
 
@@ -2689,17 +2726,17 @@ export default function AdminDashboard({ onExitAdmin, initialPage = 'dashboard',
   const PAGES: Record<Page, React.ReactNode> = {
     dashboard: <DashboardPage show={show} />,
     bookings: <BookingsPage show={show} />,
-    events: <EventCatalogPage show={show} createSignal={eventCreateRequest}/>,
+    events: <SupabaseEventCatalogPage show={show} createSignal={eventCreateRequest}/>,
     payments: <PaymentDashboard show={show} />,
     media: <MediaLibraryPage show={show} />,
     chat: <SupportDashboard />,
-    notifications: <SocialProofPage show={show} />,
+    notifications: <NotificationCenter />,
     settings: <SettingsPage show={show}/>,
     documentation: <DocumentationPage />,
   }
 
   return (
-    <div style={{ background: T.bg, minHeight: '100vh', color: T.text, fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+    <div className="ios-stable-scroll" style={{ background: T.bg, minHeight: '100dvh', color: T.text, fontFamily: "'DM Sans', system-ui, sans-serif" }}>
       {/* Ambient bg */}
       <div className="fixed inset-0 pointer-events-none" style={{ zIndex: 0, background: 'radial-gradient(ellipse 80% 50% at 50% -20%,rgba(0,255,136,0.03) 0%,transparent 60%)' }}/>
 

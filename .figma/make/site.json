@@ -1,7 +1,15 @@
 {
-  "description": "Enables users to generate polite, context-aware responses quickly, enhancing communication efficiency and professionalism across various platforms.",
+  "title": "Apex Bookings",
+  "description": "Apex Bookings is a secure event booking platform for discovering events, selecting packages, completing payments, and receiving verified digital tickets.",
+  "language": "en",
+  "icons": {
+    "icon": "/favicon.svg"
+  },
+  "openGraph": {
+    "image": "/apex-email-ticket-logo.png"
+  },
   "robots": {
-    "index": false
+    "index": true
   },
   "accessibility": {
     "addBypassLinks": false,

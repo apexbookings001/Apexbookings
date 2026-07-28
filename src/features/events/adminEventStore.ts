@@ -1,6 +1,8 @@
 import type { EventStatus, PaymentMethod, SeatStatus, CryptoCoinConfig } from '../../types/domain'
 import type { BookingPageData } from './bookingTemplate'
-import { isSupabaseConfigured, supabase } from '../../lib/supabase'
+import { supabase } from '../../lib/supabase'
+import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
+import { requireOrganizationId } from '../../services/supabase/workspace'
 
 export type TimelineItem = { id: string; time: string; title: string; description: string }
 export type Testimonial = { id: string; name: string; photo: string; review: string; rating: number }
@@ -11,6 +13,23 @@ export type EventPaymentMethod = { enabled: boolean; hidden?: boolean; order?: n
 export type EventPricingSettings = { serviceFee: number; taxPercentage: number }
 export type EventPaymentSettings = { usePlatformDefaults: boolean; defaultMethod: PaymentMethod; methods: Record<PaymentMethod, EventPaymentMethod>; cryptocurrencies: Record<string, CryptoCoinConfig>; pricing: EventPricingSettings }
 export type EventPublication = { slug: string; shortCode: string; publishedAt?: string; scheduledFor?: string; archivedAt?: string }
+export type EventLocaleSettings = { countryCode: string; languageCode: string; currencyCode: string }
+export type EventSocialProofOverride = {
+  enabled?: boolean
+  defaultCustomerName?: string
+  city?: string
+  state?: string
+  customerImage?: string
+  packageName?: string
+  message?: string
+  duration?: number
+  delay?: number
+  animation?: string
+  position?: string
+  pageTargeting?: string[]
+  mobileVisible?: boolean
+  desktopVisible?: boolean
+}
 export type EventContent = {
   hero: { title: string; subtitle: string; date: string; venue: string; hostName: string; ctaText: string; ctaLink: string; images: string[] }
   about: { title: string; description: string; image: string }
@@ -29,6 +48,7 @@ export type ManagedEvent = {
   schedule: { time: string; title: string; detail: string }[]; setup?: EventSetup
   bookingPage?: BookingPageData
   content?: EventContent; packages?: TicketPackage[]; seats?: StudioSeat[]; payments?: EventPaymentSettings; publication?: EventPublication
+  locale?: EventLocaleSettings; socialProofOverride?: EventSocialProofOverride
 }
 
 const id = () => crypto.randomUUID()
@@ -92,8 +112,15 @@ const paymentSettings = (settings?: EventPaymentSettings): EventPaymentSettings 
   if (!settings) return defaults
   return { ...defaults, ...settings, pricing: { ...defaults.pricing, ...settings.pricing }, methods: { ...defaults.methods, ...settings.methods }, cryptocurrencies: { ...defaults.cryptocurrencies, ...settings.cryptocurrencies } }
 }
-const slugify = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'event'
-const shortCode = () => `ABX${Math.random().toString(36).slice(2, 7).toUpperCase()}`
+export const slugifyEventName = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'event'
+export const generateEventShortCode = () => {
+  const bytes = crypto.getRandomValues(new Uint8Array(9))
+  return `APX${Array.from(bytes, value => value.toString(36).padStart(2, '0')).join('').slice(0, 14).toUpperCase()}`
+}
+export const createEventPublication = (name: string): EventPublication => {
+  const code = generateEventShortCode()
+  return { slug: `${slugifyEventName(name)}-${code.toLowerCase()}`, shortCode: code }
+}
 
 export const generateSeats = (_eventId: string, packages: TicketPackage[], existing: StudioSeat[] = []): StudioSeat[] => {
   const byNumber = new Map(existing.map(seat => [seat.number, seat]))
@@ -110,15 +137,68 @@ export const ensureStudioEvent = (event: ManagedEvent): ManagedEvent => {
   const content = event.content ?? createStudioContent({ title: event.title, venue: event.venue, date: event.date, hostName: event.setup?.hostName ?? 'Your host', mapLink: event.setup?.mapLink ?? '', banners: event.setup?.banners })
   const packages = event.packages ?? createDefaultPackages(event.capacity)
   const seats = event.seats ?? generateSeats(event.id, packages)
-  const publication = event.publication ?? { slug: slugify(event.title), shortCode: shortCode() }
+  const publication = event.publication ?? createEventPublication(event.title)
   const scheduledNow = event.status === 'scheduled' && publication.scheduledFor && new Date(publication.scheduledFor).getTime() <= Date.now()
-  return { ...event, status: scheduledNow ? 'published' : event.status, content, packages, seats, payments: paymentSettings(event.payments), publication: { ...publication, publishedAt: scheduledNow ? new Date().toISOString() : publication.publishedAt } }
+  return {
+    ...event,
+    status: scheduledNow ? 'published' : event.status,
+    content,
+    packages,
+    seats,
+    payments: paymentSettings(event.payments),
+    publication: { ...publication, publishedAt: scheduledNow ? new Date().toISOString() : publication.publishedAt },
+    locale: event.locale ?? { countryCode: 'US', languageCode: 'en-US', currencyCode: 'USD' },
+  }
 }
 
-const storageKey = 'apex.managed-events'
-const eventName = 'apex:managed-events'
-const read = (): ManagedEvent[] => { try { const value = localStorage.getItem(storageKey); return value ? (JSON.parse(value) as ManagedEvent[]).map(ensureStudioEvent) : [] } catch { return [] } }
-const write = (events: ManagedEvent[]): void => { localStorage.setItem(storageKey, JSON.stringify(events)); window.dispatchEvent(new Event(eventName)) }
+export function duplicateManagedEvent(source: ManagedEvent, change: {
+  title: string
+  date: string
+  venue: string
+  locale: EventLocaleSettings
+}): ManagedEvent {
+  const duplicate = structuredClone(ensureStudioEvent(source))
+  const eventId = crypto.randomUUID()
+  const packageIds = new Map<string, string>()
+  duplicate.packages = duplicate.packages?.map(item => {
+    const nextId = crypto.randomUUID()
+    packageIds.set(item.id, nextId)
+    return { ...item, id: nextId }
+  })
+  duplicate.seats = duplicate.seats?.map(item => ({ ...item, id: crypto.randomUUID(), packageId: packageIds.get(item.packageId) ?? item.packageId, status: 'available' }))
+  if (duplicate.content) {
+    duplicate.content.timeline = duplicate.content.timeline.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.content.testimonials = duplicate.content.testimonials.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.content.faq = duplicate.content.faq.map(item => ({ ...item, id: crypto.randomUUID() }))
+  }
+  if (duplicate.bookingPage) {
+    duplicate.bookingPage.timeline = duplicate.bookingPage.timeline.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.bookingPage.packages = duplicate.bookingPage.packages.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.bookingPage.testimonials = duplicate.bookingPage.testimonials.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.bookingPage.faq = duplicate.bookingPage.faq.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.bookingPage.venueFacts = duplicate.bookingPage.venueFacts.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.bookingPage.importantInfo = duplicate.bookingPage.importantInfo.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.bookingPage.hero.title = change.title
+    duplicate.bookingPage.hero.date = change.date
+    duplicate.bookingPage.hero.venue = change.venue
+    duplicate.bookingPage.venue.name = change.venue
+  }
+  return {
+    ...duplicate,
+    id: eventId,
+    title: change.title,
+    date: change.date,
+    venue: change.venue,
+    sold: 0,
+    revenue: 0,
+    status: 'draft',
+    locale: change.locale,
+    publication: createEventPublication(change.title),
+  }
+}
+
+const cache = createProtectedMemoryStore<ManagedEvent[]>(() => [])
+const read = () => cache.get()
 
 type EventRow = Record<string, unknown>
 
@@ -144,34 +224,30 @@ const fromDatabase = (row: EventRow): ManagedEvent => {
     content: (row.content as EventContent | null) ?? stored.content,
     payments: (row.payment_settings as EventPaymentSettings | null) ?? stored.payments,
     publication: {
-      ...(stored.publication ?? { slug: slugify(String(row.name ?? 'event')), shortCode: shortCode() }),
-      slug: String((stored.publication?.slug ?? slugify(String(row.name ?? 'event')))),
-      shortCode: String(row.short_code ?? stored.publication?.shortCode ?? shortCode()),
+      ...(stored.publication ?? createEventPublication(String(row.name ?? 'event'))),
+      slug: String(row.slug ?? stored.publication?.slug ?? slugifyEventName(String(row.name ?? 'event'))),
+      shortCode: String(row.short_code ?? stored.publication?.shortCode ?? generateEventShortCode()),
       publishedAt: row.published_at ? String(row.published_at) : stored.publication?.publishedAt,
       scheduledFor: row.scheduled_for ? String(row.scheduled_for) : stored.publication?.scheduledFor,
       archivedAt: row.archived_at ? String(row.archived_at) : stored.publication?.archivedAt,
     },
+    locale: {
+      countryCode: String(row.country_code ?? stored.locale?.countryCode ?? 'US'),
+      languageCode: String(row.language_code ?? stored.locale?.languageCode ?? 'en-US'),
+      currencyCode: String(row.currency_code ?? stored.locale?.currencyCode ?? 'USD'),
+    },
+    socialProofOverride: (row.social_proof_override as EventSocialProofOverride | null) ?? stored.socialProofOverride,
   })
 }
 
-async function organizationId(): Promise<string | null> {
-  if (!supabase) return null
-  const { data: auth } = await supabase.auth.getUser()
-  if (!auth.user) return null
-  const { data, error } = await supabase.rpc('bootstrap_admin_workspace')
-  if (error || !data) return null
-  return String(data)
-}
-
 async function syncEvent(event: ManagedEvent): Promise<void> {
-  if (!isSupabaseConfigured || !supabase) return
-  const orgId = await organizationId()
-  if (!orgId) return
+  if (!supabase) throw new Error('Supabase is not configured.')
+  const orgId = requireOrganizationId()
   const prepared = ensureStudioEvent(event)
   const { error } = await supabase.from('events').upsert({
     id: prepared.id,
     organization_id: orgId,
-    slug: prepared.publication?.slug ?? slugify(prepared.title),
+    slug: prepared.publication?.slug ?? slugifyEventName(prepared.title),
     short_code: prepared.publication?.shortCode,
     name: prepared.title,
     venue: prepared.venue,
@@ -183,40 +259,101 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
     scheduled_for: prepared.publication?.scheduledFor,
     published_at: prepared.publication?.publishedAt,
     archived_at: prepared.publication?.archivedAt,
+    country_code: prepared.locale?.countryCode ?? 'US',
+    language_code: prepared.locale?.languageCode ?? 'en-US',
+    currency_code: prepared.locale?.currencyCode ?? 'USD',
+    social_proof_override: prepared.socialProofOverride ?? {},
     studio: prepared,
   }, { onConflict: 'id' })
   if (error) throw error
+
+  const packages = prepared.packages ?? []
+  if (packages.length) {
+    const { error: packageError } = await supabase.from('packages').upsert(packages.map(pkg => ({
+      id: pkg.id,
+      event_id: prepared.id,
+      name: pkg.name,
+      price: pkg.price,
+      capacity: pkg.capacity,
+      offer: JSON.stringify({ description: pkg.description, benefits: pkg.benefits, color: pkg.color }),
+      deleted_at: null,
+    })), { onConflict: 'id' })
+    if (packageError) throw packageError
+  }
+
+  const seats = prepared.seats ?? []
+  if (seats.length) {
+    const { error: seatError } = await supabase.from('seats').upsert(seats.map(seat => ({
+      id: seat.id,
+      event_id: prepared.id,
+      package_id: seat.packageId,
+      label: String(seat.number).padStart(3, '0'),
+      status: seat.status,
+      deleted_at: null,
+    })), { onConflict: 'id' })
+    if (seatError) throw seatError
+  }
 }
 
 async function removeFromDatabase(eventId: string): Promise<void> {
-  if (!isSupabaseConfigured || !supabase) return
-  const orgId = await organizationId()
-  if (!orgId) return
+  if (!supabase) throw new Error('Supabase is not configured.')
+  const orgId = requireOrganizationId()
   const { error } = await supabase.from('events').update({ deleted_at: new Date().toISOString() }).eq('id', eventId).eq('organization_id', orgId)
   if (error) throw error
 }
 
 export const adminEventStore = {
   list: (): ManagedEvent[] => read(),
-  subscribe: (listener: () => void) => { window.addEventListener(eventName, listener); return () => window.removeEventListener(eventName, listener) },
+  subscribe: cache.subscribe,
+  snapshot: cache.snapshot,
   hydrate: async (): Promise<ManagedEvent[]> => {
-    if (!isSupabaseConfigured || !supabase) return read()
-    const orgId = await organizationId()
-    if (!orgId) return read()
-    const { data, error } = await supabase.from('events').select('id,name,venue,starts_at,banner_path,status,content,payment_settings,short_code,published_at,scheduled_for,archived_at,studio').eq('organization_id', orgId).is('deleted_at', null).order('created_at', { ascending: false })
-    if (error) throw error
-    const events = (data ?? []).map(row => fromDatabase(row as EventRow))
-    write(events)
-    return events
+    try {
+      if (!supabase) throw new Error('Supabase is not configured.')
+      cache.loading()
+      const orgId = requireOrganizationId()
+      const { data, error } = await supabase.from('events').select('id,slug,name,venue,starts_at,banner_path,status,content,payment_settings,short_code,published_at,scheduled_for,archived_at,country_code,language_code,currency_code,social_proof_override,studio').eq('organization_id', orgId).is('deleted_at', null).order('created_at', { ascending: false })
+      if (error) throw error
+      const events = (data ?? []).map(row => fromDatabase(row as EventRow))
+      cache.set(events)
+      return events
+    } catch (error) {
+      cache.fail(error)
+      throw error
+    }
   },
   loadPublic: async (identifier: string): Promise<ManagedEvent | null> => {
     const local = read().find(event => event.publication?.slug === identifier || event.publication?.shortCode === identifier)
-    if (local?.status === 'published' || !isSupabaseConfigured || !supabase) return local?.status === 'published' ? local : null
+    if (local?.status === 'published') return local
+    if (!supabase) throw new Error('Supabase is not configured.')
     const { data, error } = await supabase.rpc('public_event_snapshot', { event_identifier: identifier })
-    if (error || !data || typeof data !== 'object') return null
+    if (error) throw error
+    if (!data || typeof data !== 'object') return null
     const snapshot = data as { event?: EventRow }
     return snapshot.event ? fromDatabase(snapshot.event) : null
   },
-  save: (event: ManagedEvent): ManagedEvent => { const next = ensureStudioEvent(event); const events = read(); const index = events.findIndex(item => item.id === next.id); if (index >= 0) events[index] = next; else events.unshift(next); write(events); void syncEvent(next).catch(() => undefined); return next },
-  remove: (eventId: string): void => { write(read().filter(event => event.id !== eventId)); void removeFromDatabase(eventId).catch(() => undefined) },
+  save: (event: ManagedEvent): ManagedEvent => {
+    const next = ensureStudioEvent(event)
+    const events = [...read()]
+    const index = events.findIndex(item => item.id === next.id)
+    if (index >= 0) events[index] = next
+    else events.unshift(next)
+    void cache.optimistic(events, () => syncEvent(next)).catch(() => undefined)
+    return next
+  },
+  saveAsync: async (event: ManagedEvent): Promise<ManagedEvent> => {
+    const next = ensureStudioEvent(event)
+    const events = [...read()]
+    const index = events.findIndex(item => item.id === next.id)
+    if (index >= 0) events[index] = next
+    else events.unshift(next)
+    await cache.optimistic(events, () => syncEvent(next))
+    return next
+  },
+  remove: (eventId: string): void => {
+    void cache.optimistic(read().filter(event => event.id !== eventId), () => removeFromDatabase(eventId)).catch(() => undefined)
+  },
+  removeAsync: async (eventId: string): Promise<void> => {
+    await cache.optimistic(read().filter(event => event.id !== eventId), () => removeFromDatabase(eventId))
+  },
+  clear: cache.reset,
 }

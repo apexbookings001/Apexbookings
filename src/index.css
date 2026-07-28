@@ -1,36 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,100..900&family=Fraunces:opsz,wght@9..144,100..900&display=swap');
 @import 'tailwindcss';
-
-@font-face {
-  font-family: 'Fraunces';
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url('https://static.figma.com/font/Fraunces_SOFT_WONK_opsz_wght__1') format('woff2');
-}
-
-@font-face {
-  font-family: 'DM Sans';
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url('https://static.figma.com/font/DMSans_opsz_wght__1') format('woff2');
-}
-
-@font-face {
-  font-family: 'DM Mono';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('https://static.figma.com/font/DMMono-Regular_1') format('woff2');
-}
-
-@font-face {
-  font-family: 'DM Mono';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('https://static.figma.com/font/DMMono-Medium_1') format('woff2');
-}
 
 @theme {
   --font-sans: 'DM Sans', system-ui, sans-serif;
@@ -138,6 +107,13 @@ body {
   margin: 0;
   min-height: 100dvh;
   position: relative;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
+  overflow-x: clip;
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
 }
 
 /* Lock body scroll when booking modal is open */
@@ -254,9 +230,33 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 #root {
+  width: 100%;
   min-height: 100dvh;
   max-width: 100%;
   overflow-x: hidden;
+}
+
+@supports (-webkit-touch-callout: none) {
+  html { scroll-behavior: auto; }
+  body { overscroll-behavior-y: none; }
+  .ios-stable-scroll {
+    min-height: 100vh;
+    min-height: 100svh;
+    min-height: 100dvh;
+    overflow-x: clip;
+  }
+  .ios-modal-scroll {
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+    -webkit-overflow-scrolling: touch;
+  }
+  .scroll-progress { transition: none; }
+  .reveal, .reveal-left, .reveal-right { will-change: auto; }
+}
+
+@media (max-width: 430px) {
+  [class*="backdrop-blur"] { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .fixed { max-width: 100%; }
 }
 
 img,
@@ -765,7 +765,11 @@ select option:checked {
   height: 2px;
   background: linear-gradient(90deg, #2563EB, #7C3AED, #F59E0B);
   z-index: 9999;
-  transition: width 0.1s linear;
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.1s linear;
+  will-change: transform;
 }
 
 /* ── Admin sidebar ── */

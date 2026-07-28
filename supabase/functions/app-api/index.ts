@@ -1,12 +1,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import nodemailer from 'npm:nodemailer@6.10.1'
 
-type EmailJob = {
-  id: string
-  recipient: string
-  subject: string
-  payload: Record<string, unknown>
-}
+type EmailJob = { id: string; recipient: string; subject: string; payload: Record<string, unknown> }
 
 const cors = {
   'Access-Control-Allow-Origin': Deno.env.get('APP_ORIGIN') ?? '*',
@@ -20,13 +15,15 @@ function escape(value: unknown) {
 }
 
 function renderEmail(job: EmailJob) {
-  const fields = Object.entries(job.payload)
-    .filter(([, value]) => typeof value === 'string' || typeof value === 'number')
-    .map(([label, value]) => `<tr><td style="padding:8px 0;color:#a1a1aa">${escape(label)}</td><td style="padding:8px 0;text-align:right;color:#fafafa;font-weight:600">${escape(value)}</td></tr>`)
-    .join('')
+  const fields = Object.entries(job.payload).filter(([, value]) => typeof value === 'string' || typeof value === 'number').map(([label, value]) => `<tr><td style="padding:8px 0;color:#a1a1aa">${escape(label)}</td><td style="padding:8px 0;text-align:right;color:#fafafa;font-weight:600">${escape(value)}</td></tr>`).join('')
   const actionUrl = typeof job.payload.actionUrl === 'string' ? job.payload.actionUrl : undefined
   const actionLabel = typeof job.payload.actionLabel === 'string' ? job.payload.actionLabel : 'Open Apex Bookings'
-  return `<!doctype html><html><body style="margin:0;background:#09090b;font-family:Arial,sans-serif;color:#fafafa"><main style="max-width:600px;margin:24px auto;background:#111113;border:1px solid #27272a;border-radius:22px;overflow:hidden"><header style="padding:26px;background:linear-gradient(135deg,#00ff88,#00c866);color:#09090b"><strong style="font-size:22px">Apex Bookings</strong></header><section style="padding:28px"><h1 style="font-size:22px;margin:0 0 16px;color:#fafafa">${escape(job.subject)}</h1><table style="width:100%;font-size:14px">${fields}</table>${actionUrl ? `<a href="${escape(actionUrl)}" style="display:inline-block;margin-top:24px;padding:13px 18px;border-radius:12px;background:#00ff88;color:#09090b;text-decoration:none;font-weight:700">${escape(actionLabel)}</a>` : ''}</section><footer style="padding:18px 28px;background:#18181b;color:#a1a1aa;font-size:12px">Apex Bookings · Secure event booking</footer></main></body></html>`
+  const appOrigin = (Deno.env.get('APP_ORIGIN') ?? '').replace(/\/$/, '')
+  const logoUrl = appOrigin ? `${appOrigin}/apex-email-ticket-logo.png` : ''
+  const header = logoUrl
+    ? `<img src="${escape(logoUrl)}" alt="Apex Bookings" width="170" height="96" style="display:block;width:170px;height:96px;margin:0 auto;object-fit:cover;object-position:center"/>`
+    : '<strong style="font-size:22px;color:#fafafa">Apex Bookings</strong>'
+  return `<!doctype html><html><body style="margin:0;background:#09090b;font-family:Arial,sans-serif;color:#fafafa"><main style="max-width:600px;margin:24px auto;background:#111113;border:1px solid #27272a;border-radius:22px;overflow:hidden"><header style="padding:16px 26px;background:#030303;text-align:center">${header}</header><section style="padding:28px"><h1 style="font-size:22px;margin:0 0 16px;color:#fafafa">${escape(job.subject)}</h1><table style="width:100%;font-size:14px">${fields}</table>${actionUrl ? `<a href="${escape(actionUrl)}" style="display:inline-block;margin-top:24px;padding:13px 18px;border-radius:12px;background:#00ff88;color:#09090b;text-decoration:none;font-weight:700">${escape(actionLabel)}</a>` : ''}</section><footer style="padding:18px 28px;background:#18181b;color:#a1a1aa;font-size:12px">Apex Bookings · Secure event booking</footer></main></body></html>`
 }
 
 async function isAdmin(request: Request, admin: ReturnType<typeof createClient>) {
@@ -34,7 +31,15 @@ async function isAdmin(request: Request, admin: ReturnType<typeof createClient>)
   if (!authorization) return false
   const token = authorization.replace(/^Bearer\s+/i, '')
   const { data } = await admin.auth.getUser(token)
-  return data.user?.email === 'apexbookings001@gmail.com'
+  if (!data.user) return false
+  const { data: membership } = await admin
+    .from('organization_members')
+    .select('role')
+    .eq('user_id', data.user.id)
+    .is('disabled_at', null)
+    .is('deleted_at', null)
+    .maybeSingle()
+  return Boolean(membership && ['owner', 'admin', 'support'].includes(membership.role))
 }
 
 Deno.serve(async request => {

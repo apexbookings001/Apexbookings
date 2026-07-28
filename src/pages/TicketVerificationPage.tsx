@@ -15,16 +15,16 @@ export function TicketVerificationPage() {
   const t = DARK
 
   useEffect(() => {
-    // In a real app, this would be an API call.
-    // For now, we simulate network delay and look up in localStorage.
-    const timer = setTimeout(() => {
-      if (ticketId) {
-        const found = ticketStore.findById(ticketId)
-        setTicket(found)
-      }
+    let active = true
+    if (!ticketId) {
       setLoading(false)
-    }, 800)
-    return () => clearTimeout(timer)
+      return
+    }
+    void ticketStore.findRemote(ticketId)
+      .then(found => { if (active) setTicket(found) })
+      .catch(() => { if (active) setTicket(null) })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
   }, [ticketId])
 
   useEffect(() => {
@@ -144,6 +144,7 @@ export function TicketVerificationPage() {
               </div>
 
               <div className="p-5 sm:p-6 space-y-6">
+                <img src="/apex-email-ticket-logo.png" alt="Apex Bookings" className="h-12 w-auto rounded-lg bg-black object-cover object-center" />
                 
                 {/* Customer */}
                 <div>

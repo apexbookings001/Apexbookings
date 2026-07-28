@@ -4,7 +4,7 @@ import { ProtectedRoute } from './components/routing/ProtectedRoute'
 import { AdminLoginPage } from './pages/AdminLoginPage'
 import { ROUTES } from './constants/routes'
 import { useAuth } from './features/auth/AuthContext'
-import { adminEventStore, PLATFORM_PAYMENT_DEFAULTS, type EventPaymentSettings } from './features/events/adminEventStore'
+import { adminEventStore, PLATFORM_PAYMENT_DEFAULTS, type EventPaymentSettings, type EventSocialProofOverride } from './features/events/adminEventStore'
 import type { PaymentMethod } from './types/domain'
 import { analyticsStore } from './features/analytics/analyticsStore'
 import { DEFAULT_BOOKING_TEMPLATE, createBookingPageData, masterBookingTemplateStore, type BookingPageData, type BookingSectionId, type BookingPackage } from './features/events/bookingTemplate'
@@ -29,6 +29,9 @@ import { ticketStore } from './features/bookings/ticketStore'
 import { paymentReviewStore } from './features/payments/paymentReviewStore'
 import { bankTransferStore, type BankTransferRequest } from './features/payments/bankTransferStore'
 import { emailService } from './features/email/emailService'
+import { createPublicCheckout } from './services/supabase/publicCheckoutRepository'
+import { createPublicBankTransfer } from './services/supabase/publicBankTransferRepository'
+import { uploadPaymentProofs } from './services/supabase/paymentProofRepository'
 import { QRCodeSVG } from 'qrcode.react'
 import { sessionPersistence } from './features/bookings/sessionPersistence'
 import { TicketVerificationPage } from './pages/TicketVerificationPage'
@@ -39,9 +42,10 @@ const AdminDashboard = lazy(() => import('./AdminDashboard'))
 
 import { ThemeCtx, useTheme, DARK, LIGHT } from './theme'
 type BookingMode = 'preview' | 'editor' | 'published'
+type StudioPreviewState = 'page' | 'packages' | 'checkout' | 'payment-pending' | 'awaiting-bank-details' | 'payment-submitted' | 'payment-approved' | 'payment-declined' | 'ticket-confirmation'
 type EditorTarget = { section: BookingSectionId; index?: number; field?: string }
-type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string }
-const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS })
+type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean }
+const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false })
 const useBooking = () => useContext(BookingCtx)
 
 function EditableTarget({ target, className = '', children }: { target: EditorTarget; className?: string; children: React.ReactNode }) {
@@ -86,18 +90,23 @@ function scrollTo(id: string) {
 
 // ─── Scroll progress ──────────────────────────────────────────────────────────
 function ScrollProgress() {
-  const [p, setP] = useState(0)
+  const bar = useRef<HTMLDivElement>(null)
   useEffect(() => {
+    let frame = 0
     const fn = () => {
-      const tot = document.documentElement.scrollHeight - window.innerHeight
-      setP(tot > 0 ? (window.scrollY / tot) * 100 : 0)
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        const total = document.documentElement.scrollHeight - window.innerHeight
+        const progress = total > 0 ? Math.min(1, window.scrollY / total) : 0
+        if (bar.current) bar.current.style.transform = `scaleX(${progress})`
+      })
     }
     window.addEventListener('scroll', fn, { passive: true })
-    return () => window.removeEventListener('scroll', fn)
+    fn()
+    return () => { window.removeEventListener('scroll', fn); if (frame) cancelAnimationFrame(frame) }
   }, [])
-  return (
-    <div className="scroll-progress" style={{ width: `${p}%` }} />
-  )
+  return <div ref={bar} className="scroll-progress" />
 }
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
@@ -574,6 +583,7 @@ function SeatGrid({
   otherPkgSeats: number[]
 }) {
   const { t } = useTheme()
+  const { translations: tr } = useLocale()
   const getStatus = (n: number): SeatStatus => {
     if (soldSeats.includes(n)) return 'sold'
     if (otherPkgSeats.includes(n)) return 'other-package'
@@ -597,7 +607,7 @@ function SeatGrid({
         {(['available', 'selected', 'sold', 'other-package'] as SeatStatus[]).map(s => (
           <span key={s} className="flex items-center gap-1">
             <span className="w-3 h-3 rounded-sm inline-block" style={{ background: colors[s].bg, border: `1px solid ${colors[s].border}` }} />
-            {s === 'other-package' ? 'Other Package' : s.charAt(0).toUpperCase() + s.slice(1)}
+            {s === 'other-package' ? tr.booking.otherPackage : s === 'available' ? tr.booking.available : s === 'selected' ? tr.booking.selected : tr.booking.sold}
           </span>
         ))}
       </div>
@@ -671,15 +681,15 @@ const OTHER_PKG_SEATS: Record<number, number[]> = {
 }
 const TOTAL_SEATS: Record<number, number> = { 0: 100, 1: 60, 2: 20 }
 
-function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { id: number }; onClose: () => void }) {
+function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = false }: { tier: Omit<BookingPackage, 'id'> & { id: number }; onClose: () => void; initialStep?: BStep; previewOnly?: boolean }) {
   const { t } = useTheme()
   const checkoutAccent = t.isDark ? tier.accent : t.accent
   const { translations: tr, formatPrice, locale } = useLocale()
-  const { data, payments, eventId } = useBooking()
-  const [step, setStep] = useState<BStep>('seats')
-  const [selectedSeat, setSelectedSeat] = useState<number | null>(null)
-  const [info, setInfo] = useState({ name: '', email: '' })
-  const [payMethod, setPayMethod] = useState<PaymentMethod | null>(null)
+  const { data, payments, eventId, mode } = useBooking()
+  const [step, setStep] = useState<BStep>(initialStep)
+  const [selectedSeat, setSelectedSeat] = useState<number | null>(previewOnly ? 12 : null)
+  const [info, setInfo] = useState(previewOnly ? { name: 'Preview Customer', email: 'preview@example.com' } : { name: '', email: '' })
+  const [payMethod, setPayMethod] = useState<PaymentMethod | null>(previewOnly ? 'paypal' : null)
   const [selectedCoin, setSelectedCoin] = useState<CryptoCoin | null>(null)
   const [proofFiles, setProofFiles] = useState<File[]>([])
   const [bankRequestId, setBankRequestId] = useState<string | null>(null)
@@ -687,7 +697,7 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
   const [processing, setProcessing] = useState(false)
   const [reviewRecordId, setReviewRecordId] = useState<string | null>(null)
   const [ticketId, setTicketId] = useState<string | null>(null)
-  const [declineReason, setDeclineReason] = useState('')
+  const [declineReason, setDeclineReason] = useState(previewOnly && initialStep === 'declined' ? 'The uploaded proof could not be verified.' : '')
   const { msg: seatMsg, show: showSeatMsg } = useToast()
   const bookingId = useRef(`APEX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`).current
   const contentRef = useRef<HTMLDivElement>(null)
@@ -699,18 +709,21 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
 
   const STEPS: BStep[] = ['seats', 'details', 'payment', 'waiting', 'done']
   const stepIdx = STEPS.indexOf(step)
-  const STEP_LABELS = ['Seat', 'Details', 'Payment', 'Waiting', 'Done']
+  const STEP_LABELS = [tr.booking.seat, tr.booking.yourDetails, tr.booking.choosePayment, tr.waiting.heading, tr.done.eyebrow]
 
   const go = (s: BStep) => {
-    if (step === 'details' && s === 'payment' && info.email) emailService.dispatch({ kind: 'booking_started', to: 'admin@apexbookings.local', subject: 'New Booking Started', data: { Customer: info.name, Email: info.email, Event: data.hero?.title || 'Event', Package: tier.name, Seat: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD', Country: locale.country, Currency: locale.currency, Reference: bookingId, Time: new Date().toLocaleString() }, deepLink: `${window.location.origin}/admin/bookings` })
+    if (!previewOnly && step === 'details' && s === 'payment' && info.email && eventId) void emailService.dispatchAdmin(eventId, { kind: 'booking_started', subject: 'New Booking Started', data: { Customer: info.name, Email: info.email, Event: data.hero?.title || 'Event', Package: tier.name, Seat: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD', Country: locale.country, Currency: locale.currency, Reference: bookingId, Time: new Date().toLocaleString() }, deepLink: `${window.location.origin}/admin/bookings` }).catch(error => showSeatMsg(error instanceof Error ? error.message : 'The booking notification could not be sent.'))
     contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
     setTimeout(() => setStep(s), 50)
   }
 
   // Load session
   useEffect(() => {
-    const s = sessionPersistence.load(data.hero?.title || 'event')
-    if (s) {
+    if (previewOnly) return
+    const persistenceId = eventId ?? data.hero?.title ?? 'event'
+    let active = true
+    void sessionPersistence.loadRemote(persistenceId).then(s => {
+      if (active && s) {
       if (s.step !== 'done' && s.step !== 'declined') {
         setStep(s.step as BStep)
         setSelectedSeat(s.selectedSeat)
@@ -720,16 +733,19 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
         if (s.ticketId) setTicketId(s.ticketId)
         if (s.bankTransferRequestId) setBankRequestId(s.bankTransferRequestId)
       }
-    }
-  }, [data.hero?.title])
+      }
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [data.hero?.title, eventId, previewOnly])
 
   // Save session
   useEffect(() => {
+    if (previewOnly) return
     if (step === 'done' || step === 'declined') {
-      sessionPersistence.clear(data.hero?.title || 'event')
+      sessionPersistence.clear(eventId ?? data.hero?.title ?? 'event')
     } else {
       sessionPersistence.save({
-        eventId: data.hero?.title || 'event',
+        eventId: eventId ?? data.hero?.title ?? 'event',
         step,
         selectedSeat,
         info,
@@ -740,7 +756,7 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
         bankTransferRequestId: bankRequestId
       })
     }
-  }, [step, selectedSeat, info, payMethod, selectedCoin, reviewRecordId, ticketId, bankRequestId, data.hero?.title])
+  }, [step, selectedSeat, info, payMethod, selectedCoin, reviewRecordId, ticketId, bankRequestId, data.hero?.title, eventId, previewOnly])
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape' && step !== 'done' && step !== 'declined' && step !== 'bank_waiting') onClose() }
@@ -758,55 +774,70 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
 
   // Polling for payment approval
   useEffect(() => {
+    if (previewOnly) return
     if (step !== 'waiting' || !reviewRecordId || !ticketId) return
-    const id = setInterval(() => {
-      const rec = paymentReviewStore.list().find(r => r.id === reviewRecordId)
-      if (rec?.status === 'approved') {
-        ticketStore.approve(ticketId)
-        setStep('done')
-      } else if (rec?.status === 'rejected') {
-        ticketStore.decline(ticketId, rec.notes)
-        setDeclineReason(rec.notes)
-        setStep('declined')
+    let active = true
+    const check = async () => {
+      try {
+        const ticket = await ticketStore.findRemote(ticketId)
+        if (!active || !ticket) return
+        ticketStore.acceptRemote(ticket)
+        if (ticket.status === 'approved') setStep('done')
+        if (ticket.status === 'declined') {
+          setDeclineReason(ticket.declineReason ?? 'The payment could not be approved.')
+          setStep('declined')
+        }
+      } catch {
+        // A transient polling failure is retried on the next interval.
       }
-    }, 3000)
-    return () => clearInterval(id)
-  }, [step, reviewRecordId, ticketId])
+    }
+    void check()
+    const id = setInterval(() => void check(), 3000)
+    return () => { active = false; clearInterval(id) }
+  }, [step, reviewRecordId, ticketId, previewOnly])
 
   useEffect(() => {
-    const request = bankTransferStore.find(bankRequestId)
-    if (request?.status === 'bank_details_ready' || request?.status === 'transfer_window_active' || request?.status === 'payment_proof_submitted' || request?.status === 'awaiting_approval') setStep('bank_details')
-  }, [bankRequestId])
+    if (previewOnly) return
+    if (!bankRequestId) return
+    let active = true
+    const check = async () => {
+      try {
+        const request = await bankTransferStore.refreshPublic(bankRequestId)
+        if (active && (request?.status === 'bank_details_ready' || request?.status === 'transfer_window_active' || request?.status === 'payment_proof_submitted' || request?.status === 'awaiting_approval')) setStep('bank_details')
+      } catch {
+        // A transient polling failure is retried automatically.
+      }
+    }
+    void check()
+    const timer = setInterval(() => void check(), 3000)
+    return () => { active = false; clearInterval(timer) }
+  }, [bankRequestId, previewOnly])
 
   const handleProofUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      setProofFiles(prev => [...prev, ...Array.from(e.target.files!)])
-      if (bankRequestId) bankTransferStore.update(bankRequestId, { status: 'payment_proof_submitted' })
-      emailService.dispatch({ kind: 'payment_proof_submitted', to: 'admin@apexbookings.local', subject: 'Payment Proof Submitted', data: { Customer: info.name || 'Guest', Event: data.hero?.title || 'Event', Package: tier.name, Seat: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD', Amount: formatPrice(total), Method: payMethod ?? 'Payment' }, deepLink: `${window.location.origin}/admin/payments` })
+      const selectedFiles = Array.from(e.target.files)
+      setProofFiles(prev => [...prev, ...selectedFiles])
+      if (!previewOnly && bankRequestId && reviewRecordId) {
+        setProcessing(true)
+        void uploadPaymentProofs(reviewRecordId, selectedFiles, bankRequestId)
+          .then(() => bankTransferStore.acceptRemote({ ...bankTransferStore.find(bankRequestId)!, status: 'payment_proof_submitted' }))
+          .catch(error => showSeatMsg(error instanceof Error ? error.message : 'Payment proof upload failed.'))
+          .finally(() => setProcessing(false))
+      }
     }
   }
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
+    if (previewOnly) { go('waiting'); return }
+    if (!eventId) {
+      showSeatMsg('Publish this event before testing a live payment.')
+      return
+    }
     setProcessing(true)
-    setTimeout(() => {
-      setProcessing(false)
-      
-      const record = paymentReviewStore.create({
-        eventId: data.hero?.title || 'event',
-        eventName: data.hero?.title || 'Event',
-        customer: info.name,
-        email: info.email,
-        method: payMethod!,
-        seatLabel: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD',
-        packageName: tier.name,
-        amount: total,
-        proofUrls: proofFiles.map(f => URL.createObjectURL(f)),
-        notes: ''
-      })
-      
-      const ticket = ticketStore.create({
+    try {
+      const checkout = await createPublicCheckout({
+        eventId,
         bookingReference: bookingId,
-        eventId: data.hero?.title || 'event',
         eventName: data.hero?.title || 'Event',
         eventBanner: data.hero?.images?.[0] || '',
         eventDate: data.hero?.date || '',
@@ -815,40 +846,72 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
         eventHost: data.hero?.tour?.replace('Hosted by ', '') || data.hero?.title || '',
         customerName: info.name,
         customerEmail: info.email,
+        country: locale.country,
+        currency: locale.currency,
         packageName: tier.name,
         packageAccent: tier.accent,
         seatLabel: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD',
         benefits: tier.benefits || [],
         amount: total,
         paymentMethod: payMethod!,
-        status: 'pending'
+        proofUrls: [],
       })
-      
-      setReviewRecordId(record.id)
-      setTicketId(ticket.id)
-      
+      await uploadPaymentProofs(checkout.payment.id, proofFiles)
+      paymentReviewStore.acceptRemote(checkout.payment)
+      ticketStore.acceptRemote(checkout.ticket)
+      setReviewRecordId(checkout.payment.id)
+      setTicketId(checkout.ticket.id)
       go('waiting')
-    }, 1800)
+    } catch (error) {
+      showSeatMsg(error instanceof Error ? error.message : 'Payment submission failed. Please retry.')
+    } finally {
+      setProcessing(false)
+    }
   }
 
   const bankRequest = bankTransferStore.find(bankRequestId)
-  const createBankTransferRequest = () => {
-    const request = bankTransferStore.create({
-      bookingId,
-      eventId: eventId ?? data.hero?.title ?? 'event',
-      eventName: data.hero?.title || 'Event',
-      customerName: info.name,
-      customerEmail: info.email,
-      country: locale.country,
-      currency: locale.currency,
-      packageName: tier.name,
-      seatLabel: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD',
-      totalAmount: total,
-    })
-    setBankRequestId(request.id)
-    emailService.dispatch({ kind: 'bank_transfer_requested', to: 'admin@apexbookings.local', subject: 'New Bank Transfer Request', data: { Customer: info.name, Country: locale.country, Currency: locale.currency, Booking: bookingId, Amount: formatPrice(total) }, deepLink: `${window.location.origin}/admin/payments` })
-    setShowBankConfirmation(false)
-    go('bank_waiting')
+  const createBankTransferRequest = async () => {
+    if (previewOnly) { setStep('bank_details'); return }
+    if (!eventId) {
+      showSeatMsg('Publish this event before testing a bank transfer.')
+      return
+    }
+    setProcessing(true)
+    try {
+      const result = await createPublicBankTransfer({
+        eventId,
+        bookingReference: bookingId,
+        eventName: data.hero?.title || 'Event',
+        eventBanner: data.hero?.images?.[0] || '',
+        eventDate: data.hero?.date || '',
+        eventTime: data.hero?.show || '8:00 PM',
+        eventVenue: data.hero?.venue || '',
+        eventHost: data.hero?.tour?.replace('Hosted by ', '') || data.hero?.title || '',
+        customerName: info.name,
+        customerEmail: info.email,
+        country: locale.country,
+        currency: locale.currency,
+        packageName: tier.name,
+        packageAccent: tier.accent,
+        seatLabel: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD',
+        benefits: tier.benefits || [],
+        amount: total,
+        paymentMethod: 'bank_transfer',
+        proofUrls: [],
+      })
+      bankTransferStore.acceptRemote(result.request)
+      paymentReviewStore.acceptRemote(result.payment)
+      ticketStore.acceptRemote(result.ticket)
+      setBankRequestId(result.request.id)
+      setReviewRecordId(result.payment.id)
+      setTicketId(result.ticket.id)
+      setShowBankConfirmation(false)
+      go('bank_waiting')
+    } catch (error) {
+      showSeatMsg(error instanceof Error ? error.message : 'Bank transfer request failed. Please retry.')
+    } finally {
+      setProcessing(false)
+    }
   }
 
   const Summary = ({ glowing = false }: { glowing?: boolean }) => (
@@ -859,12 +922,12 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
         ? `0 0 24px -6px ${tier.accent}50, inset 0 0 12px -6px ${tier.accent}30`
         : (t.isDark ? 'none' : t.cardShadow),
     }}>
-      <div className="text-sm md:text-xs font-mono uppercase tracking-wider mb-3" style={{ color: glowing ? checkoutAccent : t.textMuted }}>Order Summary</div>
+      <div className="text-sm md:text-xs font-mono uppercase tracking-wider mb-3" style={{ color: glowing ? checkoutAccent : t.textMuted }}>{tr.booking.orderSummary}</div>
       <div className="flex items-center gap-3 mb-3 pb-3 border-b" style={{ borderColor: t.border }}>
         <div className="w-9 h-9 rounded-xl flex items-center justify-center text-lg" style={{ background: `${checkoutAccent}12` }}>{tier.icon}</div>
         <div>
-          <div className="text-base md:text-sm font-bold" style={{ color: t.text }}>Drake — MSG</div>
-          <div className="text-sm md:text-xs" style={{ color: t.textSub }}>Sep 20, 2025 · 8:00 PM</div>
+          <div className="text-base md:text-sm font-bold" style={{ color: t.text }}>{data.hero?.title}</div>
+          <div className="text-sm md:text-xs" style={{ color: t.textSub }}>{data.hero?.date} · {data.hero?.show}</div>
         </div>
       </div>
       <div className="space-y-1.5 text-base md:text-sm">
@@ -916,8 +979,8 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
   const StepDetails = () => (
     <div className="flex flex-col lg:flex-row gap-6">
       <div className="flex-1 space-y-4">
-        <div className="text-base font-semibold uppercase tracking-wider mb-2" style={{ color: t.text, textShadow: t.isDark ? '0 2px 8px rgba(0,0,0,0.6)' : '0 1px 4px rgba(0,0,0,0.1)' }}>Your Information</div>
-        {[['Full Name', 'name', 'John Doe', 'text'], ['Email Address', 'email', 'john@example.com', 'email']].map(([label, key, placeholder, type]) => (
+        <div className="text-base font-semibold uppercase tracking-wider mb-2" style={{ color: t.text, textShadow: t.isDark ? '0 2px 8px rgba(0,0,0,0.6)' : '0 1px 4px rgba(0,0,0,0.1)' }}>{tr.booking.yourDetails}</div>
+        {[[tr.booking.fullName, 'name', tr.booking.namePlaceholder, 'text'], [tr.booking.email, 'email', tr.booking.emailPlaceholder, 'email']].map(([label, key, placeholder, type]) => (
           <div key={key as string}>
             <label className="text-sm md:text-xs font-mono uppercase tracking-wider block mb-2" style={{ color: t.textMuted }}>{label}</label>
             <input type={type as string} placeholder={placeholder as string} value={(info as any)[key as string]}
@@ -960,7 +1023,7 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
         className="text-xs hover:underline transition-all inline-flex items-center gap-1"
         style={{ color: checkoutAccent }}
       >
-        <span>Need help?</span>
+        <span>{tr.booking.needHelp}</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3 h-3"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
       </button>
     )
@@ -1063,7 +1126,7 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
         {/* ── Payment method selector ── */}
         {!payMethod && (
           <div style={{ animation: 'fade-in-up 0.25s ease' }}>
-            <div className="text-xs font-mono uppercase tracking-widest mb-3" style={{ color: t.textMuted }}>Select Payment Method</div>
+            <div className="text-xs font-mono uppercase tracking-widest mb-3" style={{ color: t.textMuted }}>{tr.booking.choosePayment}</div>
             <div className="space-y-2.5">
               {enabledMethods.map(m => (
                 <PaymentMethodCard
@@ -1331,6 +1394,7 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
             </div>
           </div>
           <div className="relative p-6 text-left" style={{ background: t.isDark ? 'transparent' : t.card }}>
+            <img src="/apex-email-ticket-logo.png" alt="Apex Bookings" className="mb-5 h-12 w-auto rounded-lg bg-black object-cover object-center" />
             <div className="flex justify-between items-start mb-6">
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.customerName}</div>
@@ -1441,7 +1505,7 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
   return (
     <>
     <div className="fixed inset-0 z-[9998] flex items-end md:items-center justify-center p-0 md:p-4" style={{ background: 'rgba(0,0,0,0.88)', backdropFilter: 'blur(10px)' }}>
-      <div className="w-full md:max-w-5xl flex flex-col rounded-t-3xl md:rounded-3xl"
+      <div className="ios-modal-scroll w-full md:max-w-5xl flex flex-col rounded-t-3xl md:rounded-3xl"
         style={{ background: t.isDark ? '#111113' : t.bg, height: '95dvh', maxHeight: '95dvh', overflow: 'hidden', animation: 'modal-in 0.35s cubic-bezier(0.16,1,0.3,1)', border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.08)' : t.border}`, boxShadow: t.isDark ? '0 40px 80px rgba(0,0,0,0.6)' : '0 24px 60px rgba(23,26,31,0.14)' }}>
         <div className="flex items-center justify-between px-6 py-4 border-b shrink-0" style={{ borderColor: t.border, background: t.isDark ? '#111113' : '#FFFFFF' }}>
           <div className="flex items-center gap-3">
@@ -1500,11 +1564,11 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
         </div>
         
         {/* Admin Preview Debug Panel */}
-        {data && useBooking().mode !== 'published' && (
+        {data && mode !== 'published' && (
           <div className="absolute top-20 right-6 flex items-center gap-2 p-2 rounded-xl backdrop-blur-md shadow-2xl z-50 border" style={{ background: 'rgba(0,0,0,0.72)', borderColor: 'rgba(255,255,255,0.12)' }}>
             <span className="text-[10px] font-mono text-zinc-400 px-2 uppercase">Preview</span>
             <button onClick={() => go('waiting')} className="px-2 py-1 text-[10px] rounded hover:bg-white/10 text-zinc-300">Wait</button>
-            {bankRequestId && <button onClick={() => { bankTransferStore.markReady(bankRequestId); go('bank_details') }} className="px-2 py-1 text-[10px] rounded hover:bg-white/10 text-sky-300">Bank details</button>}
+            <button onClick={() => { if (!previewOnly && bankRequestId) bankTransferStore.markReady(bankRequestId); go('bank_details') }} className="px-2 py-1 text-[10px] rounded hover:bg-white/10 text-sky-300">Bank details</button>
             <button onClick={() => go('done')} className="px-2 py-1 text-[10px] rounded hover:bg-white/10 text-zinc-300">Done</button>
             <button onClick={() => { setDeclineReason('Simulated network error'); go('declined') }} className="px-2 py-1 text-[10px] rounded hover:bg-white/10 text-red-400">Decline</button>
           </div>
@@ -1550,13 +1614,29 @@ function BookingModal({ tier, onClose }: { tier: Omit<BookingPackage, 'id'> & { 
 // ─── Ticket Section ───────────────────────────────────────────────────────────
 function TicketSection() {
   const { t } = useTheme()
-  const { translations: tr } = useLocale()
-  const { data, mode } = useBooking()
+  const { translations: tr, formatPrice } = useLocale()
+  const { data, mode, previewState, simulationOnly } = useBooking()
   const [modalTier, setModalTier] = useState<number | null>(null)
   const tiers = data.packages.map((tier, id) => ({ ...tier, id }))
   const prices = tiers.map(tier => tier.price)
   const lowestPrice = Math.min(...prices)
   const highestPrice = Math.max(...prices)
+
+  const previewStep: BStep = previewState === 'checkout' ? 'details'
+    : previewState === 'payment-pending' ? 'payment'
+      : previewState === 'awaiting-bank-details' ? 'bank_waiting'
+        : previewState === 'payment-submitted' ? 'waiting'
+          : previewState === 'payment-approved' || previewState === 'ticket-confirmation' ? 'done'
+            : previewState === 'payment-declined' ? 'declined' : 'seats'
+
+  useEffect(() => {
+    if (mode !== 'editor') return
+    if (previewState === 'page') setModalTier(null)
+    else if (previewState === 'packages') {
+      setModalTier(null)
+      window.setTimeout(() => document.getElementById('tickets')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+    } else setModalTier(0)
+  }, [mode, previewState])
 
   if (!data.visibility.tickets && mode !== 'editor') return null
   return (
@@ -1588,10 +1668,10 @@ function TicketSection() {
                 </div>
               </div>
               <div className="mb-2 inline-flex items-center justify-center rounded-2xl px-4 py-2.5 shadow-[0_8px_20px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.65)]" style={{ background: t.isDark ? 'rgba(255,255,255,0.06)' : t.inputBg, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.12)' : t.border}` }}>
-                <span className="font-serif font-bold" style={{ color: visualAccent, fontSize: isPremium ? '2.9rem' : isElevated ? '2.65rem' : '2.4rem', textShadow: t.isDark ? 'none' : '0 1px 0 rgba(255,255,255,0.7)' }}>${tier.price}</span>
-                <span className="text-sm ml-1" style={{ color: t.textMuted }}>/ticket</span>
+                <span className="font-serif font-bold" style={{ color: visualAccent, fontSize: isPremium ? '2.9rem' : isElevated ? '2.65rem' : '2.4rem', textShadow: t.isDark ? 'none' : '0 1px 0 rgba(255,255,255,0.7)' }}>{formatPrice(tier.price)}</span>
+                <span className="text-sm ml-1" style={{ color: t.textMuted }}>{tr.tickets.perTicket}</span>
               </div>
-              <div className="text-xs font-mono mb-4 text-center" style={{ color: tier.seats < 20 ? '#EF4444' : t.textMuted }}>{tier.seats} seats remaining</div>
+              <div className="text-xs font-mono mb-4 text-center" style={{ color: tier.seats < 20 ? '#EF4444' : t.textMuted }}>{tier.seats} {tr.tickets.seatsRemaining}</div>
               <div className="w-full h-1.5 rounded-full mb-6 overflow-hidden" style={{ background: t.isDark ? t.border : '#F3F4F6' }}>
                 <div className="h-full rounded-full" style={{ width: `${100 - (tier.seats / 400) * 100}%`, background: visualAccent }} />
               </div>
@@ -1609,7 +1689,7 @@ function TicketSection() {
           })}
         </div>
       </div>
-      {modalTier !== null && <BookingModal tier={tiers[modalTier]} onClose={() => setModalTier(null)} />}
+      {modalTier !== null && <BookingModal key={`${modalTier}-${previewState}`} tier={tiers[modalTier]} initialStep={previewStep} previewOnly={mode === 'editor' || simulationOnly} onClose={() => setModalTier(null)} />}
     </section></EditableTarget>
   )
 }
@@ -1813,12 +1893,27 @@ function FloatingChatButton({ eventId = 'default', isPreview = false, mode = 'pr
 function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPageData; target: EditorTarget | null; onApply: (data: BookingPageData) => void; close: () => void }) {
   const [draft, setDraft] = useState<BookingPageData>(() => structuredClone(data))
   const [libraryOpen, setLibraryOpen] = useState(false)
-  useEffect(() => { setDraft(structuredClone(data)); setLibraryOpen(false) }, [data, target])
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  useEffect(() => { setDraft(structuredClone(data)); setLibraryOpen(false); setUploadProgress(0); setUploadError(null) }, [data, target])
   if (!target) return null
   const mutate = (change: (next: BookingPageData) => void) => setDraft(current => { const next = structuredClone(current); change(next); return next })
   const input = (label: string, value: string, set: (value: string) => void, multiline = false) => <label className="block"><span className="text-[11px] text-zinc-400">{label}</span>{multiline ? <textarea value={value} onChange={event => set(event.target.value)} className="mt-1.5 h-24 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" /> : <input value={value} onChange={event => set(event.target.value)} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />}</label>
-  const applyImage = (url: string) => mutate(next => { if (target.section === 'hero') next.hero.images[0] = url; if (target.section === 'about') next.about.image = url; if (target.section === 'venue') next.venue.image = url; if (target.section === 'cta') next.cta.image = url })
-  const upload = async (file?: File) => { if (!file) return; const asset = await mediaLibraryStore.upload(file, 'Event Banners'); applyImage(asset.url) }
+  const applyImage = (url: string) => mutate(next => { if (target.section === 'hero') next.hero.images[0] = url; if (target.section === 'about') next.about.image = url; if (target.section === 'venue') next.venue.image = url; if (target.section === 'cta') next.cta.image = url; if (target.section === 'testimonials' && target.index !== undefined) next.testimonials[target.index].avatar = url })
+  const upload = async (file?: File) => {
+    if (!file) return
+    setUploadError(null)
+    setUploadProgress(20)
+    try {
+      const asset = await mediaLibraryStore.upload(file, target.section === 'testimonials' ? 'Artist Photos' : 'Event Banners')
+      setUploadProgress(90)
+      applyImage(asset.url)
+      setUploadProgress(100)
+    } catch (error) {
+      setUploadProgress(0)
+      setUploadError(error instanceof Error ? error.message : 'Image upload failed.')
+    }
+  }
   const duplicate = () => mutate(next => {
     if (target.section === 'timeline' && target.index !== undefined) next.timeline.splice(target.index + 1, 0, { ...next.timeline[target.index], id: crypto.randomUUID(), title: `${next.timeline[target.index].title} (Copy)` })
     if (target.section === 'tickets' && target.index !== undefined) next.packages.splice(target.index + 1, 0, { ...next.packages[target.index], id: crypto.randomUUID(), name: `${next.packages[target.index].name} (Copy)` })
@@ -1839,6 +1934,7 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
     if (target.section === 'footer') next.footer = structuredClone(original.footer)
   })
   const imageControls = <><label className="mt-4 block rounded-xl border border-dashed border-white/20 p-3 text-center text-xs text-zinc-300">Upload from device<input hidden type="file" accept="image/*" onChange={event => void upload(event.target.files?.[0])} /></label><button type="button" onClick={() => setLibraryOpen(value => !value)} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2 text-xs text-emerald-300">Choose from media library</button>{libraryOpen && <div className="mt-2 grid max-h-40 grid-cols-3 gap-2 overflow-y-auto">{mediaLibraryStore.listEventAssets().filter(asset => asset.mimeType.startsWith('image/')).map(asset => <button key={asset.id} type="button" onClick={() => applyImage(asset.url)} className="overflow-hidden rounded-lg border border-white/10"><img src={asset.url} className="aspect-square w-full object-cover" /></button>)}</div>}<button type="button" onClick={() => applyImage('')} className="mt-2 text-xs text-red-300">Delete image</button></>
+  const reviewImageControls = target.section === 'testimonials' && target.index !== undefined ? <div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] uppercase tracking-wider text-zinc-400">Current customer image</div>{draft.testimonials[target.index].avatar ? <img src={draft.testimonials[target.index].avatar} alt={draft.testimonials[target.index].name} className="mt-3 aspect-square w-28 rounded-2xl object-cover"/> : <div className="mt-3 grid aspect-square w-28 place-items-center rounded-2xl bg-white/5 text-xs text-zinc-500">No image</div>}<div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => applyImage(data.testimonials[target.index!]?.avatar ?? '')} className="rounded-lg bg-white/5 px-3 py-2 text-xs">Keep Current Image</button><label className="cursor-pointer rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Replace Image<input hidden type="file" accept="image/*" onChange={event => void upload(event.target.files?.[0])}/></label><button type="button" onClick={() => applyImage('')} className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300">Remove Image</button></div>{uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }}/></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}{uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Image uploaded successfully.</div>}{uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}</div> : null
   const sectionLabel: Record<BookingSectionId, string> = { hero: 'Hero', about: 'About', venue: 'Venue', timeline: 'Timeline', tickets: 'Package', testimonials: 'Customer review', faq: 'FAQ', cta: 'Call to action', footer: 'Footer' }
   const headingInput = (key: string, defaultVal: string) => input('Section Heading', draft.sectionHeadings?.[key] ?? defaultVal, value => mutate(next => { if (!next.sectionHeadings) next.sectionHeadings = {}; next.sectionHeadings[key] = value }))
   const fields = () => {
@@ -1906,7 +2002,7 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
     }
     if (target.section === 'testimonials') { 
       if (target.index !== undefined) {
-        const item = draft.testimonials[target.index]; return <>{input('Customer name', item.name, value => mutate(next => { next.testimonials[target.index!].name = value }))}{input('Role', item.role, value => mutate(next => { next.testimonials[target.index!].role = value }))}{input('Review', item.text, value => mutate(next => { next.testimonials[target.index!].text = value }), true)}{input('Rating (1–5)', String(item.rating), value => mutate(next => { next.testimonials[target.index!].rating = Math.max(1, Math.min(5, Number(value) || 5)) }))}{input('Image URL', item.avatar, value => mutate(next => { next.testimonials[target.index!].avatar = value }))}</> 
+        const item = draft.testimonials[target.index]; return <>{reviewImageControls}{input('Customer name', item.name, value => mutate(next => { next.testimonials[target.index!].name = value }))}{input('Role', item.role, value => mutate(next => { next.testimonials[target.index!].role = value }))}{input('Review', item.text, value => mutate(next => { next.testimonials[target.index!].text = value }), true)}{input('Rating (1–5)', String(item.rating), value => mutate(next => { next.testimonials[target.index!].rating = Math.max(1, Math.min(5, Number(value) || 5)) }))}</>
       }
       return <>{headingInput('testimonials', 'From Our Attendees')}</>
     }
@@ -1925,12 +2021,38 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
 }
 
 // ─── Booking Site ─────────────────────────────────────────────────────────────
-export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, payments: sourcePayments, eventId, onSave, onPublish, onExit }: { onAdminClick: () => void; mode?: BookingMode; data?: BookingPageData; payments?: EventPaymentSettings; eventId?: string; onSave?: (data: BookingPageData) => void; onPublish?: (data: BookingPageData) => void; onExit?: () => void }) {
+type PublicationReview = { pageName: string; eventDate: string; venue: string; currency: string; language: string; publicUrl: string }
+
+export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, payments: sourcePayments, eventId, eventCountryCode, eventCurrencyCode, eventLanguageCode, eventTitle, publicationReview, socialProofOverride, simulationOnly = false, onSocialProofChange, onSave, onPublish, onExit }: {
+  onAdminClick: () => void
+  mode?: BookingMode
+  data?: BookingPageData
+  payments?: EventPaymentSettings
+  eventId?: string
+  eventCountryCode?: string
+  eventCurrencyCode?: string
+  eventLanguageCode?: string
+  eventTitle?: string
+  publicationReview?: PublicationReview
+  socialProofOverride?: EventSocialProofOverride
+  simulationOnly?: boolean
+  onSocialProofChange?: (settings: EventSocialProofOverride) => void | Promise<void>
+  onSave?: (data: BookingPageData) => void | Promise<void>
+  onPublish?: (data: BookingPageData) => Promise<string>
+  onExit?: () => void
+}) {
   const [isDark, setIsDark] = useState(true)
   const t = isDark ? DARK : LIGHT
   const toggle = useCallback(() => setIsDark((d) => !d), [])
   const [data, setData] = useState<BookingPageData>(() => structuredClone(sourceData ?? masterBookingTemplateStore.load()))
   const [selected, setSelected] = useState<EditorTarget | null>(null)
+  const [previewState, setPreviewState] = useState<StudioPreviewState>('page')
+  const [publicationOpen, setPublicationOpen] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  const [publishedUrl, setPublishedUrl] = useState<string | null>(null)
+  const [publicationError, setPublicationError] = useState<string | null>(null)
+  const [socialProofOpen, setSocialProofOpen] = useState(false)
+  const [eventSocialProof, setEventSocialProof] = useState<EventSocialProofOverride>(() => socialProofOverride ?? {})
   useReveal()
 
   useEffect(() => {
@@ -1939,13 +2061,37 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   }, [t])
 
   useEffect(() => { if (sourceData) setData(structuredClone(sourceData)) }, [sourceData])
+  useEffect(() => setEventSocialProof(socialProofOverride ?? {}), [socialProofOverride])
+  useEffect(() => {
+    if (!publicationOpen && !socialProofOpen) return
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = previous }
+  }, [publicationOpen, socialProofOpen])
+
+  const missingPublicationFields = publicationReview
+    ? ([['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language]] as const).filter(([, value]) => !value?.trim()).map(([label]) => label)
+    : []
+
+  const confirmPublish = async () => {
+    if (!onPublish || missingPublicationFields.length) return
+    setPublishing(true)
+    setPublicationError(null)
+    try {
+      setPublishedUrl(await onPublish(data))
+    } catch (error) {
+      setPublicationError(error instanceof Error ? error.message : 'The page could not be published.')
+    } finally {
+      setPublishing(false)
+    }
+  }
 
   return (
-    <LocaleProvider>
-    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId }}>
+    <LocaleProvider eventCountryCode={eventCountryCode} eventCurrencyCode={eventCurrencyCode} eventLanguageCode={eventLanguageCode}>
+    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly }}>
       <SocialProofOverlayProvider>
-      <div style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100vh' }}>
-        {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl backdrop-blur sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">Booking page editor</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><button type="button" onClick={() => onSave?.(data)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => onPublish(data)} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={onExit} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
+      <div className="ios-stable-scroll" style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
+        {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}<button type="button" onClick={() => void onSave?.(data)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { setPublishedUrl(null); setPublicationError(null); setPublicationOpen(true) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={onExit} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
         <div>
           <ScrollProgress />
           <Nav onToggleTheme={toggle} onAdminClick={onAdminClick} />
@@ -1958,11 +2104,13 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
           <FAQ />
           <CTASection />
           <Footer />
-          <FloatingChatButton eventId={data?.hero?.title ?? 'default'} isPreview={mode === 'preview'} mode={mode} />
-          {mode !== 'editor' && <PublicConversionEnhancements packages={data.packages as any} seats={[]} />}
+          <FloatingChatButton eventId={eventId ?? data?.hero?.title ?? 'default'} isPreview={mode === 'preview'} mode={mode} />
+          {mode !== 'editor' && <PublicConversionEnhancements packages={data.packages as any} seats={[]} eventId={eventId} isPreview={mode === 'preview'} />}
           {mode !== 'published' && <PublicOnboardingGuide context={mode === 'editor' ? 'booking-page editor' : 'booking preview'} />}
         </div>
         {mode === 'editor' && <BookingEditorPanel data={data} target={selected} onApply={setData} close={() => setSelected(null)} />}
+        {socialProofOpen && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#111113] p-6 text-white"><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Event override</p><h2 className="mt-2 font-serif text-2xl font-bold">Social proof for this event</h2><p className="mt-1 text-sm text-zinc-500">Only entered values override the defaults in Admin Settings.</p><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Enabled<input type="checkbox" checked={eventSocialProof.enabled ?? true} onChange={event => setEventSocialProof(current => ({ ...current, enabled: event.target.checked }))}/></label><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Show on mobile<input type="checkbox" checked={eventSocialProof.mobileVisible ?? true} onChange={event => setEventSocialProof(current => ({ ...current, mobileVisible: event.target.checked }))}/></label><label className="sm:col-span-2 text-xs text-zinc-400">Popup message<input value={eventSocialProof.message ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, message: event.target.value }))} placeholder="Use global default" className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white"/></label><label className="text-xs text-zinc-400">Duration<input type="number" value={eventSocialProof.duration ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, duration: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label><label className="text-xs text-zinc-400">Delay<input type="number" value={eventSocialProof.delay ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, delay: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label></div><div className="mt-6 flex justify-end gap-2"><button onClick={() => setSocialProofOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button onClick={() => { void onSocialProofChange?.(eventSocialProof); setSocialProofOpen(false) }} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save event override</button></div></section></div>}
+        {publicationOpen && publicationReview && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111113] p-6 text-white">{publishedUrl ? <div className="text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-400 text-xl font-bold text-zinc-950">✓</div><h2 className="mt-4 font-serif text-2xl font-bold">Page published successfully</h2><p className="mt-2 break-all text-sm text-zinc-400">{publishedUrl}</p><div className="mt-6 flex flex-wrap justify-center gap-2"><button onClick={() => void navigator.clipboard.writeText(publishedUrl)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Copy Link</button><a href={publishedUrl} target="_blank" rel="noreferrer" className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Open Published Page</a><button onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Close</button></div></div> : <><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Publication review</p><h2 className="mt-2 font-serif text-2xl font-bold">Review before publishing</h2><div className="mt-5 grid gap-3 sm:grid-cols-2">{[['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language], ['Public URL', publicationReview.publicUrl]].map(([label, value]) => <div key={label} className="rounded-xl bg-white/[.04] p-3"><div className="text-[10px] uppercase text-zinc-500">{label}</div><div className="mt-1 break-all text-sm font-semibold">{value || 'Missing'}</div></div>)}</div>{missingPublicationFields.length > 0 && <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">Missing required information: {missingPublicationFields.join(', ')}</div>}{publicationError && <div className="mt-4 rounded-xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-200">{publicationError}</div>}<div className="mt-6 flex flex-wrap justify-end gap-2"><button disabled={publishing} onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={publishing} onClick={() => window.open(eventId ? `/admin/events/${eventId}/preview` : '/demo', '_blank', 'noopener,noreferrer')} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Preview Page</button><button disabled={publishing || missingPublicationFields.length > 0} onClick={() => void confirmPublish()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-40">{publishing ? 'Publishing…' : 'Confirm and Publish'}</button></div></>}</section></div>}
       </div>
       </SocialProofOverlayProvider>
     </BookingCtx.Provider></ThemeCtx.Provider>
@@ -1973,7 +2121,70 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
 // ─── App Root ─────────────────────────────────────────────────────────────────
 const PAGE_BY_PATH = { '/admin': 'dashboard', '/admin/events': 'events', '/admin/bookings': 'bookings', '/admin/payments': 'payments', '/admin/media': 'media', '/admin/chat': 'chat', '/admin/notifications': 'notifications', '/admin/settings': 'settings', '/admin/documentation': 'documentation' } as const
 function AdminRoutePage() { const navigate = useNavigate(); const location = useLocation(); const { signOut } = useAuth(); const page = PAGE_BY_PATH[location.pathname as keyof typeof PAGE_BY_PATH] ?? 'dashboard'; return <Suspense fallback={<div className="grid min-h-screen place-items-center bg-zinc-950 text-sm text-zinc-400">Loading dashboard…</div>}><AdminDashboard initialPage={page} onNavigate={(next) => navigate(ROUTES.admin[next])} onExitAdmin={() => { void signOut(); navigate('/') }} /></Suspense> }
-function BookingEditorRoute() { const { id } = useParams(); const navigate = useNavigate(); const isTemplate = id === 'template'; const event = isTemplate ? undefined : adminEventStore.list().find(item => item.id === id); if (!isTemplate && !event) return <Navigate to={ROUTES.admin.events} replace />; const data = isTemplate ? masterBookingTemplateStore.load() : event?.bookingPage ?? createBookingPageData({ name: event?.title, venue: event?.venue, banners: event?.setup?.banners }); const save = (next: BookingPageData) => { if (isTemplate) masterBookingTemplateStore.save(next); else if (event) adminEventStore.save({ ...event, bookingPage: next }) }; const publish = (next: BookingPageData) => { if (!event) return; const slug = event.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'event'; adminEventStore.save({ ...event, bookingPage: next, status: 'published', publication: { ...event.publication, slug, shortCode: event.publication?.shortCode ?? `ABX${Math.random().toString(36).slice(2, 7).toUpperCase()}`, publishedAt: new Date().toISOString() } }); navigate(ROUTES.admin.events) }; return <BookingSite mode="editor" data={data} payments={event?.payments} eventId={event?.id} onAdminClick={() => navigate(ROUTES.admin.events)} onSave={save} onPublish={isTemplate ? undefined : publish} onExit={() => navigate(ROUTES.admin.events)} /> }
+function BookingEditorRoute() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const isTemplate = id === 'template'
+  const [event, setEvent] = useState<ReturnType<typeof adminEventStore.list>[number] | undefined>(() => isTemplate ? undefined : adminEventStore.list().find(item => item.id === id))
+
+  useEffect(() => adminEventStore.subscribe(() => {
+    if (isTemplate) return
+    const next = adminEventStore.list().find(item => item.id === id)
+    setEvent(next)
+    if (!next) navigate(ROUTES.admin.events, { replace: true })
+  }), [id, isTemplate, navigate])
+
+  if (!isTemplate && !event) return <Navigate to={ROUTES.admin.events} replace />
+  const data = isTemplate ? masterBookingTemplateStore.load() : event?.bookingPage ?? createBookingPageData({ name: event?.title, venue: event?.venue, banners: event?.setup?.banners })
+  const save = async (next: BookingPageData) => {
+    if (isTemplate) masterBookingTemplateStore.save(next)
+    else if (event) setEvent(await adminEventStore.saveAsync({ ...event, bookingPage: next }))
+  }
+  const publish = async (next: BookingPageData) => {
+    if (!event?.publication?.shortCode) throw new Error('This event does not have a reserved public link.')
+    const saved = await adminEventStore.saveAsync({
+      ...event,
+      bookingPage: next,
+      status: 'published',
+      publication: { ...event.publication, publishedAt: event.publication.publishedAt ?? new Date().toISOString() },
+    })
+    setEvent(saved)
+    return `${window.location.origin}/e/${saved.publication!.shortCode}`
+  }
+  return <BookingSite
+    mode="editor"
+    data={data}
+    payments={event?.payments}
+    eventId={event?.id}
+    eventTitle={isTemplate ? 'Default Booking Template' : event?.title}
+    eventCountryCode={event?.locale?.countryCode}
+    eventCurrencyCode={event?.locale?.currencyCode}
+    eventLanguageCode={event?.locale?.languageCode}
+    socialProofOverride={event?.socialProofOverride}
+    publicationReview={event ? {
+      pageName: event.title,
+      eventDate: event.date,
+      venue: event.venue,
+      currency: event.locale?.currencyCode ?? 'USD',
+      language: event.locale?.languageCode ?? 'en-US',
+      publicUrl: `${window.location.origin}/e/${event.publication?.shortCode ?? ''}`,
+    } : undefined}
+    onAdminClick={() => navigate(ROUTES.admin.events)}
+    onSave={save}
+    onSocialProofChange={event ? async settings => { setEvent(await adminEventStore.saveAsync({ ...event, socialProofOverride: settings })) } : undefined}
+    onPublish={isTemplate ? undefined : publish}
+    onExit={() => navigate(ROUTES.admin.events)}
+  />
+}
+function AdminEventPreviewRoute() {
+  const { id } = useParams()
+  const navigate = useNavigate()
+  const [event, setEvent] = useState(() => adminEventStore.list().find(item => item.id === id))
+  useEffect(() => adminEventStore.subscribe(() => setEvent(adminEventStore.list().find(item => item.id === id))), [id])
+  if (!event) return <Navigate to={ROUTES.admin.events} replace />
+  const data = event.bookingPage ?? createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
+  return <BookingSite mode="preview" data={data} payments={event.payments} eventId={event.id} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} simulationOnly onAdminClick={() => navigate(`/admin/events/${event.id}/edit`)} />
+}
 function PublicEventRoute({ short = false }: { short?: boolean }) {
   const params = useParams()
   const identifier = short ? params.code : params.slug
@@ -1989,6 +2200,7 @@ function PublicEventRoute({ short = false }: { short?: boolean }) {
   if (loading && !event) return <main className="grid min-h-screen place-items-center bg-[#09090B] text-zinc-400">Loading event…</main>
   if (!event || event.status !== 'published') return <Navigate to="/" replace />
   const data = event.bookingPage ?? createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
-  return <BookingSite mode="published" data={data} payments={event.payments} eventId={event.id} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} />
+  return <BookingSite mode="published" data={data} payments={event.payments} eventId={event.id} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} />
 }
-export default function App() { return <Routes><Route path="/" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/demo" element={<BookingSite mode="preview" data={masterBookingTemplateStore.load()} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} />} /><Route path="/events" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/events/:slug" element={<PublicEventRoute />} /><Route path="/e/:code" element={<PublicEventRoute short />} /><Route path="/booking" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/payment" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/confirmation" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/support" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path={ROUTES.adminLogin} element={<AdminLoginPage />} /><Route path={ROUTES.ticket} element={<TicketVerificationPage />} /><Route element={<ProtectedRoute />}><Route path="/admin/events/:id/edit" element={<BookingEditorRoute />} /><Route path="/admin/*" element={<AdminRoutePage />} /></Route><Route path="*" element={<Navigate to="/" replace />} /></Routes> }
+function DefaultPreviewRoute() { const [data, setData] = useState(() => masterBookingTemplateStore.load()); useEffect(() => { let active = true; void masterBookingTemplateStore.hydratePublic().then(next => { if (active) setData(next) }).catch(() => undefined); const unsubscribe = masterBookingTemplateStore.subscribe(() => setData(masterBookingTemplateStore.load())); return () => { active = false; unsubscribe() } }, []); return <BookingSite mode="preview" data={data} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} /> }
+export default function App() { return <Routes><Route path="/" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/demo" element={<DefaultPreviewRoute />} /><Route path="/events" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/events/:slug" element={<PublicEventRoute />} /><Route path="/e/:code" element={<PublicEventRoute short />} /><Route path="/booking" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/payment" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/confirmation" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/support" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path={ROUTES.adminLogin} element={<AdminLoginPage />} /><Route path={ROUTES.ticket} element={<TicketVerificationPage />} /><Route element={<ProtectedRoute />}><Route path="/admin/events/:id/edit" element={<BookingEditorRoute />} /><Route path="/admin/events/:id/preview" element={<AdminEventPreviewRoute />} /><Route path="/admin/*" element={<AdminRoutePage />} /></Route><Route path="*" element={<Navigate to="/" replace />} /></Routes> }

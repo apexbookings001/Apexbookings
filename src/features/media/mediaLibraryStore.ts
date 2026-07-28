@@ -70,59 +70,19 @@ export type LibraryAsset = {
   from?: 'customer' | 'admin' // for chat attachments — sender role
 }
 
+import { supabase } from '../../lib/supabase'
+import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
+import { getWorkspaceMembership, requireOrganizationId } from '../../services/supabase/workspace'
+
 // ─── Persistence ──────────────────────────────────────────────────────────────
-const KEY = 'apex.media-library'
+const cache = createProtectedMemoryStore<LibraryAsset[]>(() => [])
+const read = () => cache.get()
 
-const SEEDED: LibraryAsset[] = [
-  {
-    id: 'seed-stage',
-    name: 'concert-stage.jpg',
-    url: 'https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?w=1600&h=900&fit=crop&auto=format',
-    category: 'Event Banners',
-    mimeType: 'image/jpeg',
-    size: 0,
-    createdAt: new Date().toISOString(),
-    uploadedBy: 'Apex',
-    usageCount: 0,
-    eventIds: [],
-  },
-  {
-    id: 'seed-crowd',
-    name: 'concert-crowd.jpg',
-    url: 'https://images.unsplash.com/photo-1546707012-c46675f12716?w=1600&h=900&fit=crop&auto=format',
-    category: 'Gallery Images',
-    mimeType: 'image/jpeg',
-    size: 0,
-    createdAt: new Date().toISOString(),
-    uploadedBy: 'Apex',
-    usageCount: 0,
-    eventIds: [],
-  },
-  {
-    id: 'seed-artist',
-    name: 'artist-performance.jpg',
-    url: 'https://images.unsplash.com/photo-1501962679900-bea61483313b?w=900&h=600&fit=crop&auto=format',
-    category: 'Artist Photos',
-    mimeType: 'image/jpeg',
-    size: 0,
-    createdAt: new Date().toISOString(),
-    uploadedBy: 'Apex',
-    usageCount: 0,
-    eventIds: [],
-  },
-]
-
-function read(): LibraryAsset[] {
-  try {
-    const saved = localStorage.getItem(KEY)
-    return saved ? (JSON.parse(saved) as LibraryAsset[]) : SEEDED
-  } catch {
-    return SEEDED
-  }
-}
-
-function write(assets: LibraryAsset[]) {
-  localStorage.setItem(KEY, JSON.stringify(assets))
+function bucketForCategory(category: MediaCategory) {
+  if (isChatAssetCategory(category)) return 'chat-files'
+  if (category === 'Payment Proofs') return 'payment-proofs'
+  if (category === 'Ticket Assets') return 'ticket-assets'
+  return 'event-images'
 }
 
 function imageDimensions(url: string): Promise<{ width?: number; height?: number }> {
@@ -146,6 +106,41 @@ function chatCategoryFromMime(mimeType: string, from: 'customer' | 'admin' = 'cu
 // ─── Store ────────────────────────────────────────────────────────────────────
 export const mediaLibraryStore = {
   list: (): LibraryAsset[] => read(),
+  subscribe: cache.subscribe,
+  snapshot: cache.snapshot,
+
+  hydrate: async () => {
+    if (!supabase) throw new Error('Supabase is not configured.')
+    const client = supabase
+    try {
+      const organizationId = requireOrganizationId()
+      const { data, error } = await client.from('media').select('*').eq('organization_id', organizationId).is('deleted_at', null).eq('is_chat_media', false).order('created_at', { ascending: false })
+      if (error) throw error
+      const assets = await Promise.all((data ?? []).map(async row => {
+        const metadata = (row.metadata ?? {}) as Partial<LibraryAsset>
+        const signed = await client.storage.from(row.bucket).createSignedUrl(row.path, 24 * 60 * 60)
+        return {
+          id: row.id,
+          name: metadata.name ?? row.path.split('/').at(-1) ?? 'file',
+          url: signed.data?.signedUrl ?? '',
+          category: metadata.category ?? 'Other',
+          mimeType: row.mime_type ?? 'application/octet-stream',
+          size: Number(row.size_bytes ?? 0),
+          width: metadata.width,
+          height: metadata.height,
+          createdAt: row.created_at,
+          uploadedBy: metadata.uploadedBy ?? 'Admin',
+          usageCount: metadata.usageCount ?? 0,
+          eventIds: metadata.eventIds ?? [],
+        } as LibraryAsset
+      }))
+      cache.set(assets)
+      return assets
+    } catch (error) {
+      cache.fail(error)
+      throw error
+    }
+  },
 
   /** List only event assets (excludes all chat attachment categories) */
   listEventAssets: (): LibraryAsset[] =>
@@ -172,19 +167,23 @@ export const mediaLibraryStore = {
       throw new Error('Files must be 20 MB or smaller.')
     }
 
-    const url = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(String(reader.result))
-      reader.onerror = () => reject(reader.error)
-      reader.readAsDataURL(file)
-    })
-
-    const dimensions = file.type.startsWith('image/') ? await imageDimensions(url) : {}
+    if (!supabase) throw new Error('Supabase is not configured.')
+    const organizationId = requireOrganizationId()
+    const localUrl = URL.createObjectURL(file)
+    const dimensions = file.type.startsWith('image/') ? await imageDimensions(localUrl) : {}
+    URL.revokeObjectURL(localUrl)
+    const bucket = bucketForCategory(category)
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-').slice(-100)
+    const path = `${organizationId}/${crypto.randomUUID()}-${safeName}`
+    const upload = await supabase.storage.from(bucket).upload(path, file, { contentType: file.type, upsert: false })
+    if (upload.error) throw upload.error
+    const signed = await supabase.storage.from(bucket).createSignedUrl(path, 24 * 60 * 60)
+    if (signed.error) throw signed.error
 
     const asset: LibraryAsset = {
       id: crypto.randomUUID(),
       name: file.name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '-'),
-      url,
+      url: signed.data.signedUrl,
       category,
       mimeType: file.type || 'application/octet-stream',
       size: file.size,
@@ -195,7 +194,12 @@ export const mediaLibraryStore = {
       ...dimensions,
     }
 
-    write([asset, ...read()])
+    const insert = await supabase.from('media').insert({ id: asset.id, organization_id: organizationId, bucket, path, mime_type: asset.mimeType, size_bytes: asset.size, is_chat_media: isChatAssetCategory(category), metadata: { name: asset.name, category: asset.category, width: asset.width, height: asset.height, uploadedBy: asset.uploadedBy, usageCount: 0, eventIds: [] } })
+    if (insert.error) {
+      await supabase.storage.from(bucket).remove([path])
+      throw insert.error
+    }
+    cache.set([asset, ...read()])
     return asset
   },
 
@@ -232,15 +236,29 @@ export const mediaLibraryStore = {
       width: options.width,
       height: options.height,
     }
-    write([asset, ...read()])
+    cache.set([asset, ...read()])
     return asset
   },
 
-  update: (asset: LibraryAsset) =>
-    write(read().map(item => (item.id === asset.id ? asset : item))),
+  update: (asset: LibraryAsset) => {
+    const next = read().map(item => item.id === asset.id ? asset : item)
+    void cache.optimistic(next, async () => {
+      if (!supabase) throw new Error('Supabase is not configured.')
+      const { error } = await supabase.from('media').update({ metadata: { name: asset.name, category: asset.category, width: asset.width, height: asset.height, uploadedBy: asset.uploadedBy, usageCount: asset.usageCount, eventIds: asset.eventIds } }).eq('id', asset.id).eq('organization_id', requireOrganizationId())
+      if (error) throw error
+    }).catch(() => undefined)
+  },
 
-  remove: (assetId: string) =>
-    write(read().filter(asset => asset.id !== assetId)),
+  remove: (assetId: string) => {
+    const asset = read().find(item => item.id === assetId)
+    if (!asset) return
+    void cache.optimistic(read().filter(item => item.id !== assetId), async () => {
+      if (!supabase) throw new Error('Supabase is not configured.')
+      const { data, error } = await supabase.from('media').update({ deleted_at: new Date().toISOString() }).eq('id', assetId).eq('organization_id', requireOrganizationId()).select('bucket,path').single()
+      if (error) throw error
+      await supabase.storage.from(data.bucket).remove([data.path])
+    }).catch(() => undefined)
+  },
 
   use: (assetId: string, eventId?: string) => {
     const asset = read().find(item => item.id === assetId)
@@ -254,4 +272,5 @@ export const mediaLibraryStore = {
           : asset.eventIds,
     })
   },
+  clear: cache.reset,
 }

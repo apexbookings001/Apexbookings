@@ -3,9 +3,9 @@
 // Provides: locale config, translations, price formatter, and locale switcher.
 
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
-import type { LocaleCode, LocaleConfig } from './localeConfig'
+import type { CurrencyCode, LangCode, LocaleCode, LocaleConfig } from './localeConfig'
 import { DEFAULT_LOCALE, LOCALES } from './localeConfig'
-import { detectLocaleCode } from './detectLocale'
+import { localeService } from './localeService'
 import { buildPriceFormatter, initCurrencyService } from './currencyService'
 import { en } from './translations/en'
 import { fr } from './translations/fr'
@@ -56,15 +56,30 @@ const LocaleContext = createContext<LocaleContextValue>({
 })
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
-export function LocaleProvider({ children }: { children: React.ReactNode }) {
+export function LocaleProvider({ children, eventCountryCode, eventCurrencyCode, eventLanguageCode }: { children: React.ReactNode; eventCountryCode?: string; eventCurrencyCode?: string; eventLanguageCode?: string }) {
+  const initialSaved = loadSaved()
+  const initialDetected = localeService.detectReliableCountry()
   const [localeCode, setLocaleCode] = useState<LocaleCode>(() => {
-    const saved = loadSaved()
-    return saved && LOCALES[saved] ? saved : detectLocaleCode()
+    return localeService.resolve({ manual: initialSaved, detected: initialDetected, eventCountry: eventCountryCode }).code
   })
-  const [isManualOverride, setIsManualOverride] = useState(() => loadSaved() !== null)
+  const [isManualOverride, setIsManualOverride] = useState(() => initialSaved !== null)
+  const [usingEventDefaults, setUsingEventDefaults] = useState(() => !initialSaved && !initialDetected && Boolean(eventCountryCode))
   const [ratesReady, setRatesReady] = useState(false)
 
-  const locale = LOCALES[localeCode] ?? DEFAULT_LOCALE
+  const baseLocale = LOCALES[localeCode] ?? DEFAULT_LOCALE
+  const locale = useMemo<LocaleConfig>(() => usingEventDefaults ? {
+    ...baseLocale,
+    currency: (eventCurrencyCode || baseLocale.currency) as CurrencyCode,
+    bcp47: eventLanguageCode || baseLocale.bcp47,
+    language: ((eventLanguageCode || baseLocale.bcp47).split('-')[0] || baseLocale.language) as LangCode,
+  } : baseLocale, [baseLocale, eventCurrencyCode, eventLanguageCode, usingEventDefaults])
+
+  useEffect(() => {
+    if (loadSaved()) return
+    const detected = localeService.detectReliableCountry()
+    setLocaleCode(localeService.resolve({ detected, eventCountry: eventCountryCode }).code)
+    setUsingEventDefaults(!detected && Boolean(eventCountryCode))
+  }, [eventCountryCode])
 
   // Load exchange rates on mount / locale change
   useEffect(() => {
@@ -83,6 +98,7 @@ export function LocaleProvider({ children }: { children: React.ReactNode }) {
     if (!LOCALES[code]) return
     setLocaleCode(code)
     setIsManualOverride(true)
+    setUsingEventDefaults(false)
     saveLocale(code)
   }
 

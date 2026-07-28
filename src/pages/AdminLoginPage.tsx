@@ -4,18 +4,13 @@ import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../features/auth/AuthContext'
-import { ticketStore } from '../features/bookings/ticketStore'
-import { paymentReviewStore } from '../features/payments/paymentReviewStore'
-import { supportStore } from '../features/support/supportStore'
+import { notificationStore } from '../features/notifications/notificationStore'
 import { ROUTES } from '../constants/routes'
 
 const schema = z.object({ email: z.string().email('Enter a valid email address'), password: z.string().min(6, 'Password must contain at least 6 characters'), remember: z.boolean() })
 type LoginValues = z.infer<typeof schema>
 
-const unreadNotificationCount = () =>
-  ticketStore.list().filter(ticket => ticket.status === 'pending').length
-  + paymentReviewStore.list().filter(payment => payment.status === 'pending').length
-  + supportStore.list().reduce((total, conversation) => total + conversation.unread, 0)
+const unreadNotificationCount = () => notificationStore.unreadCount()
 
 export function AdminLoginPage() {
   const navigate = useNavigate()
@@ -28,8 +23,7 @@ export function AdminLoginPage() {
 
   useEffect(() => {
     const refresh = () => setUnreadCount(unreadNotificationCount())
-    const unsubscribe = [ticketStore.subscribe(refresh), paymentReviewStore.subscribe(refresh), supportStore.subscribe(refresh)]
-    return () => unsubscribe.forEach(stop => stop())
+    return notificationStore.subscribe(refresh)
   }, [])
 
   const onSubmit = async (values: LoginValues) => {

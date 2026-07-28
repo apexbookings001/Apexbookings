@@ -1,11 +1,11 @@
-// ─── Ticket Store ─────────────────────────────────────────────────────────────
-// Stores confirmed and pending ticket records. Each ticket has a UUID (used as
-// the QR verification path) and a human-readable ticket number for display.
+import { supabase } from '../../lib/supabase'
+import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
+import { requireOrganizationId } from '../../services/supabase/workspace'
 
 export type TicketRecord = {
-  id: string              // UUID → used in QR code URL /ticket/:id
-  ticketNumber: string    // Pretty display e.g. TKT-ABCD-1234
-  bookingReference: string // e.g. APEX-ABC123
+  id: string
+  ticketNumber: string
+  bookingReference: string
   eventId: string
   eventName: string
   eventBanner: string
@@ -21,73 +21,145 @@ export type TicketRecord = {
   benefits: string[]
   amount: number
   paymentMethod: string
+  country?: string
+  currency?: string
   status: 'pending' | 'approved' | 'declined'
   declineReason?: string
   createdAt: string
   approvedAt?: string
 }
 
-const KEY = 'apex.tickets.v2'
-const EVENT_NAME = 'apex:tickets'
+const cache = createProtectedMemoryStore<TicketRecord[]>(() => [])
 
-const read = (): TicketRecord[] => {
-  try {
-    const s = localStorage.getItem(KEY)
-    return s ? (JSON.parse(s) as TicketRecord[]) : []
-  } catch {
-    return []
+function normalizeStatus(status: unknown): TicketRecord['status'] {
+  if (status === 'approved' || status === 'validated') return 'approved'
+  if (status === 'declined' || status === 'cancelled') return 'declined'
+  return 'pending'
+}
+
+function fromPublicSnapshot(row: Record<string, unknown>): TicketRecord {
+  const date = row.eventDate ? new Date(String(row.eventDate)) : null
+  return {
+    id: String(row.id),
+    ticketNumber: String(row.ticketNumber ?? ''),
+    bookingReference: String(row.bookingReference ?? ''),
+    eventId: String(row.eventId ?? ''),
+    eventName: String(row.eventName ?? ''),
+    eventBanner: String(row.eventBanner ?? ''),
+    eventDate: date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : String(row.eventDate ?? ''),
+    eventTime: date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '',
+    eventVenue: String(row.eventVenue ?? ''),
+    eventHost: String(row.eventHost ?? row.eventName ?? ''),
+    customerName: String(row.customerName ?? ''),
+    customerEmail: String(row.customerEmail ?? ''),
+    packageName: String(row.packageName ?? ''),
+    packageAccent: String(row.packageAccent ?? '#00FF88'),
+    seatLabel: String(row.seatLabel ?? ''),
+    benefits: Array.isArray(row.benefits) ? row.benefits.map(String) : [],
+    amount: Number(row.amount ?? 0),
+    paymentMethod: String(row.paymentMethod ?? ''),
+    country: row.country ? String(row.country) : undefined,
+    currency: row.currency ? String(row.currency) : undefined,
+    status: normalizeStatus(row.status),
+    declineReason: row.declineReason ? String(row.declineReason) : undefined,
+    createdAt: String(row.createdAt ?? new Date().toISOString()),
+    approvedAt: row.approvedAt ? String(row.approvedAt) : undefined,
   }
 }
 
-const write = (records: TicketRecord[]) => {
-  localStorage.setItem(KEY, JSON.stringify(records))
-  window.dispatchEvent(new Event(EVENT_NAME))
+function fromAdminRow(row: Record<string, unknown>): TicketRecord {
+  const booking = row.bookings as Record<string, unknown>
+  const customer = booking.customers as Record<string, unknown>
+  const event = booking.events as Record<string, unknown>
+  const metadata = (booking.metadata ?? {}) as Record<string, unknown>
+  const eventStudio = (event.studio ?? {}) as Record<string, unknown>
+  return fromPublicSnapshot({
+    id: row.id,
+    ticketNumber: row.ticket_number,
+    status: row.status,
+    createdAt: row.created_at,
+    approvedAt: row.status === 'approved' || row.status === 'validated' ? row.updated_at : undefined,
+    declineReason: metadata.declineReason,
+    bookingReference: booking.reference,
+    eventId: booking.event_id,
+    eventName: event.name,
+    eventBanner: event.banner_path,
+    eventDate: metadata.eventDate ?? event.starts_at,
+    eventTime: metadata.eventTime,
+    eventVenue: event.venue,
+    eventHost: metadata.eventHost ?? eventStudio.title ?? event.name,
+    customerName: customer.full_name,
+    customerEmail: customer.email,
+    packageName: metadata.packageName,
+    packageAccent: metadata.packageAccent,
+    seatLabel: metadata.seatLabel,
+    benefits: metadata.benefits,
+    amount: booking.total_amount,
+    paymentMethod: metadata.paymentMethod,
+    country: metadata.country,
+    currency: metadata.currency,
+  })
 }
 
-function genTicketNumber(): string {
-  const seg = () => Math.random().toString(36).slice(2, 6).toUpperCase()
-  return `TKT-${seg()}-${seg()}`
+async function updateStatus(id: string, status: 'approved' | 'declined', reason = '') {
+  if (!supabase) throw new Error('Supabase is not configured.')
+  requireOrganizationId()
+  const ticketResult = await supabase.from('tickets').update({ status }).eq('id', id).select('booking_id').single()
+  if (ticketResult.error) throw ticketResult.error
+  const paymentStatus = status === 'approved' ? 'approved' : 'rejected'
+  const paymentState = status === 'approved' ? 'approved' : 'declined'
+  const [paymentResult, bookingResult] = await Promise.all([
+    supabase.from('payments').update({ status: paymentStatus, decline_reason: reason || null }).eq('booking_id', ticketResult.data.booking_id),
+    supabase.from('bookings').update({ status, payment_state: paymentState }).eq('id', ticketResult.data.booking_id),
+  ])
+  if (paymentResult.error) throw paymentResult.error
+  if (bookingResult.error) throw bookingResult.error
 }
 
 export const ticketStore = {
-  list: (): TicketRecord[] => read(),
-  subscribe: (listener: () => void) => { window.addEventListener(EVENT_NAME, listener); return () => window.removeEventListener(EVENT_NAME, listener) },
-
-  findById: (id: string): TicketRecord | null =>
-    read().find(t => t.id === id) ?? null,
-
-  findByTicketNumber: (tn: string): TicketRecord | null =>
-    read().find(t => t.ticketNumber === tn) ?? null,
-
-  findByReference: (ref: string): TicketRecord | null =>
-    read().find(t => t.bookingReference === ref) ?? null,
-
-  create: (input: Omit<TicketRecord, 'id' | 'ticketNumber' | 'createdAt'>): TicketRecord => {
-    const record: TicketRecord = {
-      ...input,
-      id: crypto.randomUUID(),
-      ticketNumber: genTicketNumber(),
-      createdAt: new Date().toISOString(),
+  list: () => cache.get(),
+  subscribe: cache.subscribe,
+  snapshot: cache.snapshot,
+  findById: (id: string) => cache.get().find(ticket => ticket.id === id) ?? null,
+  findByTicketNumber: (ticketNumber: string) => cache.get().find(ticket => ticket.ticketNumber === ticketNumber) ?? null,
+  findByReference: (reference: string) => cache.get().find(ticket => ticket.bookingReference === reference) ?? null,
+  hydrate: async () => {
+    if (!supabase) throw new Error('Supabase is not configured.')
+    try {
+      requireOrganizationId()
+      const { data, error } = await supabase
+        .from('tickets')
+        .select('id,ticket_number,status,created_at,updated_at,bookings!inner(reference,event_id,total_amount,metadata,customers!inner(full_name,email),events!inner(name,banner_path,venue,starts_at,studio,organization_id))')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      const tickets = (data ?? []).map(row => fromAdminRow(row as unknown as Record<string, unknown>))
+      cache.set(tickets)
+      return tickets
+    } catch (error) {
+      cache.fail(error)
+      throw error
     }
-    write([record, ...read()])
+  },
+  findRemote: async (identifier: string) => {
+    if (!supabase) throw new Error('Supabase is not configured.')
+    const { data, error } = await supabase.rpc('public_ticket_snapshot', { ticket_identifier: identifier })
+    if (error) throw error
+    return data && typeof data === 'object' ? fromPublicSnapshot(data as Record<string, unknown>) : null
+  },
+  acceptRemote: (record: TicketRecord) => cache.set([record, ...cache.get().filter(ticket => ticket.id !== record.id)]),
+  create: (input: Omit<TicketRecord, 'id' | 'ticketNumber' | 'createdAt'>) => {
+    const record = { ...input, id: crypto.randomUUID(), ticketNumber: '', createdAt: new Date().toISOString() }
+    cache.set([record, ...cache.get()])
     return record
   },
-
-  approve: (id: string): void => {
-    write(
-      read().map(t =>
-        t.id === id
-          ? { ...t, status: 'approved' as const, approvedAt: new Date().toISOString() }
-          : t
-      )
-    )
+  approve: (id: string) => {
+    const next = cache.get().map(ticket => ticket.id === id ? { ...ticket, status: 'approved' as const, approvedAt: new Date().toISOString() } : ticket)
+    void cache.optimistic(next, () => updateStatus(id, 'approved')).catch(() => undefined)
   },
-
-  decline: (id: string, reason = ''): void => {
-    write(
-      read().map(t =>
-        t.id === id ? { ...t, status: 'declined' as const, declineReason: reason } : t
-      )
-    )
+  decline: (id: string, reason = '') => {
+    const next = cache.get().map(ticket => ticket.id === id ? { ...ticket, status: 'declined' as const, declineReason: reason } : ticket)
+    void cache.optimistic(next, () => updateStatus(id, 'declined', reason)).catch(() => undefined)
   },
+  clear: cache.reset,
 }

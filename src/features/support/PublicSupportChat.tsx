@@ -3,6 +3,7 @@ import movieTicketLogo from '../../../icons/movie-ticket.gif'
 import { createPortal } from 'react-dom'
 import { supportStore, type AttachmentMeta, type ConversationDraft, type MessageType, type ReplyRef, type SupportConversation, type SupportMessage } from './supportStore'
 import { useTheme } from '../../theme'
+import { useAuth } from '../auth/AuthContext'
 
 // ─── Brand palettes ───────────────────────────────────────────────────────────
 // Dark mode: emerald  |  Light mode: blue
@@ -757,6 +758,7 @@ function Composer({
       mimeType: 'audio/webm',
       url,
       duration: voice.duration,
+      file: voice.audioBlob,
     }
     onSend({ type: 'voice', body: 'Voice note', attachment, replyTo })
     voice.reset()
@@ -768,7 +770,7 @@ function Composer({
     const arr = Array.from(files)
     for (const file of arr) {
       const url = URL.createObjectURL(file)
-      const meta: AttachmentMeta = { name: file.name, size: file.size, mimeType: file.type, url }
+      const meta: AttachmentMeta = { name: file.name, size: file.size, mimeType: file.type, url, file }
       if (file.type.startsWith('image/')) {
         await new Promise<void>(resolve => {
           const img = new Image()
@@ -1191,18 +1193,23 @@ function ChatWindow({
 }
 
 // ─── Public Support Chat (exported component) ─────────────────────────────────
-const PREVIEW_ADMIN_EMAIL = 'apexbookings001@gmail.com'
-
 export function PublicSupportChat({ eventId, isPreview = false }: { eventId: string; isPreview?: boolean }) {
   const { t } = useTheme()
+  const { user } = useAuth()
   const isDark = t.isDark
   const [open, setOpen] = useState(false)
   const [conversation, setConversation] = useState<SupportConversation | null>(null)
-  const [customerEmail, setCustomerEmail] = useState(() => isPreview ? PREVIEW_ADMIN_EMAIL : localStorage.getItem(`apex.support.email:${eventId}`) ?? '')
-  const [emailDraft, setEmailDraft] = useState(() => isPreview ? PREVIEW_ADMIN_EMAIL : localStorage.getItem(`apex.support.email:${eventId}`) ?? '')
+  const [customerEmail, setCustomerEmail] = useState(() => isPreview ? user?.email ?? '' : '')
+  const [emailDraft, setEmailDraft] = useState(() => isPreview ? user?.email ?? '' : '')
   const [unreadCount, setUnreadCount] = useState(0)
   const [dockOffset, setDockOffset] = useState(0)
   const btnRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!isPreview || !user?.email) return
+    setCustomerEmail(user.email)
+    setEmailDraft(user.email)
+  }, [isPreview, user?.email])
 
   // Sync from store (or use demo data)
   useEffect(() => {
@@ -1210,15 +1217,26 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
       setConversation(DEMO_CONVERSATION)
       return
     }
+    let active = true
     const sync = () => {
       if (!customerEmail) { setConversation(null); setUnreadCount(0); return }
-      const c = supportStore.getOrCreate(eventId, customerEmail, customerEmail.split('@')[0] || 'Event Guest')
-      setConversation(c)
-      setUnreadCount(c.messages.filter(m => m.from === 'admin' && m.status !== 'read').length)
+      const existing = supportStore.list().find(item => item.eventId === eventId && item.email === customerEmail)
+      if (!existing) return
+      setConversation(existing)
+      setUnreadCount(existing.messages.filter(message => message.from === 'admin' && message.status !== 'read').length)
     }
-    sync()
-    return supportStore.subscribe(sync)
+    void supportStore.getOrCreate(eventId, customerEmail, customerEmail.split('@')[0] || 'Event Guest')
+      .then(() => { if (active) sync() })
+      .catch(() => { if (active) setConversation(null) })
+    const unsubscribe = supportStore.subscribe(sync)
+    return () => { active = false; unsubscribe() }
   }, [eventId, isPreview, customerEmail])
+
+  useEffect(() => {
+    if (isPreview || !conversation?.accessToken) return
+    const timer = setInterval(() => void supportStore.refreshPublic(conversation).catch(() => undefined), 3000)
+    return () => clearInterval(timer)
+  }, [conversation?.id, conversation?.accessToken, isPreview])
 
   // Listen for programmatic open events
   useEffect(() => {
@@ -1229,15 +1247,15 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
         const ctx = ce.detail.context
         const msgText = `What would you like me to help you with today regarding ${ctx}?`
         setTimeout(() => {
-          const c = supportStore.getOrCreate(eventId)
-          const hasMessage = c.messages.some(m => m.body === msgText && m.from === 'admin')
-          if (!hasMessage) supportStore.send(eventId, { body: msgText, from: 'admin' })
+          const c = conversation
+          const hasMessage = c?.messages.some(m => m.body === msgText && m.from === 'admin')
+          if (c && !hasMessage) supportStore.send(c.id, { body: msgText, from: 'admin' })
         }, 100)
       }
     }
     window.addEventListener('apex-open-support', fn)
     return () => window.removeEventListener('apex-open-support', fn)
-  }, [eventId, isPreview])
+  }, [conversation, isPreview])
 
   // Mark messages read when opened
   useEffect(() => {
@@ -1330,7 +1348,7 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
 
       {open && !isPreview && !customerEmail && (
         <div className="fixed inset-0 z-[10010] grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
-          <form onSubmit={event => { event.preventDefault(); const email = emailDraft.trim().toLowerCase(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return; localStorage.setItem(`apex.support.email:${eventId}`, email); setCustomerEmail(email) }} className="w-full max-w-sm rounded-3xl p-6 shadow-2xl" style={{ background: isDark ? '#111113' : '#FFFFFF', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}` }}>
+          <form onSubmit={event => { event.preventDefault(); const email = emailDraft.trim().toLowerCase(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return; setCustomerEmail(email) }} className="w-full max-w-sm rounded-3xl p-6 shadow-2xl" style={{ background: isDark ? '#111113' : '#FFFFFF', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}` }}>
             <div className="grid h-11 w-11 place-items-center rounded-2xl" style={{ background: isDark ? 'rgba(0,255,136,.12)' : 'rgba(21,94,239,.1)', color: isDark ? '#00FF88' : '#155EEF' }}>?</div>
             <h2 className="mt-4 font-serif text-2xl font-bold" style={{ color: isDark ? '#FAFAFA' : '#171A1F' }}>Welcome to Support</h2>
             <p className="mt-2 text-sm" style={{ color: isDark ? '#A1A1AA' : '#5F6773' }}>Enter your email to continue an existing conversation or start a new one.</p>

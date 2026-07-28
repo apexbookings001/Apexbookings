@@ -300,6 +300,20 @@ alter table public.currency_rates enable row level security;
 alter table public.session_recovery enable row level security;
 alter table public.qr_validations enable row level security;
 
+drop policy if exists "members manage tickets" on public.tickets;
+drop policy if exists "members manage payment methods" on public.payment_methods;
+drop policy if exists "members manage crypto wallets" on public.crypto_wallets;
+drop policy if exists "members manage bank transfers" on public.bank_transfer_requests;
+drop policy if exists "members manage support conversations" on public.support_conversations;
+drop policy if exists "members manage chat messages" on public.chat_messages;
+drop policy if exists "members read analytics" on public.analytics_events;
+drop policy if exists "members manage email queue" on public.email_queue;
+drop policy if exists "members manage webhooks" on public.webhook_events;
+drop policy if exists "members manage social proof" on public.social_proof_items;
+drop policy if exists "authenticated users read currency rates" on public.currency_rates;
+drop policy if exists "members manage session recovery" on public.session_recovery;
+drop policy if exists "members read qr validations" on public.qr_validations;
+
 create policy "members manage tickets" on public.tickets for all using (exists(select 1 from public.bookings b join public.events e on e.id = b.event_id where b.id = booking_id and public.is_organization_member(e.organization_id))) with check (exists(select 1 from public.bookings b join public.events e on e.id = b.event_id where b.id = booking_id and public.is_organization_member(e.organization_id)));
 create policy "members manage payment methods" on public.payment_methods for all using (public.is_organization_member(organization_id)) with check (public.is_organization_member(organization_id));
 create policy "members manage crypto wallets" on public.crypto_wallets for all using (public.is_organization_member(organization_id)) with check (public.is_organization_member(organization_id));
@@ -318,4 +332,19 @@ grant execute on function public.bootstrap_admin_workspace() to authenticated;
 grant execute on function public.public_event_snapshot(text) to anon, authenticated;
 grant execute on function public.verify_ticket(uuid) to authenticated;
 
-alter publication supabase_realtime add table public.support_conversations, public.chat_messages, public.notifications, public.payments, public.bookings;
+do $$
+declare target_table text;
+begin
+  foreach target_table in array array['support_conversations','chat_messages','notifications','payments','bookings']
+  loop
+    if not exists (
+      select 1 from pg_publication_tables publication_table
+      where publication_table.pubname = 'supabase_realtime'
+        and publication_table.schemaname = 'public'
+        and publication_table.tablename = target_table
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', target_table);
+    end if;
+  end loop;
+end;
+$$;

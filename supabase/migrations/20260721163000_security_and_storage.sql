@@ -1,4 +1,4 @@
-create table public.organization_members (
+create table if not exists public.organization_members (
   organization_id uuid not null references public.organizations(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   role text not null check (role in ('owner','admin','support')),
@@ -25,6 +25,20 @@ alter table public.messages enable row level security;
 alter table public.notifications enable row level security;
 alter table public.settings enable row level security;
 
+drop policy if exists "members can access organizations" on public.organizations;
+drop policy if exists "members can access memberships" on public.organization_members;
+drop policy if exists "members can manage events" on public.events;
+drop policy if exists "members can manage event packages" on public.packages;
+drop policy if exists "members can manage event seats" on public.seats;
+drop policy if exists "members can manage media" on public.media;
+drop policy if exists "members can manage settings" on public.settings;
+drop policy if exists "members can read bookings" on public.bookings;
+drop policy if exists "members can read customers" on public.customers;
+drop policy if exists "members can manage payments" on public.payments;
+drop policy if exists "members can access proofs" on public.payment_proofs;
+drop policy if exists "members can manage messages" on public.messages;
+drop policy if exists "members can access notifications" on public.notifications;
+
 create policy "members can access organizations" on public.organizations for all using (public.is_organization_member(id)) with check (public.is_organization_member(id));
 create policy "members can access memberships" on public.organization_members for select using (user_id = auth.uid());
 create policy "members can manage events" on public.events for all using (public.is_organization_member(organization_id)) with check (public.is_organization_member(organization_id));
@@ -40,4 +54,5 @@ create policy "members can manage messages" on public.messages for all using (ex
 create policy "members can access notifications" on public.notifications for all using (public.is_organization_member(organization_id)) with check (public.is_organization_member(organization_id));
 
 insert into storage.buckets (id, name, public) values ('payment-proofs','payment-proofs',false),('event-images','event-images',false),('ticket-assets','ticket-assets',false),('chat-files','chat-files',false) on conflict (id) do nothing;
+drop policy if exists "members can access organization files" on storage.objects;
 create policy "members can access organization files" on storage.objects for all using (bucket_id in ('payment-proofs','event-images','ticket-assets','chat-files') and public.is_organization_member((storage.foldername(name))[1]::uuid)) with check (bucket_id in ('payment-proofs','event-images','ticket-assets','chat-files') and public.is_organization_member((storage.foldername(name))[1]::uuid));

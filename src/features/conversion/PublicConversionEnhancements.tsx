@@ -5,11 +5,13 @@ import { socialProofStore, type SocialProofItem } from './socialProofStore'
 import { useTheme } from '../../theme'
 import { MobileSocialProofOverlay } from './MobileSocialProofOverlay'
 import { useSocialProofOverlay } from './SocialProofOverlayContext'
+import { useLocale } from '../../i18n/LocaleContext'
 
-const positionClass: Record<SocialProofItem['position'], string> = { 'bottom-left': 'bottom-6 left-4', 'bottom-center': 'bottom-6 left-1/2 -translate-x-1/2', 'bottom-right': 'bottom-6 right-4' }
+const positionClass: Record<SocialProofItem['position'], string> = { 'top-left': 'top-20 left-4', 'top-center': 'top-20 left-1/2 -translate-x-1/2', 'top-right': 'top-20 right-4', 'bottom-left': 'bottom-6 left-4', 'bottom-center': 'bottom-6 left-1/2 -translate-x-1/2', 'bottom-right': 'bottom-6 right-4' }
 
-export function PublicConversionEnhancements({ packages, seats }: { packages: TicketPackage[]; seats: StudioSeat[] }) {
+export function PublicConversionEnhancements({ packages, seats, eventId, isPreview = false }: { packages: TicketPackage[]; seats: StudioSeat[]; eventId?: string; isPreview?: boolean }) {
   const { t } = useTheme()
+  const { formatPrice, translations } = useLocale()
   const [showBar, setShowBar] = useState(false)
   const [toast, setToast] = useState<SocialProofItem | null>(null)
   const [isMobile, setIsMobile] = useState(false)
@@ -19,9 +21,10 @@ export function PublicConversionEnhancements({ packages, seats }: { packages: Ti
   const available = seats.length > 0 
     ? seats.filter(seat => seat.status === 'available').length 
     : packages.reduce((sum, pkg: any) => sum + (pkg.seats || pkg.capacity || 0), 0)
-  const notices = useMemo(() => { const settings = socialProofStore.settings(); if (settings.mode === 'live') return paymentReviewStore.list().filter(item => item.status === 'approved').map(item => ({ id: item.id, name: item.customer, city: 'Apex guest', state: '', ticketPackage: item.packageName, message: 'just purchased a ticket.', duration: 5, animation: 'fade-slide' as const, position: 'bottom-left' as const, visible: true, createdAt: item.createdAt })); const configured = socialProofStore.list().filter(item => item.visible); return configured.length ? configured : socialProofStore.previewItems() }, [socialProofVersion])
+  const notices = useMemo(() => { const settings = socialProofStore.settings(); if (settings.mode === 'live') return paymentReviewStore.list().filter(item => item.status === 'approved').map(item => ({ id: item.id, name: item.customer, city: settings.city, state: settings.state, ticketPackage: item.packageName, message: settings.message, duration: settings.duration, animation: settings.animation, position: settings.position, visible: true, createdAt: item.createdAt })); const configured = socialProofStore.list().filter(item => item.visible); return configured.length ? configured : isPreview ? socialProofStore.previewItems() : [socialProofStore.defaultItem()] }, [isPreview, socialProofVersion])
 
   useEffect(() => socialProofStore.subscribe(() => setSocialProofVersion(version => version + 1)), [])
+  useEffect(() => { if (eventId && !isPreview) void socialProofStore.hydratePublic(eventId).catch(() => undefined) }, [eventId, isPreview])
 
   // Detect mobile (md breakpoint = 768px)
   useEffect(() => {
@@ -44,7 +47,7 @@ export function PublicConversionEnhancements({ packages, seats }: { packages: Ti
     if (phase === 'hidden') setOverlayActive(false)
   }, [setOverlayActive])
 
-  useEffect(() => { const settings = socialProofStore.settings(); if (!settings.enabled || settings.paused || !notices.length) { setToast(null); return }; let timeout: ReturnType<typeof setTimeout>; const next = () => { if (document.hidden) { timeout = setTimeout(next, 8000); return }; const choices = notices.filter(item => !played.current.has(item.id)); const item = choices[Math.floor(Math.random() * choices.length)] ?? notices[Math.floor(Math.random() * notices.length)]; if (!item) return; played.current.add(item.id); if (played.current.size >= notices.length) played.current.clear(); setToast(item); timeout = setTimeout(() => { setToast(null); timeout = setTimeout(next, 6000 + Math.random() * 6000) }, item.duration * 1000) }; timeout = setTimeout(next, 3000); return () => clearTimeout(timeout) }, [notices, socialProofVersion])
+  useEffect(() => { const settings = socialProofStore.settings(); const visibleOnDevice = isMobile ? settings.mobileVisible : settings.desktopVisible; if (!settings.enabled || settings.paused || !visibleOnDevice || !settings.pageTargeting.includes('event') || !notices.length) { setToast(null); return }; let timeout: ReturnType<typeof setTimeout>; const next = () => { if (document.hidden) { timeout = setTimeout(next, settings.delay * 1000); return }; const choices = notices.filter(item => !played.current.has(item.id)); const item = choices[Math.floor(Math.random() * choices.length)] ?? notices[Math.floor(Math.random() * notices.length)]; if (!item) return; played.current.add(item.id); if (played.current.size >= notices.length) played.current.clear(); setToast(item); timeout = setTimeout(() => { setToast(null); timeout = setTimeout(next, settings.delay * 1000) }, item.duration * 1000) }; timeout = setTimeout(next, settings.delay * 1000); return () => clearTimeout(timeout) }, [isMobile, notices, socialProofVersion])
 
   return (
     <>
@@ -56,7 +59,7 @@ export function PublicConversionEnhancements({ packages, seats }: { packages: Ti
           onTransitionEnd={handleOverlayTransitionEnd}
         />
       ) : toast ? (
-        <div className={`fixed z-[135] flex max-w-[min(26rem,calc(100vw-2rem))] items-start gap-3.5 rounded-2xl p-4 shadow-2xl backdrop-blur animate-[fade-in-up_.3s_ease] ${positionClass[toast.position]}`}
+        <div className={`fixed z-[135] flex w-auto max-w-[min(26rem,calc(100%_-_2rem))] items-start gap-3.5 rounded-2xl p-4 shadow-2xl animate-[fade-in-up_.3s_ease] ${positionClass[toast.position]}`}
           style={{ background: t.isDark ? 'rgba(18,18,22,0.95)' : 'rgba(255,255,255,0.98)', border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.12)' : t.border}`, color: t.text, boxShadow: t.isDark ? '0 16px 48px rgba(0,0,0,0.5)' : '0 14px 32px rgba(23,26,31,0.12), 0 2px 6px rgba(23,26,31,0.04)' }}>
           <div className="relative shrink-0 mt-0.5">
             {toast.avatar ? (
@@ -88,12 +91,12 @@ export function PublicConversionEnhancements({ packages, seats }: { packages: Ti
               </span>
             </div>
             <div className="flex items-center justify-between pt-0.5 text-[10px]" style={{ color: t.textMuted }}>
-              <span>Recent booking</span>
+              <span>{translations.socialProof.recentBooking}</span>
               <span className="inline-flex items-center gap-1 font-medium" style={{ color: t.isDark ? '#34D399' : '#059669' }}>
                 <svg className="h-3 w-3 fill-current" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                 </svg>
-                Verified
+                {translations.socialProof.verified}
               </span>
             </div>
           </div>
@@ -111,16 +114,16 @@ export function PublicConversionEnhancements({ packages, seats }: { packages: Ti
             borderRadius: '1rem'
           }}>
           <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-widest" style={{ color: t.textMuted }}>Tickets from</p>
+            <p className="text-[10px] uppercase tracking-widest" style={{ color: t.textMuted }}>{translations.conversion.ticketsFrom}</p>
             <p className="text-sm font-bold" style={{ color: t.text }}>
-              ${Number.isFinite(startingPrice) ? startingPrice.toLocaleString() : '—'}
-              <span className="text-xs font-normal" style={{ color: t.textMuted }}> · {available} left</span>
+              {Number.isFinite(startingPrice) ? formatPrice(startingPrice) : '—'}
+              <span className="text-xs font-normal" style={{ color: t.textMuted }}> · {available} {translations.conversion.left}</span>
             </p>
           </div>
           <button type="button" onClick={() => document.getElementById('tickets')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
             className="rounded-2xl px-5 py-3 text-xs font-bold transition-all hover:-translate-y-0.5"
             style={{ background: t.isDark ? `${t.accent}18` : `linear-gradient(135deg,${t.accent},${t.accentDim})`, color: t.isDark ? t.accent : t.accentText, border: t.isDark ? `1px solid ${t.accent}40` : 'none', boxShadow: t.isDark ? `0 8px 24px ${t.accentGlow}` : `0 4px 16px ${t.accentGlow}` }}>
-            Get Tickets
+            {translations.conversion.getTickets}
           </button>
         </div>
       )}

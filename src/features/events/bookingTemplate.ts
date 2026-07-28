@@ -1,3 +1,7 @@
+import { supabase } from '../../lib/supabase'
+import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
+import { requireOrganizationId } from '../../services/supabase/workspace'
+
 export type BookingSectionId = 'hero' | 'about' | 'venue' | 'timeline' | 'tickets' | 'testimonials' | 'faq' | 'cta' | 'footer'
 
 export type BookingPackage = {
@@ -133,9 +137,38 @@ export const createBookingPageData = (setup: BookingSetupValues = {}, source: Bo
   return page
 }
 
-const masterKey = 'apex.master-booking-template'
+const templateCache = createProtectedMemoryStore<BookingPageData>(() => createBookingPageData())
+const mergeTemplate = (parsed: BookingPageData) => ({ ...createBookingPageData(), ...parsed, venueFacts: parsed.venueFacts ?? clone(DEFAULT_BOOKING_TEMPLATE.venueFacts), importantInfo: parsed.importantInfo ?? clone(DEFAULT_BOOKING_TEMPLATE.importantInfo), sectionHeadings: parsed.sectionHeadings ?? clone(DEFAULT_BOOKING_TEMPLATE.sectionHeadings) })
+
 export const masterBookingTemplateStore = {
-  load: (): BookingPageData => { try { const saved = localStorage.getItem(masterKey); if (!saved) return createBookingPageData(); const parsed = JSON.parse(saved) as BookingPageData; return { ...createBookingPageData(), ...parsed, venueFacts: parsed.venueFacts ?? clone(DEFAULT_BOOKING_TEMPLATE.venueFacts), importantInfo: parsed.importantInfo ?? clone(DEFAULT_BOOKING_TEMPLATE.importantInfo), sectionHeadings: parsed.sectionHeadings ?? clone(DEFAULT_BOOKING_TEMPLATE.sectionHeadings) } } catch { return createBookingPageData() } },
-  save: (data: BookingPageData) => localStorage.setItem(masterKey, JSON.stringify(data)),
-  reset: () => localStorage.removeItem(masterKey),
+  load: () => templateCache.get(),
+  subscribe: templateCache.subscribe,
+  hydrate: async () => {
+    if (!supabase) throw new Error('Supabase is not configured.')
+    const { data, error } = await supabase.from('settings').select('ticket_template').eq('organization_id', requireOrganizationId()).single()
+    if (error) { templateCache.fail(error); throw error }
+    const stored = (data.ticket_template ?? {}) as { bookingPage?: BookingPageData }
+    const template = stored.bookingPage ? mergeTemplate(stored.bookingPage) : createBookingPageData()
+    templateCache.set(template)
+    return template
+  },
+  hydratePublic: async () => {
+    if (!supabase) return templateCache.get()
+    const { data, error } = await supabase.rpc('public_default_booking_template')
+    if (error) throw error
+    if (data && typeof data === 'object') templateCache.set(mergeTemplate(data as BookingPageData))
+    return templateCache.get()
+  },
+  save: (data: BookingPageData) => {
+    void templateCache.optimistic(data, async () => {
+      if (!supabase) throw new Error('Supabase is not configured.')
+      const organizationId = requireOrganizationId()
+      const current = await supabase.from('settings').select('ticket_template').eq('organization_id', organizationId).single()
+      if (current.error) throw current.error
+      const { error } = await supabase.from('settings').update({ ticket_template: { ...((current.data.ticket_template ?? {}) as Record<string, unknown>), bookingPage: data } }).eq('organization_id', organizationId)
+      if (error) throw error
+    }).catch(() => undefined)
+  },
+  reset: () => masterBookingTemplateStore.save(createBookingPageData()),
+  clear: templateCache.reset,
 }
