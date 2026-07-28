@@ -22,7 +22,7 @@ export function PaymentMethodCard({ methodId, label, description, isSelected, ac
   return (
     <button
       onClick={onClick}
-      className="w-full text-left group transition-all duration-200"
+      className="payment-method-card w-full text-left group transition-all duration-200"
       style={{
         background: isSelected ? `${accent}0D` : t.card,
         border: `1.5px solid ${isSelected ? accent : t.cardBorder}`,

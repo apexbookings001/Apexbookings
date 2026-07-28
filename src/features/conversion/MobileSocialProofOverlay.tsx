@@ -107,7 +107,7 @@ export function MobileSocialProofOverlay({
 
   return (
     <div
-      className="fixed left-1/2 z-[140] w-[calc(100%-1.25rem)] max-w-[440px]"
+      className="social-proof-mobile fixed left-1/2 z-[140] w-[calc(100%-1.25rem)] max-w-[440px]"
       style={{
         top: `max(0.75rem, env(safe-area-inset-top, 0.75rem))`,
         transform: 'translateX(-50%)',
@@ -144,7 +144,7 @@ export function MobileSocialProofOverlay({
             <img
               src={item.avatar}
               alt={item.name}
-              className="h-11 w-11 rounded-full object-cover ring-2 ring-white/10 shadow-sm"
+              className="social-proof-avatar h-11 w-11 rounded-full object-cover ring-2 ring-white/10 shadow-sm"
             />
           ) : (
             <div

@@ -8,6 +8,7 @@ import { adminEventStore, PLATFORM_PAYMENT_DEFAULTS, type EventPaymentSettings, 
 import type { PaymentMethod } from './types/domain'
 import { analyticsStore } from './features/analytics/analyticsStore'
 import { DEFAULT_BOOKING_TEMPLATE, createBookingPageData, masterBookingTemplateStore, type BookingPageData, type BookingSectionId, type BookingPackage } from './features/events/bookingTemplate'
+import { PACKAGE_TYPE_LIBRARY, createPackageFromType, type PackageTypeDefinition } from './features/events/packageTypeLibrary'
 import { mediaLibraryStore } from './features/media/mediaLibraryStore'
 import { PublicConversionEnhancements } from './features/conversion/PublicConversionEnhancements'
 import { SocialProofOverlayProvider, useSocialProofOverlay } from './features/conversion/SocialProofOverlayContext'
@@ -44,14 +45,18 @@ import { ThemeCtx, useTheme, DARK, LIGHT } from './theme'
 type BookingMode = 'preview' | 'editor' | 'published'
 type StudioPreviewState = 'page' | 'packages' | 'checkout' | 'payment-pending' | 'awaiting-bank-details' | 'payment-submitted' | 'payment-approved' | 'payment-declined' | 'ticket-confirmation'
 type EditorTarget = { section: BookingSectionId; index?: number; field?: string }
+const BOOKING_SECTION_IDS: BookingSectionId[] = ['hero', 'about', 'venue', 'timeline', 'tickets', 'testimonials', 'faq', 'cta', 'footer']
+const BOOKING_SECTION_LABELS: Record<BookingSectionId, string> = { hero: 'Hero', about: 'About', venue: 'Venue', timeline: 'Timeline', tickets: 'Packages', testimonials: 'Customer reviews', faq: 'FAQ', cta: 'Call to action', footer: 'Footer' }
 type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean }
 const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false })
 const useBooking = () => useContext(BookingCtx)
 
 function EditableTarget({ target, className = '', children }: { target: EditorTarget; className?: string; children: React.ReactNode }) {
-  const { mode, select } = useBooking()
+  const { data, mode, select } = useBooking()
   if (mode !== 'editor') return <>{children}</>
-  return <div className={`relative cursor-pointer outline-none transition-shadow hover:ring-2 hover:ring-emerald-400/70 ${className}`} onClick={event => { event.stopPropagation(); select(target) }} onDoubleClick={event => { event.stopPropagation(); select(target) }}>{children}</div>
+  const showStatus = target.index === undefined
+  const touched = data.editorState?.touchedSections.includes(target.section) ?? false
+  return <div className={`relative cursor-pointer outline-none transition-shadow hover:ring-2 hover:ring-emerald-400/70 ${className}`} onClick={event => { event.stopPropagation(); select(target) }} onDoubleClick={event => { event.stopPropagation(); select(target) }}>{showStatus && <span className={`pointer-events-none absolute right-3 z-[210] rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-wider shadow-xl backdrop-blur ${target.section === 'hero' ? 'top-24' : 'top-3'} ${touched ? 'border-emerald-400/30 bg-emerald-400/15 text-emerald-200' : 'border-amber-400/30 bg-amber-400/15 text-amber-200'}`}>{touched ? '✓ Edited' : '● Untouched'}</span>}{children}</div>
 }
 
 // ─── Event constants ──────────────────────────────────────────────────────────
@@ -67,9 +72,9 @@ const EVENT = {
 }
 
 const TIERS = [
-  { id: 0, name: 'General Admission', price: 189, desc: 'Upper level seating', badge: null as string | null, accent: '#71717A', glow: 'rgba(113,113,122,0.18)', seats: 312, icon: '🎟', sections: ['301', '302', '303', '304', '305', '306', '307', '308', '309', '310', '311', '312'] },
-  { id: 1, name: 'VIP Floor', price: 450, desc: 'Premium lower bowl', badge: 'Best Seller', accent: '#00FF88', glow: 'rgba(0,255,136,0.22)', seats: 86, icon: '⭐', sections: ['101', '102', '103', '104', '105', '106', '107', '108', '109', '110'] },
-  { id: 2, name: 'VVIP Platinum', price: 850, desc: 'Floor level & private lounge', badge: 'Recommended', accent: '#F59E0B', glow: 'rgba(245,158,11,0.22)', seats: 12, icon: '👑', sections: ['GA Floor', 'Platinum Suite A', 'Platinum Suite B'] },
+  { id: 0, name: 'Regular', price: 189, desc: 'Upper level seating', badge: 'Great Value' as string | null, accent: '#64748B', glow: 'rgba(100,116,139,0.2)', seats: 312, icon: '🎫', sections: ['301', '302', '303', '304', '305', '306', '307', '308', '309', '310', '311', '312'] },
+  { id: 1, name: 'VIP Floor', price: 450, desc: 'Premium lower bowl', badge: 'Best Seller', accent: '#00D982', glow: 'rgba(0,217,130,0.24)', seats: 86, icon: '💎', sections: ['101', '102', '103', '104', '105', '106', '107', '108', '109', '110'] },
+  { id: 2, name: 'VVIP Platinum', price: 850, desc: 'Floor level & private lounge', badge: 'Ultimate Access', accent: '#F59E0B', glow: 'rgba(245,158,11,0.25)', seats: 12, icon: '👑', sections: ['GA Floor', 'Platinum Suite A', 'Platinum Suite B'] },
 ]
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
@@ -82,6 +87,38 @@ function useReveal() {
     document.querySelectorAll('.reveal,.reveal-left,.reveal-right').forEach((el) => obs.observe(el))
     return () => obs.disconnect()
   }, [])
+}
+
+function AnimatedMetric({ value }: { value: string | number }) {
+  const metricRef = useRef<HTMLSpanElement>(null)
+  const [display, setDisplay] = useState('0')
+
+  useEffect(() => {
+    const rawValue = String(value)
+    const match = rawValue.match(/-?\d+(?:\.\d+)?/)
+    if (!match) { setDisplay(rawValue); return }
+    const target = Number(match[0])
+    const decimals = match[0].includes('.') ? match[0].split('.')[1].length : 0
+    const prefix = rawValue.slice(0, match.index)
+    const suffix = rawValue.slice((match.index ?? 0) + match[0].length)
+    let frame = 0
+    const observer = new IntersectionObserver(entries => {
+      if (!entries[0]?.isIntersecting) return
+      const startedAt = performance.now()
+      const animate = (now: number) => {
+        const progress = Math.min(1, (now - startedAt) / 900)
+        const eased = 1 - Math.pow(1 - progress, 3)
+        setDisplay(`${prefix}${(target * eased).toFixed(decimals)}${suffix}`)
+        if (progress < 1) frame = requestAnimationFrame(animate)
+      }
+      frame = requestAnimationFrame(animate)
+      observer.disconnect()
+    }, { threshold: 0.45 })
+    if (metricRef.current) observer.observe(metricRef.current)
+    return () => { observer.disconnect(); cancelAnimationFrame(frame) }
+  }, [value])
+
+  return <span ref={metricRef}>{display}</span>
 }
 
 function scrollTo(id: string) {
@@ -279,7 +316,7 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
         />
       )}
       <nav
-        className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-7xl rounded-2xl px-5 py-3 flex items-center gap-4 transition-all duration-500"
+        className="booking-nav fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-7xl rounded-2xl px-5 py-3 flex items-center gap-4 transition-all duration-500"
         style={{
           background: scrolled ? t.navBg : 'transparent',
           backdropFilter: scrolled ? 'blur(24px) saturate(180%)' : 'none',
@@ -344,7 +381,7 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
       {/* Mobile menu */}
       {open && (
         <div
-          className="absolute top-full left-0 right-0 mt-2 rounded-2xl p-5 shadow-2xl z-50"
+          className="booking-mobile-menu absolute top-full left-0 right-0 mt-2 rounded-2xl p-5 shadow-2xl z-50"
           style={{
             background: t.isDark ? '#111113' : '#FFFFFF',
             border: `1px solid ${t.border}`,
@@ -383,11 +420,75 @@ const HERO_IMAGES = [
 function Hero() {
   const { t } = useTheme()
   const { data, mode } = useBooking()
+  const { formatPrice } = useLocale()
   const hero = data.hero
   const [imgIdx, setImgIdx] = useState(0)
-  useEffect(() => { const id = window.setInterval(() => setImgIdx(index => (index + 1) % hero.images.length), 5600); return () => window.clearInterval(id) }, [hero.images.length])
+  const startingPrice = data.packages.length > 0 ? Math.min(...data.packages.map(item => item.price)) : null
+  const availableSeats = data.packages.reduce((total, item) => total + Math.max(0, item.seats), 0)
+  const accent = t.isDark ? t.accent : '#60A5FA'
+  useEffect(() => {
+    if (hero.images.length < 2) return
+    const id = window.setInterval(() => setImgIdx(index => (index + 1) % hero.images.length), 5600)
+    return () => window.clearInterval(id)
+  }, [hero.images.length])
   if (!data.visibility.hero && mode !== 'editor') return null
-  return <EditableTarget target={{ section: 'hero' }}><section id="hero" className={`relative min-h-[720px] md:min-h-screen overflow-hidden flex items-end md:items-center ${!data.visibility.hero ? 'opacity-40' : ''}`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}><div className="absolute inset-0">{hero.images.map((src, index) => <div key={`${src}-${index}`} className="absolute inset-0 overflow-hidden" style={{ opacity: index === imgIdx ? 1 : 0, transform: 'translateZ(0)' }}><img src={src} alt={`${hero.title} live`} className="absolute inset-0 h-full w-full object-cover" style={{ opacity: index === imgIdx ? 1 : 0, transform: 'translateZ(0) scale(1.01)', backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden', willChange: 'transform', animation: index === imgIdx ? 'ken-burns 12s ease-out forwards' : 'none' }} /></div>)}<div className="absolute inset-0" style={{ background: t.isDark ? 'linear-gradient(90deg,rgba(9,9,11,.94) 0%,rgba(9,9,11,.72) 48%,rgba(9,9,11,.18) 100%)' : 'linear-gradient(90deg,rgba(15,23,42,.92) 0%,rgba(15,23,42,.68) 48%,rgba(15,23,42,.14) 100%)' }} /><div className="absolute inset-0 md:hidden" style={{ background: t.isDark ? 'linear-gradient(0deg,rgba(9,9,11,.98) 4%,rgba(9,9,11,.18) 76%)' : 'linear-gradient(0deg,rgba(15,23,42,.96) 4%,rgba(15,23,42,.14) 76%)' }} /></div><div className="relative z-10 w-full max-w-7xl mx-auto px-6 pt-32 pb-16 md:py-32"><div className="max-w-2xl"><div className="text-xs font-mono tracking-[.2em] uppercase mb-5" style={{ color: t.isDark ? t.accent : '#93C5FD' }}>{hero.eyebrow}</div><h1 className="font-serif font-bold leading-[.88] tracking-[-.04em]" style={{ fontSize: 'clamp(4.5rem,11vw,8.5rem)', color: '#FFFFFF' }}>{hero.title}</h1><p className="mt-5 max-w-md text-base md:text-lg leading-relaxed" style={{ color: 'rgba(255,255,255,0.78)' }}>{hero.tour} at {hero.venue}. One night only.</p>{hero.guests.length > 0 && <p className="mt-3 text-sm font-semibold" style={{ color: '#FCD34D' }}>Special guest{hero.guests.length > 1 ? 's' : ''}: {hero.guests.join(' · ')}</p>}<div className="mt-8 flex flex-wrap gap-3 text-sm" style={{ color: 'rgba(255,255,255,0.9)' }}><span>{hero.date}</span><span style={{ color: 'rgba(255,255,255,0.45)' }}>·</span><span>{hero.doors} doors</span><span style={{ color: 'rgba(255,255,255,0.45)' }}>·</span><span>{hero.venue}</span></div><div className="mt-9 flex flex-wrap gap-3"><button onClick={() => scrollTo('tickets')} className="px-7 py-4 rounded-2xl text-sm font-bold transition-all hover:-translate-y-1 hover:scale-[1.02]" style={{ background: t.isDark ? `${t.accent}18` : 'linear-gradient(135deg,#2563EB,#1D4ED8)', color: t.isDark ? t.accent : '#FFFFFF', border: t.isDark ? `1px solid ${t.accent}40` : 'none', boxShadow: t.isDark ? `0 8px 24px ${t.accentGlow}` : '0 4px 24px rgba(37,99,235,0.4)', borderRadius: 16 }}>{hero.primaryCta}</button><button onClick={() => scrollTo('about')} className="px-7 py-4 rounded-2xl text-sm font-semibold transition-all hover:-translate-y-1" style={{ border: '1px solid rgba(255,255,255,.28)', color: '#FFFFFF', background: 'rgba(255,255,255,0.08)', backdropFilter: 'blur(8px)', borderRadius: 16 }}>{hero.secondaryCta}</button></div></div><div className="mt-12 flex gap-2">{hero.images.map((_, index) => <button key={index} aria-label={`Show banner ${index + 1}`} onClick={() => setImgIdx(index)} className="h-1 rounded-full transition-all" style={{ width: index === imgIdx ? 28 : 12, background: index === imgIdx ? (t.isDark ? t.accent : '#60A5FA') : 'rgba(255,255,255,.35)' }} />)}</div></div></section></EditableTarget>
+  return <EditableTarget target={{ section: 'hero' }}>
+    <section id="hero" className={`relative flex min-h-[100svh] w-full items-end overflow-hidden md:min-h-[min(900px,100dvh)] md:items-center ${mode !== 'editor' ? 'hero-machine-entry' : ''} ${!data.visibility.hero ? 'opacity-40' : ''}`}>
+      <div className="absolute inset-0 bg-zinc-950">
+        {hero.images.map((src, index) => <div key={`${src}-${index}`} className="absolute inset-0 transition-opacity duration-1000 ease-out" style={{ opacity: index === imgIdx ? 1 : 0 }}>
+          <img src={src} alt={`${hero.title} live`} width="1600" height="900" className="h-full w-full object-cover object-center" style={{ animation: index === imgIdx ? 'ken-burns 12s ease-out forwards' : 'none' }} />
+        </div>)}
+        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(9,9,11,.1)_0%,rgba(9,9,11,.42)_42%,rgba(9,9,11,.98)_88%)] md:bg-[linear-gradient(90deg,rgba(9,9,11,.97)_0%,rgba(9,9,11,.82)_42%,rgba(9,9,11,.36)_72%,rgba(9,9,11,.58)_100%)]" />
+        <div className="absolute inset-0 opacity-70" style={{ background: `radial-gradient(circle at 72% 38%, ${accent}28 0%, transparent 31%)` }} />
+        <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-zinc-950 to-transparent" />
+      </div>
+
+      <div className="pointer-events-none absolute right-[-7rem] top-[18%] hidden aspect-square w-[34rem] rounded-full border border-white/10 md:block" />
+      <div className="pointer-events-none absolute right-[-3rem] top-[25%] hidden aspect-square w-[24rem] rounded-full border border-white/10 md:block" />
+
+      <div className="relative z-10 mx-auto grid w-full max-w-7xl gap-10 px-5 pb-[calc(2rem+env(safe-area-inset-bottom))] pt-32 sm:px-8 md:grid-cols-[minmax(0,1.25fr)_minmax(310px,.75fr)] md:items-end md:gap-12 md:py-32 lg:px-10">
+        <div className="hero-machine-copy min-w-0">
+          <div className="mb-5 inline-flex max-w-full items-center gap-2 rounded-full border border-white/15 bg-black/30 px-3.5 py-2 text-[10px] font-bold uppercase tracking-[.2em] text-white/85 sm:text-xs">
+            <span className="relative flex h-2 w-2 shrink-0"><span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60" style={{ background: accent }} /><span className="relative inline-flex h-2 w-2 rounded-full" style={{ background: accent }} /></span>
+            <span className="truncate">{hero.eyebrow}</span>
+          </div>
+
+          <p className="mb-3 text-xs font-semibold uppercase tracking-[.24em] text-white/60 sm:text-sm">{hero.tour}</p>
+          <h1 className="max-w-4xl break-words font-serif font-bold leading-[.82] tracking-[-.055em] text-white" style={{ fontSize: 'clamp(3.6rem,9vw,8.25rem)', textShadow: '0 18px 70px rgba(0,0,0,.45)' }}>{hero.title}</h1>
+
+          {hero.guests.length > 0 && <div className="mt-5 flex flex-wrap items-center gap-2 text-sm text-white/80"><span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-1 font-semibold text-amber-200">With special guest{hero.guests.length > 1 ? 's' : ''}</span><span>{hero.guests.join(' · ')}</span></div>}
+
+          <div className="mt-7 grid max-w-2xl grid-cols-1 gap-3 text-sm text-white sm:grid-cols-3">
+            <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-3.5"><span className="hero-machine-icon mt-0.5 text-lg" aria-hidden="true">◷</span><div><div className="text-[10px] uppercase tracking-[.18em] text-white/45">Date & time</div><div className="mt-1 font-semibold leading-snug">{hero.date}</div><div className="mt-0.5 text-xs text-white/55">Doors {hero.doors} · Show {hero.show}</div></div></div>
+            <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[.06] p-3.5 sm:col-span-2"><span className="hero-machine-icon mt-0.5 text-lg" aria-hidden="true">⌖</span><div className="min-w-0"><div className="text-[10px] uppercase tracking-[.18em] text-white/45">Venue</div><div className="mt-1 font-semibold leading-snug">{hero.venue}</div><div className="mt-0.5 truncate text-xs text-white/55">{hero.address}</div></div></div>
+          </div>
+
+          {hero.images.length > 1 && <div className="mt-7 flex items-center gap-2" aria-label="Event image gallery">{hero.images.map((_, index) => <button key={index} type="button" aria-label={`Show banner ${index + 1}`} aria-current={index === imgIdx} onClick={() => setImgIdx(index)} className="h-1.5 rounded-full transition-[width,background-color] duration-300" style={{ width: index === imgIdx ? 34 : 10, background: index === imgIdx ? accent : 'rgba(255,255,255,.3)' }} />)}</div>}
+        </div>
+
+        <aside className="hero-machine-card overflow-hidden rounded-[1.75rem] border border-white/15 bg-zinc-950/75 shadow-[0_30px_100px_rgba(0,0,0,.55)] backdrop-blur-xl">
+          <div className="h-1 w-full" style={{ background: `linear-gradient(90deg, transparent, ${accent}, transparent)` }} />
+          <div className="p-5 sm:p-6 lg:p-7">
+            <div className="flex items-start justify-between gap-4">
+              <div><div className="text-[10px] font-bold uppercase tracking-[.22em]" style={{ color: accent }}>Official event access</div><h2 className="mt-2 font-serif text-2xl font-bold text-white sm:text-3xl">Your night starts here.</h2></div>
+              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/[.07] text-xl" aria-hidden="true">🎟</div>
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-white/60">Choose your package, secure your preferred seat, and receive your booking confirmation in minutes.</p>
+
+            <div className="my-5 grid grid-cols-2 gap-3 rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div><div className="text-[10px] uppercase tracking-[.16em] text-white/40">Tickets from</div><div className="mt-1 text-xl font-bold text-white">{startingPrice === null ? 'View packages' : formatPrice(startingPrice)}</div></div>
+              <div className="border-l border-white/10 pl-4"><div className="text-[10px] uppercase tracking-[.16em] text-white/40">Availability</div><div className="mt-1 text-xl font-bold text-white">{availableSeats > 0 ? `${availableSeats.toLocaleString()} seats` : `${data.packages.length} packages`}</div></div>
+            </div>
+
+            <button type="button" onClick={() => scrollTo('tickets')} className="group flex min-h-14 w-full items-center justify-between rounded-2xl px-5 py-4 text-left text-sm font-extrabold text-zinc-950 shadow-lg transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0" style={{ background: `linear-gradient(135deg, ${accent}, #FFFFFF)`, boxShadow: `0 16px 42px ${accent}35` }}><span>{hero.primaryCta || 'Choose your tickets'}</span><span className="grid h-8 w-8 place-items-center rounded-full bg-zinc-950 text-base text-white transition-transform duration-200 group-hover:translate-x-1" aria-hidden="true">→</span></button>
+            <button type="button" onClick={() => scrollTo('about')} className="mt-3 min-h-12 w-full rounded-2xl border border-white/10 bg-white/[.05] px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-white/10">{hero.secondaryCta || 'Explore the event'}</button>
+
+            <div className="mt-5 flex flex-wrap justify-center gap-x-4 gap-y-2 border-t border-white/10 pt-4 text-[10px] font-semibold uppercase tracking-[.11em] text-white/45"><span>✓ Secure checkout</span><span>✓ Instant confirmation</span><span>✓ Mobile ticket</span></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </EditableTarget>
 }
 function AboutShow() {
   const { t } = useTheme()
@@ -397,22 +498,19 @@ function AboutShow() {
   if (!data.visibility.about && mode !== 'editor') return null
 
   return (
-    <EditableTarget target={{ section: 'about' }}><section id="about" className={`py-24 px-6 relative overflow-hidden ${!data.visibility.about ? 'opacity-40' : ''}`} style={{ background: t.isDark ? 'transparent' : t.bg3 }}>
+    <EditableTarget target={{ section: 'about' }}><section id="about" className={`booking-section premium-about py-24 px-6 relative overflow-hidden ${!data.visibility.about ? 'opacity-40' : ''}`} style={{ background: t.isDark ? 'transparent' : t.bg3 }}>
       <div className="max-w-7xl mx-auto">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
-          <div className="relative reveal-left">
-            <div className="rounded-3xl overflow-hidden aspect-[4/3]">
-              <img src={about.image} alt="Concert performance" className="w-full h-full object-cover" />
+          <div className="premium-media-wrap relative reveal-left">
+            <div className="premium-media rounded-3xl overflow-hidden aspect-[4/3]">
+              <img src={about.image} alt="Concert performance" width="960" height="720" className="w-full h-full object-cover" />
               <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg,rgba(139,92,246,0.2),transparent 60%)' }} />
             </div>
-            <div className="absolute -bottom-5 -right-5 rounded-2xl p-5 shadow-xl" style={{ background: t.isDark ? '#18181B' : '#FFFFFF', border: `1px solid ${t.isDark ? t.border : '#E5E7EB'}`, minWidth: 180, boxShadow: t.isDark ? '0 16px 48px rgba(0,0,0,0.5)' : '0 8px 32px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.06)' }}>
+            <div className="premium-float-card absolute -bottom-5 -right-5 rounded-2xl p-5 shadow-xl" style={{ background: t.isDark ? '#18181B' : '#FFFFFF', border: `1px solid ${t.isDark ? t.border : '#E5E7EB'}`, minWidth: 180, boxShadow: t.isDark ? '0 16px 48px rgba(0,0,0,0.5)' : '0 8px 32px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.06)' }}>
               <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: t.textMuted }}>Show Date</div>
               <div className="font-serif text-2xl font-bold mb-0.5" style={{ color: t.text }}>{about.dateLabel}</div>
               <div className="text-xs" style={{ color: t.textSub }}>{about.dateDetail}</div>
-              <div className="mt-3 h-1.5 rounded-full overflow-hidden" style={{ background: t.isDark ? t.border : '#E5E7EB' }}>
-                <div className="h-full rounded-full" style={{ width: '78%', background: `linear-gradient(90deg,${t.accent},#22D3EE)` }} />
-              </div>
-              <div className="text-[10px] font-mono mt-1" style={{ color: t.accent }}>78% tickets sold</div>
+              <div className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider" style={{ color: t.accent }}><span className="h-1.5 w-1.5 rounded-full animate-pulse" style={{ background: t.accent }} /> Official event</div>
             </div>
           </div>
 
@@ -428,7 +526,15 @@ function AboutShow() {
               {about.detail}
             </p>
 
-            <div className="p-6 rounded-2xl" style={{ background: t.isDark ? 'rgba(0,255,136,0.05)' : 'rgba(37,99,235,0.05)', border: `1px solid ${t.isDark ? 'rgba(0,255,136,0.15)' : 'rgba(37,99,235,0.15)'}` }}>
+            {about.highlights.length > 0 && <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {about.highlights.map(item => <div key={`${item.label}-${item.value}`} className="metric-card rounded-2xl p-4" style={{ background: t.card, border: `1px solid ${t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
+                <div className="text-lg" aria-hidden="true">{item.icon}</div>
+                <div className="mt-2 font-serif text-2xl font-bold" style={{ color: t.text }}><AnimatedMetric value={item.value} /></div>
+                <div className="mt-0.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: t.textMuted }}>{item.label}</div>
+              </div>)}
+            </div>}
+
+            <div className="premium-info-card p-6 rounded-2xl" style={{ background: t.isDark ? 'rgba(0,255,136,0.05)' : 'rgba(37,99,235,0.05)', border: `1px solid ${t.isDark ? 'rgba(0,255,136,0.15)' : 'rgba(37,99,235,0.15)'}` }}>
               <div className="text-xs font-mono uppercase tracking-wider mb-3" style={{ color: t.accent }}>Every Ticket Includes</div>
               <div className="grid grid-cols-2 gap-2">
                 {about.inclusions.map((f) => (
@@ -458,7 +564,7 @@ function VenueMap() {
 
   if (!data.visibility.venue && mode !== 'editor') return null
   return (
-    <EditableTarget target={{ section: 'venue' }}><section id="venue" className={`py-24 px-6 ${!data.visibility.venue ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg2 : t.sectionAlt }}>
+    <EditableTarget target={{ section: 'venue' }}><section id="venue" className={`booking-section premium-venue py-24 px-6 ${!data.visibility.venue ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg2 : t.sectionAlt }}>
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-14 reveal">
           <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{data.sectionHeadings?.venue || 'Venue'}</div>
@@ -468,8 +574,8 @@ function VenueMap() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="reveal-left">
-            <div className="rounded-3xl overflow-hidden relative h-full min-h-[380px]">
-              <img src={venue.image} alt={`${venue.name} arena`} className="w-full h-full object-cover absolute inset-0" />
+            <div className="premium-media rounded-3xl overflow-hidden relative h-full min-h-[380px]">
+              <img src={venue.image} alt={`${venue.name} arena`} width="1200" height="800" className="w-full h-full object-cover absolute inset-0" />
               <div className="absolute inset-0" style={{ background: 'linear-gradient(to top, rgba(9,9,11,0.85) 0%, transparent 60%)' }} />
               <div className="absolute bottom-0 left-0 right-0 p-6">
                 <div className="flex items-start justify-between gap-4">
@@ -492,7 +598,7 @@ function VenueMap() {
 
           <div className="space-y-4 reveal-right flex flex-col justify-center">
             {venueFacts.some(f => f.visible) && (
-              <div className="p-6 rounded-3xl" style={{ background: t.card, border: `1px solid ${t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
+              <div className="premium-card p-6 rounded-3xl" style={{ background: t.card, border: `1px solid ${t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
                 <div className="text-xs font-mono uppercase tracking-wider mb-4" style={{ color: t.textMuted }}>{data.sectionHeadings?.venueFacts || 'Venue Facts'}</div>
                 {venueFacts.filter(f => f.visible).map(fact => (
                   <div key={fact.id} className="flex justify-between py-2.5 border-b text-sm last:border-b-0 last:pb-0" style={{ borderColor: t.isDark ? t.border : '#F3F4F6' }}>
@@ -503,7 +609,7 @@ function VenueMap() {
               </div>
             )}
             {importantInfo.filter(i => i.visible).map(info => (
-              <div key={info.id} className="p-6 rounded-3xl" style={{ background: t.isDark ? 'rgba(0,255,136,0.06)' : t.card, border: `1px solid ${t.isDark ? 'rgba(0,255,136,0.2)' : t.border}` }}>
+              <div key={info.id} className="premium-card p-6 rounded-3xl" style={{ background: t.isDark ? 'rgba(0,255,136,0.06)' : t.card, border: `1px solid ${t.isDark ? 'rgba(0,255,136,0.2)' : t.border}` }}>
                 <div className="font-semibold text-sm mb-3" style={{ color: t.accent }}>{info.icon} {info.title}</div>
                 <ul className="space-y-1.5 text-sm" style={{ color: t.textSub }}>
                   {info.body.split('\n').map((line, idx) => (
@@ -538,7 +644,7 @@ function EventTimeline() {
   const { data, mode } = useBooking()
   if (!data.visibility.timeline && mode !== 'editor') return null
   return (
-    <EditableTarget target={{ section: 'timeline' }}><section id="timeline" className={`py-24 px-6 ${!data.visibility.timeline ? 'opacity-40' : ''}`}>
+    <EditableTarget target={{ section: 'timeline' }}><section id="timeline" className={`booking-section premium-timeline py-24 px-6 ${!data.visibility.timeline ? 'opacity-40' : ''}`}>
       <div className="max-w-3xl mx-auto">
         <div className="text-center mb-16 reveal">
           <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{data.sectionHeadings?.timeline || 'The Evening'}</div>
@@ -548,7 +654,7 @@ function EventTimeline() {
           <div className="absolute left-6 top-0 bottom-0 w-px" style={{ background: `linear-gradient(to bottom, transparent, ${t.border} 10%, ${t.border} 90%, transparent)` }} />
           <div className="space-y-0">
             {data.timeline.map((item, i) => (
-              <EditableTarget key={item.id} target={{ section: 'timeline', index: i }}><div className="reveal flex gap-6 pb-10 relative" style={{ transitionDelay: `${i * 0.07}s` }}>
+              <EditableTarget key={item.id} target={{ section: 'timeline', index: i }}><div className="timeline-card reveal flex gap-5 p-4 sm:p-5 mb-4 relative rounded-3xl" style={{ transitionDelay: `${i * 0.07}s`, background: t.card, border: `1px solid ${t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
                 <div className="relative z-10 shrink-0">
                   <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-lg" style={{ background: `${item.accent}15`, border: `1px solid ${item.accent}35`, boxShadow: `0 4px 16px ${item.accent}30` }}>
                     {item.icon}
@@ -915,7 +1021,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   }
 
   const Summary = ({ glowing = false }: { glowing?: boolean }) => (
-    <div className="rounded-2xl p-4 transition-all duration-500" style={{
+    <div className="checkout-summary rounded-2xl p-4 transition-all duration-500" style={{
       background: t.isDark ? '#0d0d0f' : t.card,
       border: `1px solid ${glowing ? checkoutAccent : t.border}`,
       boxShadow: glowing
@@ -1384,8 +1490,8 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         <h3 className="font-serif text-3xl font-bold mb-2" style={{ color: t.text }}>{tr.done.heading} {data.hero?.title || ''}</h3>
         <p className="text-sm mb-8" style={{ color: t.textSub }}>{tr.done.subtitle.replace('{email}', info.email || 'your email')}</p>
         
-        <div className="max-w-md mx-auto rounded-3xl overflow-hidden relative" style={{ background: t.isDark ? 'linear-gradient(135deg,#111113,#1a1a1f)' : t.card, border: `1px solid ${t.isDark ? `${tier.accent}44` : t.accent}`, boxShadow: t.isDark ? `0 0 40px ${tier.glow}` : `0 16px 36px ${t.accentGlow}` }}>
-          <div className="h-32 relative">
+        <div className="premium-issued-ticket max-w-md mx-auto overflow-hidden relative" style={{ '--ticket-accent': tier.accent, background: t.isDark ? 'linear-gradient(145deg,#111113,#1a1a1f)' : t.card, border: `1px solid ${t.isDark ? `${tier.accent}55` : t.accent}`, boxShadow: t.isDark ? `0 28px 80px ${tier.glow}` : `0 24px 60px ${t.accentGlow}` } as React.CSSProperties}>
+          <div className="premium-ticket-banner h-40 relative">
             <img src={data.hero?.images?.[0] || ''} alt={data.hero?.title} className="w-full h-full object-cover" />
             <div className="absolute inset-0 bg-gradient-to-t from-[#111113] to-transparent opacity-90" />
             <div className="absolute bottom-4 left-5 right-5 text-left">
@@ -1393,8 +1499,8 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
               <div className="font-serif text-xl font-bold leading-tight" style={{ color: '#FFFFFF' }}>{data.hero?.title}</div>
             </div>
           </div>
-          <div className="relative p-6 text-left" style={{ background: t.isDark ? 'transparent' : t.card }}>
-            <img src="/apex-email-ticket-logo.png" alt="Apex Bookings" className="mb-5 h-12 w-auto rounded-lg bg-black object-cover object-center" />
+          <div className="premium-ticket-body relative p-6 text-left" style={{ background: t.isDark ? 'transparent' : t.card }}>
+            <div className="mb-5 flex items-center justify-between gap-3"><img src="/apex-email-ticket-logo.png" alt="Apex Bookings" className="h-12 w-auto rounded-lg bg-black object-cover object-center" /><span className="premium-ticket-seal rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[.16em]">Verified digital pass</span></div>
             <div className="flex justify-between items-start mb-6">
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.customerName}</div>
@@ -1406,7 +1512,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
               </div>
             </div>
             
-            <div className="grid grid-cols-2 gap-4 mb-6">
+            <div className="premium-ticket-details grid grid-cols-2 gap-4 mb-6">
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.dateTime}</div>
                 <div className="text-sm font-semibold" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{data.hero?.date}</div>
@@ -1427,7 +1533,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
             </div>
 
             {tier.benefits && tier.benefits.length > 0 && (
-              <div className="mb-6 p-4 rounded-2xl" style={{ background: t.isDark ? 'rgba(0,0,0,0.4)' : t.inputBg, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.05)' : t.border}` }}>
+              <div className="premium-ticket-benefits mb-6 p-4 rounded-2xl" style={{ background: t.isDark ? 'rgba(0,0,0,0.4)' : t.inputBg, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.05)' : t.border}` }}>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: t.textMuted }}>{tr.done.includedBenefits}</div>
                 <ul className="text-xs space-y-1.5" style={{ color: t.isDark ? '#D4D4D8' : t.textSub }}>
                   {tier.benefits.map((b: string, i: number) => (
@@ -1441,7 +1547,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
             )}
 
             <div className="flex justify-center mb-4">
-              <div className="bg-white p-3 rounded-2xl flex items-center justify-center">
+              <div className="premium-ticket-qr bg-white p-3 rounded-2xl flex items-center justify-center">
                 <QRCodeSVG
                   value={ticketRefUrl}
                   size={120}
@@ -1504,10 +1610,10 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   return (
     <>
-    <div className="fixed inset-0 z-[9998] flex items-end md:items-center justify-center p-0 md:p-4" style={{ background: 'rgba(0,0,0,0.88)', backdropFilter: 'blur(10px)' }}>
-      <div className="ios-modal-scroll w-full md:max-w-5xl flex flex-col rounded-t-3xl md:rounded-3xl"
+    <div className="booking-checkout fixed inset-0 z-[9998] flex items-end md:items-center justify-center p-0 md:p-4" style={{ background: 'rgba(0,0,0,0.88)', backdropFilter: 'blur(10px)' }}>
+      <div className="checkout-surface ios-modal-scroll w-full md:max-w-5xl flex flex-col rounded-t-3xl md:rounded-3xl"
         style={{ background: t.isDark ? '#111113' : t.bg, height: '95dvh', maxHeight: '95dvh', overflow: 'hidden', animation: 'modal-in 0.35s cubic-bezier(0.16,1,0.3,1)', border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.08)' : t.border}`, boxShadow: t.isDark ? '0 40px 80px rgba(0,0,0,0.6)' : '0 24px 60px rgba(23,26,31,0.14)' }}>
-        <div className="flex items-center justify-between px-6 py-4 border-b shrink-0" style={{ borderColor: t.border, background: t.isDark ? '#111113' : '#FFFFFF' }}>
+        <div className="checkout-header flex items-center justify-between px-6 py-4 border-b shrink-0" style={{ borderColor: t.border, background: t.isDark ? '#111113' : '#FFFFFF' }}>
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl flex items-center justify-center text-lg" style={{ background: `${tier.accent}18`, border: `1px solid ${tier.accent}40` }}>{tier.icon}</div>
             <div>
@@ -1543,7 +1649,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         </div>
         <div
           ref={contentRef}
-          className="flex-1 min-h-0 p-6"
+          className="checkout-content flex-1 min-h-0 p-6"
           style={{
             background: t.isDark ? 'transparent' : t.bg2,
             overflowY: 'scroll',
@@ -1574,7 +1680,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
           </div>
         )}
         {step !== 'done' && step !== 'waiting' && step !== 'bank_waiting' && step !== 'bank_details' && step !== 'declined' && !(step === 'payment' && payMethod === 'bank_transfer') && (
-          <div className="flex items-center justify-between px-6 py-4 border-t shrink-0" style={{ borderColor: t.border, background: t.isDark ? '#0d0d0f' : '#FFFFFF' }}>
+          <div className="checkout-footer flex items-center justify-between px-6 py-4 border-t shrink-0" style={{ borderColor: t.border, background: t.isDark ? '#0d0d0f' : '#FFFFFF' }}>
             <div>
               {stepIdx > 0
                 ? <button onClick={() => { if (step === 'payment' && payMethod !== null) { setShowExitPopup(true) } else { go(STEPS[stepIdx - 1] as BStep) } }} className="flex items-center gap-2 text-sm transition-colors" style={{ color: t.textSub }}>
@@ -1640,7 +1746,7 @@ function TicketSection() {
 
   if (!data.visibility.tickets && mode !== 'editor') return null
   return (
-    <EditableTarget target={{ section: 'tickets' }}><section id="tickets" className={`py-24 px-6 relative overflow-hidden ${!data.visibility.tickets ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg : t.bg2 }}>
+    <EditableTarget target={{ section: 'tickets' }}><section id="tickets" className={`booking-section premium-tickets py-24 px-6 relative overflow-hidden ${!data.visibility.tickets ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg : t.bg2 }}>
       <div className="max-w-6xl mx-auto">
         <LocalizedTicketHeading />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 reveal">
@@ -1652,12 +1758,12 @@ function TicketSection() {
             const isElevated = !t.isDark && valueLevel >= 0.35
             return (
             <EditableTarget key={tier.id} target={{ section: 'tickets', index }}><div onClick={() => { if (mode !== 'editor') setModalTier(tier.id) }}
-              className="relative rounded-3xl p-7 cursor-pointer flex flex-col items-center text-center transition-all duration-300 group"
+              className="ticket-tier-card relative rounded-3xl p-7 cursor-pointer flex flex-col items-center text-center transition-all duration-300 group"
               style={{ background: t.isDark ? t.card : isPremium ? 'linear-gradient(145deg,#FFFFFF 0%,#EEF4FF 100%)' : isElevated ? 'linear-gradient(145deg,#FFFFFF 0%,#F7F9FF 100%)' : t.card, border: `1px solid ${t.isDark ? t.cardBorder : isPremium ? t.accent : isElevated ? `${t.accent}70` : t.cardBorder}`, boxShadow: t.isDark ? t.cardShadow : isPremium ? `0 16px 32px ${t.accentGlow}` : isElevated ? `0 10px 24px rgba(23,26,31,0.07)` : t.cardShadow }}
               onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-5px)'; (e.currentTarget as HTMLDivElement).style.borderColor = visualAccent; (e.currentTarget as HTMLDivElement).style.boxShadow = t.isDark ? `0 0 40px ${tier.glow}, 0 20px 60px rgba(0,0,0,0.3)` : `0 12px 28px ${visualGlow}` }}
               onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = ''; (e.currentTarget as HTMLDivElement).style.borderColor = t.cardBorder; (e.currentTarget as HTMLDivElement).style.boxShadow = t.cardShadow }}>
               {tier.badge && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 text-xs font-bold px-4 py-1.5 rounded-full whitespace-nowrap" style={{ background: visualAccent, color: t.isDark ? '#09090B' : '#FFFFFF', boxShadow: `0 4px 12px ${visualGlow}` }}>{tier.badge}</div>
+                <div className="package-card-badge absolute -top-3 left-1/2 -translate-x-1/2 inline-flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-[.12em] px-4 py-2 rounded-full whitespace-nowrap" style={{ background: visualAccent, color: t.isDark ? '#09090B' : '#FFFFFF', boxShadow: `0 8px 24px ${visualGlow}` }}><span aria-hidden="true">✦</span>{tier.badge}</div>
               )}
               {isPremium && <div className="mb-4 rounded-full px-3 py-1 text-[10px] font-mono font-bold uppercase tracking-[0.14em]" style={{ background: `${t.accent}12`, border: `1px solid ${t.accent}30`, color: t.accent }}>Premium experience</div>}
               <div className="flex flex-col items-center justify-center text-center gap-2 mb-5">
@@ -1671,7 +1777,7 @@ function TicketSection() {
                 <span className="font-serif font-bold" style={{ color: visualAccent, fontSize: isPremium ? '2.9rem' : isElevated ? '2.65rem' : '2.4rem', textShadow: t.isDark ? 'none' : '0 1px 0 rgba(255,255,255,0.7)' }}>{formatPrice(tier.price)}</span>
                 <span className="text-sm ml-1" style={{ color: t.textMuted }}>{tr.tickets.perTicket}</span>
               </div>
-              <div className="text-xs font-mono mb-4 text-center" style={{ color: tier.seats < 20 ? '#EF4444' : t.textMuted }}>{tier.seats} {tr.tickets.seatsRemaining}</div>
+              <div className="text-xs font-mono mb-4 text-center" style={{ color: tier.seats < 20 ? '#EF4444' : t.textMuted }}><AnimatedMetric value={tier.seats} /> {tr.tickets.seatsRemaining}</div>
               <div className="w-full h-1.5 rounded-full mb-6 overflow-hidden" style={{ background: t.isDark ? t.border : '#F3F4F6' }}>
                 <div className="h-full rounded-full" style={{ width: `${100 - (tier.seats / 400) * 100}%`, background: visualAccent }} />
               </div>
@@ -1709,7 +1815,7 @@ function Testimonials() {
   const doubled = [...data.testimonials, ...data.testimonials]
   if (!data.visibility.testimonials && mode !== 'editor') return null
   return (
-    <EditableTarget target={{ section: 'testimonials' }}><section className={`py-24 overflow-hidden ${!data.visibility.testimonials ? 'opacity-40' : ''}`}>
+    <EditableTarget target={{ section: 'testimonials' }}><section id="testimonials" className={`booking-section premium-testimonials py-24 overflow-hidden ${!data.visibility.testimonials ? 'opacity-40' : ''}`}>
       <div className="max-w-7xl mx-auto px-6 mb-12 text-center reveal">
         <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>From Our Attendees</div>
         <h2 className="font-serif text-4xl md:text-5xl font-bold" style={{ color: t.text }}>What People Are Saying</h2>
@@ -1718,13 +1824,13 @@ function Testimonials() {
         <div className="absolute left-0 top-0 bottom-0 w-24 z-10 pointer-events-none" style={{ background: `linear-gradient(to right,${t.bg},transparent)` }} />
         <div className="absolute right-0 top-0 bottom-0 w-24 z-10 pointer-events-none" style={{ background: `linear-gradient(to left,${t.bg},transparent)` }} />
         <div className="overflow-hidden">
-          <div className="flex gap-5 py-4" style={{ animation: 'scroll-right 40s linear infinite', width: 'max-content' }}>
+          <div className="testimonial-track flex gap-5 py-4" style={{ animation: 'scroll-right 40s linear infinite', width: 'max-content' }}>
             {doubled.map((t2, i) => (
-              <EditableTarget key={`${t2.id}-${i}`} target={{ section: 'testimonials', index: i % data.testimonials.length }}><div className="shrink-0 w-80 rounded-2xl p-5" style={{ background: t.card, border: `1px solid ${t.isDark ? t2.accent + '22' : t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
+              <EditableTarget key={`${t2.id}-${i}`} target={{ section: 'testimonials', index: i % data.testimonials.length }}><div className="testimonial-card shrink-0 w-80 rounded-2xl p-5" style={{ background: t.card, border: `1px solid ${t.isDark ? t2.accent + '22' : t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
                 <div className="flex gap-1 mb-3">{Array(t2.rating).fill(0).map((_, j) => <span key={j} className="text-amber-400 text-sm">★</span>)}</div>
                 <p className="text-sm leading-relaxed mb-4" style={{ color: t.textSub }}>"{t2.text}"</p>
                 <div className="flex items-center gap-3">
-                  <img src={t2.avatar} alt={t2.name} className="w-9 h-9 rounded-full object-cover" />
+                  <img src={t2.avatar} alt={t2.name} width="36" height="36" className="w-9 h-9 rounded-full object-cover" />
                   <div>
                     <div className="text-sm font-semibold" style={{ color: t.text }}>{t2.name}</div>
                     <div className="text-xs" style={{ color: t.textMuted }}>{t2.role}</div>
@@ -1755,7 +1861,7 @@ function FAQ() {
   const [open, setOpen] = useState<number | null>(0)
   if (!data.visibility.faq && mode !== 'editor') return null
   return (
-    <EditableTarget target={{ section: 'faq' }}><section id="faq" className={`py-24 px-6 ${!data.visibility.faq ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg2 : t.sectionAlt }}>
+    <EditableTarget target={{ section: 'faq' }}><section id="faq" className={`booking-section premium-faq py-24 px-6 ${!data.visibility.faq ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg2 : t.sectionAlt }}>
       <div className="max-w-3xl mx-auto">
         <div className="text-center mb-14 reveal">
           <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>Questions</div>
@@ -1763,7 +1869,7 @@ function FAQ() {
         </div>
         <div className="space-y-3 reveal">
           {data.faq.map((faq, i) => (
-            <EditableTarget key={faq.id} target={{ section: 'faq', index: i }}><div className="rounded-2xl overflow-hidden transition-all duration-300"
+            <EditableTarget key={faq.id} target={{ section: 'faq', index: i }}><div className="faq-card rounded-2xl overflow-hidden transition-all duration-300"
               style={{ background: open === i ? (t.isDark ? 'rgba(0,255,136,0.04)' : `${t.accent}08`) : t.card, border: `1px solid ${open === i ? (t.isDark ? 'rgba(0,255,136,0.25)' : `${t.accent}38`) : t.cardBorder}`, boxShadow: t.isDark ? 'none' : '0 2px 6px rgba(23,26,31,0.03)' }}>
               <button className="w-full text-left px-6 py-5 flex items-center justify-between gap-4" onClick={() => setOpen(open === i ? null : i)}>
                 <span className="font-semibold text-sm" style={{ color: t.text }}>{faq.q}</span>
@@ -1789,10 +1895,10 @@ function CTASection() {
   const cta = data.cta
   if (!data.visibility.cta && mode !== 'editor') return null
   return (
-    <EditableTarget target={{ section: 'cta' }}><section className={`py-24 px-6 ${!data.visibility.cta ? 'opacity-40' : ''}`}>
+    <EditableTarget target={{ section: 'cta' }}><section id="cta" className={`booking-section premium-cta py-24 px-6 ${!data.visibility.cta ? 'opacity-40' : ''}`}>
       <div className="max-w-5xl mx-auto reveal">
-        <div className="relative rounded-3xl overflow-hidden p-12 md:p-20 text-center" style={{ border: t.isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(15,23,42,0.12)' }}>
-          <img src={cta.image} alt="Concert" className="absolute inset-0 w-full h-full object-cover" />
+        <div className="premium-cta-card relative rounded-3xl overflow-hidden p-12 md:p-20 text-center" style={{ border: t.isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(15,23,42,0.12)' }}>
+          <img src={cta.image} alt="Concert" width="1200" height="800" className="absolute inset-0 w-full h-full object-cover" />
           <div className="absolute inset-0" style={{ background: t.isDark ? 'linear-gradient(135deg,rgba(9,9,11,0.96),rgba(9,9,11,0.88))' : 'linear-gradient(135deg,rgba(15,23,42,0.94),rgba(15,23,42,0.84))' }} />
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 rounded-full pointer-events-none" style={{ background: t.isDark ? 'radial-gradient(circle,rgba(0,255,136,0.08) 0%,transparent 70%)' : 'radial-gradient(circle,rgba(37,99,235,0.12) 0%,transparent 70%)' }} />
           <div className="relative z-10">
@@ -1889,13 +1995,30 @@ function FloatingChatButton({ eventId = 'default', isPreview = false, mode = 'pr
   return <PublicSupportChat eventId={eventId} isPreview={isPreview} />
 }
 
+function PackageTypeLibraryPicker({ currentName, action, onSelect }: { currentName?: string; action: 'add' | 'replace'; onSelect: (type: PackageTypeDefinition) => void }) {
+  return <div className="rounded-2xl border border-white/10 bg-white/[.025] p-3">
+    <div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold text-white">Package type library</div><div className="mt-1 text-[10px] leading-relaxed text-zinc-500">{action === 'add' ? 'Select a ready-made package to add it to this page.' : 'Apply a package type, then customize every field below.'}</div></div><span className="shrink-0 rounded-full bg-emerald-400/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-emerald-300">{PACKAGE_TYPE_LIBRARY.length} types</span></div>
+    <div className="mt-3 grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
+      {PACKAGE_TYPE_LIBRARY.map(type => {
+        const selected = currentName === type.name
+        return <button key={type.key} type="button" onClick={() => onSelect(type)} className="group rounded-xl border p-2.5 text-left transition-all hover:-translate-y-0.5" style={{ background: selected ? `${type.accent}16` : 'rgba(255,255,255,.035)', borderColor: selected ? `${type.accent}70` : 'rgba(255,255,255,.08)' }}>
+          <div className="flex items-start gap-2"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-base" style={{ background: `${type.accent}18`, border: `1px solid ${type.accent}35` }}>{type.icon}</span><div className="min-w-0"><div className="truncate text-[11px] font-bold text-white">{type.name}</div><div className="mt-0.5 text-[9px] uppercase tracking-wider" style={{ color: type.accent }}>{type.category}</div></div></div>
+          <div className="mt-2 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{type.description}</div>
+          {type.badge && <span className="mt-2 inline-flex rounded-full px-2 py-0.5 text-[9px] font-bold" style={{ background: `${type.accent}14`, color: type.accent }}>{type.badge}</span>}
+        </button>
+      })}
+    </div>
+  </div>
+}
+
 
 function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPageData; target: EditorTarget | null; onApply: (data: BookingPageData) => void; close: () => void }) {
   const [draft, setDraft] = useState<BookingPageData>(() => structuredClone(data))
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadError, setUploadError] = useState<string | null>(null)
-  useEffect(() => { setDraft(structuredClone(data)); setLibraryOpen(false); setUploadProgress(0); setUploadError(null) }, [data, target])
+  const [packageNotice, setPackageNotice] = useState<string | null>(null)
+  useEffect(() => { setDraft(structuredClone(data)); setLibraryOpen(false); setUploadProgress(0); setUploadError(null); setPackageNotice(null) }, [data, target])
   if (!target) return null
   const mutate = (change: (next: BookingPageData) => void) => setDraft(current => { const next = structuredClone(current); change(next); return next })
   const input = (label: string, value: string, set: (value: string) => void, multiline = false) => <label className="block"><span className="text-[11px] text-zinc-400">{label}</span>{multiline ? <textarea value={value} onChange={event => set(event.target.value)} className="mt-1.5 h-24 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" /> : <input value={value} onChange={event => set(event.target.value)} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />}</label>
@@ -1935,7 +2058,7 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
   })
   const imageControls = <><label className="mt-4 block rounded-xl border border-dashed border-white/20 p-3 text-center text-xs text-zinc-300">Upload from device<input hidden type="file" accept="image/*" onChange={event => void upload(event.target.files?.[0])} /></label><button type="button" onClick={() => setLibraryOpen(value => !value)} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2 text-xs text-emerald-300">Choose from media library</button>{libraryOpen && <div className="mt-2 grid max-h-40 grid-cols-3 gap-2 overflow-y-auto">{mediaLibraryStore.listEventAssets().filter(asset => asset.mimeType.startsWith('image/')).map(asset => <button key={asset.id} type="button" onClick={() => applyImage(asset.url)} className="overflow-hidden rounded-lg border border-white/10"><img src={asset.url} className="aspect-square w-full object-cover" /></button>)}</div>}<button type="button" onClick={() => applyImage('')} className="mt-2 text-xs text-red-300">Delete image</button></>
   const reviewImageControls = target.section === 'testimonials' && target.index !== undefined ? <div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] uppercase tracking-wider text-zinc-400">Current customer image</div>{draft.testimonials[target.index].avatar ? <img src={draft.testimonials[target.index].avatar} alt={draft.testimonials[target.index].name} className="mt-3 aspect-square w-28 rounded-2xl object-cover"/> : <div className="mt-3 grid aspect-square w-28 place-items-center rounded-2xl bg-white/5 text-xs text-zinc-500">No image</div>}<div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => applyImage(data.testimonials[target.index!]?.avatar ?? '')} className="rounded-lg bg-white/5 px-3 py-2 text-xs">Keep Current Image</button><label className="cursor-pointer rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Replace Image<input hidden type="file" accept="image/*" onChange={event => void upload(event.target.files?.[0])}/></label><button type="button" onClick={() => applyImage('')} className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300">Remove Image</button></div>{uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }}/></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}{uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Image uploaded successfully.</div>}{uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}</div> : null
-  const sectionLabel: Record<BookingSectionId, string> = { hero: 'Hero', about: 'About', venue: 'Venue', timeline: 'Timeline', tickets: 'Package', testimonials: 'Customer review', faq: 'FAQ', cta: 'Call to action', footer: 'Footer' }
+  const sectionLabel = BOOKING_SECTION_LABELS
   const headingInput = (key: string, defaultVal: string) => input('Section Heading', draft.sectionHeadings?.[key] ?? defaultVal, value => mutate(next => { if (!next.sectionHeadings) next.sectionHeadings = {}; next.sectionHeadings[key] = value }))
   const fields = () => {
     if (target.section === 'hero') return <>{input('Eyebrow', draft.hero.eyebrow, value => mutate(next => { next.hero.eyebrow = value }))}{input('Hero title', draft.hero.title, value => mutate(next => { next.hero.title = value }))}{input('Host / subtitle', draft.hero.tour, value => mutate(next => { next.hero.tour = value }))}{input('Date', draft.hero.date, value => mutate(next => { next.hero.date = value }))}{input('Venue', draft.hero.venue, value => mutate(next => { next.hero.venue = value }))}{input('Primary button text', draft.hero.primaryCta, value => mutate(next => { next.hero.primaryCta = value }))}{input('Secondary button text', draft.hero.secondaryCta, value => mutate(next => { next.hero.secondaryCta = value }))}{input('Guest performers (one per line)', draft.hero.guests.join('\n'), value => mutate(next => { next.hero.guests = value.split('\n').map(item => item.trim()).filter(Boolean) }), true)}{imageControls}</>
@@ -1968,16 +2091,42 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
     }
     if (target.section === 'tickets') { 
       if (target.index !== undefined) {
-        const item = draft.packages[target.index]; return <>{input('Package name', item.name, value => mutate(next => { next.packages[target.index!].name = value }))}{input('Description', item.desc, value => mutate(next => { next.packages[target.index!].desc = value }), true)}{input('Price', String(item.price), value => mutate(next => { next.packages[target.index!].price = Number(value) || 0 }))}{input('Benefits (one per line)', item.benefits.join('\n'), value => mutate(next => { next.packages[target.index!].benefits = value.split('\n').filter(Boolean) }), true)}</> 
+        const item = draft.packages[target.index]
+        const applyPackageType = (type: PackageTypeDefinition) => {
+          mutate(next => {
+            const currentId = next.packages[target.index!].id
+            next.packages[target.index!] = { ...createPackageFromType(type), id: currentId }
+          })
+          setPackageNotice(`${type.name} defaults applied. You can customize every field below.`)
+        }
+        return <>
+          <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[.035] p-4">
+            <div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl text-2xl" style={{ background: `${item.accent}18`, border: `1px solid ${item.accent}40` }}>{item.icon}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="font-serif text-lg font-bold text-white">{item.name}</div>{item.badge && <span className="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase" style={{ background: `${item.accent}18`, color: item.accent }}>{item.badge}</span>}</div><div className="mt-1 text-xs text-zinc-400">{item.desc}</div><div className="mt-2 text-xs font-bold" style={{ color: item.accent }}>{item.seats.toLocaleString()} available · {item.benefits.length} benefits</div></div></div>
+          </div>
+          <PackageTypeLibraryPicker currentName={item.name} action="replace" onSelect={applyPackageType} />
+          {packageNotice && <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-xs text-emerald-200">✓ {packageNotice}</div>}
+          {input('Package name', item.name, value => mutate(next => { next.packages[target.index!].name = value }))}
+          {input('Description', item.desc, value => mutate(next => { next.packages[target.index!].desc = value }), true)}
+          <div className="grid grid-cols-2 gap-3">{input('Price', String(item.price), value => mutate(next => { next.packages[target.index!].price = Math.max(0, Number(value) || 0) }))}{input('Available seats', String(item.seats), value => mutate(next => { next.packages[target.index!].seats = Math.max(0, Number(value) || 0) }))}</div>
+          <div><div className="mb-2 text-[11px] text-zinc-400">Quick badge</div><div className="flex flex-wrap gap-1.5">{['Great Value', 'Popular', 'Best Seller', 'Limited', 'Recommended', 'Exclusive', 'Ultimate Access'].map(badge => <button key={badge} type="button" onClick={() => mutate(next => { next.packages[target.index!].badge = badge })} className="rounded-full border px-2.5 py-1 text-[10px]" style={{ background: item.badge === badge ? `${item.accent}18` : 'rgba(255,255,255,.03)', borderColor: item.badge === badge ? `${item.accent}60` : 'rgba(255,255,255,.1)', color: item.badge === badge ? item.accent : '#A1A1AA' }}>{badge}</button>)}<button type="button" onClick={() => mutate(next => { next.packages[target.index!].badge = null })} className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] text-zinc-500">No badge</button></div></div>
+          {input('Custom badge', item.badge ?? '', value => mutate(next => { next.packages[target.index!].badge = value.trim() || null }))}
+          <div className="grid grid-cols-[1fr_auto] items-end gap-3">{input('Icon', item.icon, value => mutate(next => { next.packages[target.index!].icon = value }))}<label className="block"><span className="text-[11px] text-zinc-400">Accent</span><input type="color" value={item.accent} onChange={event => mutate(next => { next.packages[target.index!].accent = event.target.value; next.packages[target.index!].glow = `${event.target.value}38` })} className="mt-1.5 h-10 w-14 cursor-pointer rounded-xl border border-white/10 bg-white/5 p-1" /></label></div>
+          {input('Seat sections (one per line)', item.sections.join('\n'), value => mutate(next => { next.packages[target.index!].sections = value.split('\n').map(section => section.trim()).filter(Boolean) }), true)}
+          {input('Benefits (one per line)', item.benefits.join('\n'), value => mutate(next => { next.packages[target.index!].benefits = value.split('\n').map(benefit => benefit.trim()).filter(Boolean) }), true)}
+        </>
       }
       return <>{headingInput('tickets', 'Select Packages')}
+        <PackageTypeLibraryPicker action="add" onSelect={type => { mutate(next => { next.packages.push(createPackageFromType(type)) }); setPackageNotice(`${type.name} was added. Apply these changes, then tap its card to customize it.`) }} />
+        {packageNotice && <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-xs text-emerald-200">✓ {packageNotice}</div>}
+        <div className="rounded-xl border border-white/10 bg-white/[.025] p-3"><div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Current packages</div><div className="mt-2 flex flex-wrap gap-2">{draft.packages.map(item => <span key={item.id} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] text-zinc-300"><span>{item.icon}</span>{item.name}</span>)}</div></div>
         <div className="mt-4 pt-4 border-t border-white/10">
-          <div className="text-xs font-semibold mb-3 text-emerald-400">Load Preset Configuration</div>
+          <div className="text-xs font-semibold mb-1 text-emerald-400">Quick show bundles</div>
+          <div className="mb-3 text-[10px] text-zinc-500">Replace all packages with a ready-made two-tier show setup.</div>
           <div className="grid grid-cols-2 gap-2">
             {Object.entries({
               'Concert': [
-                { id: 'ga', name: 'General Admission', price: 150, desc: 'Floor access', badge: null, accent: '#71717A', glow: 'rgba(113,113,122,0.18)', seats: 5000, icon: '🎟', sections: ['Floor'], benefits: ['Standard entry', 'Floor access'] },
-                { id: 'vip', name: 'VIP Pit', price: 350, desc: 'Premium pit access', badge: 'Best Seller', accent: '#00FF88', glow: 'rgba(0,255,136,0.22)', seats: 500, icon: '⭐', sections: ['VIP Pit'], benefits: ['Early entry', 'Pit access', 'VIP bar'] }
+                { id: 'regular', name: 'Regular', price: 150, desc: 'Standard floor access', badge: 'Great Value', accent: '#64748B', glow: 'rgba(100,116,139,0.2)', seats: 5000, icon: '🎫', sections: ['Floor'], benefits: ['Standard entry', 'Floor access', 'Mobile ticket delivery'] },
+                { id: 'vip', name: 'VIP Pit', price: 350, desc: 'Premium pit access', badge: 'Best Seller', accent: '#00D982', glow: 'rgba(0,217,130,0.24)', seats: 500, icon: '💎', sections: ['VIP Pit'], benefits: ['Early entry', 'Pit access', 'VIP bar'] }
               ],
               'Comedy': [
                 { id: 'ga', name: 'Standard Seating', price: 65, desc: 'Rear stalls', badge: null, accent: '#71717A', glow: 'rgba(113,113,122,0.18)', seats: 800, icon: '🪑', sections: ['Stalls'], benefits: ['Standard entry', 'Reserved seat'] },
@@ -2017,7 +2166,7 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
   }
   const canDuplicate = ['timeline', 'tickets', 'testimonials', 'faq'].includes(target.section) && target.index !== undefined
   const canDelete = ['timeline', 'tickets', 'testimonials', 'faq'].includes(target.section) && target.index !== undefined
-  return <aside className="fixed inset-y-0 right-0 z-[300] flex w-full max-w-md flex-col border-l border-white/10 bg-[#111113] text-white shadow-2xl"><div className="flex items-center justify-between border-b border-white/10 p-5"><div><p className="font-mono text-[10px] uppercase tracking-widest text-emerald-400">Booking page editor</p><h2 className="font-serif text-xl font-bold">Edit {sectionLabel[target.section]}</h2></div><button type="button" onClick={close} className="text-zinc-400">✕</button></div><div className="flex-1 space-y-4 overflow-y-auto p-5">{fields()}<div className="border-t border-white/10 pt-4"><label className="flex items-center justify-between text-sm"><span>{draft.visibility[target.section] ? 'Visible section' : 'Hidden section'}</span><input type="checkbox" checked={draft.visibility[target.section]} onChange={event => mutate(next => { next.visibility[target.section] = event.target.checked })} /></label><div className="mt-3 flex flex-wrap gap-3 text-xs"><button type="button" onClick={restore} className="text-emerald-300">Restore default</button>{canDuplicate && <button type="button" onClick={duplicate} className="text-zinc-300">Duplicate</button>}{canDelete && <button type="button" onClick={remove} className="text-red-300">Delete</button>}</div></div></div><div className="flex gap-2 border-t border-white/10 p-4"><button type="button" onClick={close} className="flex-1 rounded-xl bg-white/5 px-3 py-2.5 text-sm">Cancel</button><button type="button" onClick={() => { onApply(draft); close() }} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2.5 text-sm font-bold text-zinc-950">Apply</button></div></aside>
+  return <aside className="package-editor-panel fixed inset-y-0 right-0 z-[300] flex w-full max-w-lg flex-col border-l border-white/10 bg-[#111113] text-white shadow-2xl"><div className="flex items-center justify-between border-b border-white/10 p-5"><div><p className="font-mono text-[10px] uppercase tracking-widest text-emerald-400">Booking page editor</p><h2 className="font-serif text-xl font-bold">Edit {sectionLabel[target.section]}</h2></div><button type="button" onClick={close} className="text-zinc-400">✕</button></div><div className="flex-1 space-y-4 overflow-y-auto p-5">{fields()}<div className="border-t border-white/10 pt-4"><label className="flex items-center justify-between text-sm"><span>{draft.visibility[target.section] ? 'Visible section' : 'Hidden section'}</span><input type="checkbox" checked={draft.visibility[target.section]} onChange={event => mutate(next => { next.visibility[target.section] = event.target.checked })} /></label><div className="mt-3 flex flex-wrap gap-3 text-xs"><button type="button" onClick={restore} className="text-emerald-300">Restore default</button>{canDuplicate && <button type="button" onClick={duplicate} className="text-zinc-300">Duplicate</button>}{canDelete && <button type="button" onClick={remove} className="text-red-300">Delete</button>}</div></div></div><div className="flex gap-2 border-t border-white/10 p-4"><button type="button" onClick={close} className="flex-1 rounded-xl bg-white/5 px-3 py-2.5 text-sm">Cancel</button><button type="button" onClick={() => { onApply(draft); close() }} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2.5 text-sm font-bold text-zinc-950">Apply</button></div></aside>
 }
 
 // ─── Booking Site ─────────────────────────────────────────────────────────────
@@ -2055,6 +2204,32 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   const [eventSocialProof, setEventSocialProof] = useState<EventSocialProofOverride>(() => socialProofOverride ?? {})
   useReveal()
 
+  const touchedSectionSet = new Set(data.editorState?.touchedSections ?? [])
+  const editedSections = BOOKING_SECTION_IDS.filter(section => touchedSectionSet.has(section))
+  const untouchedSections = BOOKING_SECTION_IDS.filter(section => !touchedSectionSet.has(section))
+
+  const applyEditorChanges = (next: BookingPageData) => {
+    if (selected) {
+      const touchedSections = new Set(next.editorState?.touchedSections ?? [])
+      touchedSections.add(selected.section)
+      next.editorState = {
+        touchedSections: BOOKING_SECTION_IDS.filter(section => touchedSections.has(section)),
+        updatedAtBySection: {
+          ...(next.editorState?.updatedAtBySection ?? {}),
+          [selected.section]: new Date().toISOString(),
+        },
+      }
+    }
+    setData(next)
+  }
+
+  const focusEditorSection = (section: BookingSectionId) => {
+    setPublicationOpen(false)
+    setPreviewState('page')
+    setSelected({ section })
+    window.setTimeout(() => document.getElementById(section)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80)
+  }
+
   useEffect(() => {
     document.body.style.background = t.bg
     document.body.style.color = t.text
@@ -2086,12 +2261,14 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
     }
   }
 
+  const publicationSectionReview = <div className="mt-4 rounded-2xl border border-white/10 bg-white/[.025] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-sm font-bold">Page section review</div><div className="mt-1 text-xs text-zinc-500">Select any badge to jump directly to that editor section.</div></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} edited</span></div>{editedSections.length > 0 && <div className="mt-4"><div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Edited sections</div><div className="mt-2 flex flex-wrap gap-2">{editedSections.map(section => <button key={section} type="button" onClick={() => focusEditorSection(section)} className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1.5 text-[10px] font-semibold text-emerald-200">✓ {BOOKING_SECTION_LABELS[section]}</button>)}</div></div>}{untouchedSections.length > 0 && <div className="mt-4"><div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">Untouched sections — review recommended</div><div className="mt-2 flex flex-wrap gap-2">{untouchedSections.map(section => <button key={section} type="button" onClick={() => focusEditorSection(section)} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-[10px] font-semibold text-amber-200">● {BOOKING_SECTION_LABELS[section]}</button>)}</div></div>}</div>
+
   return (
     <LocaleProvider eventCountryCode={eventCountryCode} eventCurrencyCode={eventCurrencyCode} eventLanguageCode={eventLanguageCode}>
     <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly }}>
       <SocialProofOverlayProvider>
-      <div className="ios-stable-scroll" style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
-        {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}<button type="button" onClick={() => void onSave?.(data)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { setPublishedUrl(null); setPublicationError(null); setPublicationOpen(true) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={onExit} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
+      <div className="booking-experience ios-stable-scroll" data-theme={t.isDark ? 'dark' : 'light'} style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
+        {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><span className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} sections edited</span><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}<button type="button" onClick={() => void onSave?.(data)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { setPublishedUrl(null); setPublicationError(null); setPublicationOpen(true) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={onExit} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
         <div>
           <ScrollProgress />
           <Nav onToggleTheme={toggle} onAdminClick={onAdminClick} />
@@ -2108,9 +2285,9 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
           {mode !== 'editor' && <PublicConversionEnhancements packages={data.packages as any} seats={[]} eventId={eventId} isPreview={mode === 'preview'} />}
           {mode !== 'published' && <PublicOnboardingGuide context={mode === 'editor' ? 'booking-page editor' : 'booking preview'} />}
         </div>
-        {mode === 'editor' && <BookingEditorPanel data={data} target={selected} onApply={setData} close={() => setSelected(null)} />}
+        {mode === 'editor' && <BookingEditorPanel data={data} target={selected} onApply={applyEditorChanges} close={() => setSelected(null)} />}
         {socialProofOpen && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#111113] p-6 text-white"><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Event override</p><h2 className="mt-2 font-serif text-2xl font-bold">Social proof for this event</h2><p className="mt-1 text-sm text-zinc-500">Only entered values override the defaults in Admin Settings.</p><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Enabled<input type="checkbox" checked={eventSocialProof.enabled ?? true} onChange={event => setEventSocialProof(current => ({ ...current, enabled: event.target.checked }))}/></label><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Show on mobile<input type="checkbox" checked={eventSocialProof.mobileVisible ?? true} onChange={event => setEventSocialProof(current => ({ ...current, mobileVisible: event.target.checked }))}/></label><label className="sm:col-span-2 text-xs text-zinc-400">Popup message<input value={eventSocialProof.message ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, message: event.target.value }))} placeholder="Use global default" className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white"/></label><label className="text-xs text-zinc-400">Duration<input type="number" value={eventSocialProof.duration ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, duration: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label><label className="text-xs text-zinc-400">Delay<input type="number" value={eventSocialProof.delay ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, delay: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label></div><div className="mt-6 flex justify-end gap-2"><button onClick={() => setSocialProofOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button onClick={() => { void onSocialProofChange?.(eventSocialProof); setSocialProofOpen(false) }} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save event override</button></div></section></div>}
-        {publicationOpen && publicationReview && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111113] p-6 text-white">{publishedUrl ? <div className="text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-400 text-xl font-bold text-zinc-950">✓</div><h2 className="mt-4 font-serif text-2xl font-bold">Page published successfully</h2><p className="mt-2 break-all text-sm text-zinc-400">{publishedUrl}</p><div className="mt-6 flex flex-wrap justify-center gap-2"><button onClick={() => void navigator.clipboard.writeText(publishedUrl)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Copy Link</button><a href={publishedUrl} target="_blank" rel="noreferrer" className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Open Published Page</a><button onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Close</button></div></div> : <><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Publication review</p><h2 className="mt-2 font-serif text-2xl font-bold">Review before publishing</h2><div className="mt-5 grid gap-3 sm:grid-cols-2">{[['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language], ['Public URL', publicationReview.publicUrl]].map(([label, value]) => <div key={label} className="rounded-xl bg-white/[.04] p-3"><div className="text-[10px] uppercase text-zinc-500">{label}</div><div className="mt-1 break-all text-sm font-semibold">{value || 'Missing'}</div></div>)}</div>{missingPublicationFields.length > 0 && <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">Missing required information: {missingPublicationFields.join(', ')}</div>}{publicationError && <div className="mt-4 rounded-xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-200">{publicationError}</div>}<div className="mt-6 flex flex-wrap justify-end gap-2"><button disabled={publishing} onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={publishing} onClick={() => window.open(eventId ? `/admin/events/${eventId}/preview` : '/demo', '_blank', 'noopener,noreferrer')} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Preview Page</button><button disabled={publishing || missingPublicationFields.length > 0} onClick={() => void confirmPublish()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-40">{publishing ? 'Publishing…' : 'Confirm and Publish'}</button></div></>}</section></div>}
+        {publicationOpen && publicationReview && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111113] p-6 text-white">{publishedUrl ? <div className="text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-400 text-xl font-bold text-zinc-950">✓</div><h2 className="mt-4 font-serif text-2xl font-bold">Page published successfully</h2><p className="mt-2 break-all text-sm text-zinc-400">{publishedUrl}</p><div className="mt-6 flex flex-wrap justify-center gap-2"><button onClick={() => void navigator.clipboard.writeText(publishedUrl)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Copy Link</button><a href={publishedUrl} target="_blank" rel="noreferrer" className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Open Published Page</a><button onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Close</button></div></div> : <><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Publication review</p><h2 className="mt-2 font-serif text-2xl font-bold">Review before publishing</h2><div className="mt-5 grid gap-3 sm:grid-cols-2">{[['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language], ['Public URL', publicationReview.publicUrl]].map(([label, value]) => <div key={label} className="rounded-xl bg-white/[.04] p-3"><div className="text-[10px] uppercase text-zinc-500">{label}</div><div className="mt-1 break-all text-sm font-semibold">{value || 'Missing'}</div></div>)}</div>{publicationSectionReview}{missingPublicationFields.length > 0 && <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">Missing required information: {missingPublicationFields.join(', ')}</div>}{publicationError && <div className="mt-4 rounded-xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-200">{publicationError}</div>}<div className="mt-6 flex flex-wrap justify-end gap-2"><button disabled={publishing} onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={publishing} onClick={() => window.open(eventId ? `/admin/events/${eventId}/preview` : '/demo', '_blank', 'noopener,noreferrer')} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Preview Page</button><button disabled={publishing || missingPublicationFields.length > 0} onClick={() => void confirmPublish()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-40">{publishing ? 'Publishing…' : 'Confirm and Publish'}</button></div></>}</section></div>}
       </div>
       </SocialProofOverlayProvider>
     </BookingCtx.Provider></ThemeCtx.Provider>

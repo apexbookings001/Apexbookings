@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { adminEventStore, type ManagedEvent } from './features/events/adminEventStore'
 import { createBookingPageData, masterBookingTemplateStore } from './features/events/bookingTemplate'
 import { MediaLibraryPage } from './features/media/MediaLibraryPage'
+import { mediaLibraryStore } from './features/media/mediaLibraryStore'
 import { PaymentDashboard } from './features/payments/PaymentDashboard'
 import { SupportDashboard } from './features/support/SupportDashboard'
 import { SocialProofPage } from './features/conversion/SocialProofPage'
@@ -20,6 +21,8 @@ import { useAuth } from './features/auth/AuthContext'
 import { teamService, type TeamMember } from './features/auth/teamService'
 import type { OrganizationRole } from './services/supabase/workspace'
 import { adminSettingsStore, type OrganizationSettings } from './features/settings/adminSettingsStore'
+import { getSettingsReadiness, type SetupSection } from './features/settings/settingsReadiness'
+import { socialProofStore } from './features/conversion/socialProofStore'
 import { NotificationCenter } from './features/notifications/NotificationCenter'
 import { EventCatalogPage as SupabaseEventCatalogPage } from './features/events/EventCatalogPage'
 
@@ -230,10 +233,11 @@ const NAV_ITEMS: NavigationItem[] = [
   { id: 'documentation' as Page, label: 'Documentation', icon: <Icons.listview/> },
 ]
 
-function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobileOpen }: {
+function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobileOpen, setupIssueCount }: {
   page: Page; setPage: (p: Page) => void
   collapsed: boolean; setCollapsed: (v: boolean) => void
   mobileOpen: boolean; setMobileOpen: (v: boolean) => void
+  setupIssueCount: number
 }) {
   const nav = (
     <aside
@@ -277,6 +281,8 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobile
       <nav className="flex-1 overflow-y-auto py-3 px-2">
         {NAV_ITEMS.map(item => {
           const active = page === item.id
+          const badge = item.id === 'settings' ? setupIssueCount : item.badge
+          const badgeColor = item.id === 'settings' ? T.gold : item.badgeColor
           return (
             <button
               key={item.id}
@@ -293,16 +299,16 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobile
                 {item.icon}
               </span>
               {!collapsed && <span className="text-sm font-medium flex-1">{item.label}</span>}
-              {!collapsed && 'badge' in item && item.badge ? (
+              {!collapsed && badge ? (
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full min-w-[20px] text-center"
-                  style={{ background: item.badgeColor ? `${item.badgeColor}20` : 'rgba(239,68,68,0.15)', color: item.badgeColor || T.red }}>
-                  {item.badge}
+                  style={{ background: badgeColor ? `${badgeColor}20` : 'rgba(239,68,68,0.15)', color: badgeColor || T.red }}>
+                  {badge}
                 </span>
               ) : null}
-              {collapsed && 'badge' in item && item.badge ? (
+              {collapsed && badge ? (
                 <span className="absolute top-1 right-1 w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold"
-                  style={{ background: item.badgeColor || T.red, color: '#09090B' }}>
-                  {item.badge > 9 ? '9+' : item.badge}
+                  style={{ background: badgeColor || T.red, color: '#09090B' }}>
+                  {badge > 9 ? '9+' : badge}
                 </span>
               ) : null}
             </button>
@@ -2193,10 +2199,18 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
     save({ ...settings, methods: settings.methods.map(m => ({ ...m, isDefault: m.id === id })) })
   }
 
+  const updateMethod = (id: string, change: Partial<PlatformPaymentSettings['methods'][number]>) => {
+    save({ ...settings, methods: settings.methods.map(method => method.id === id ? { ...method, ...change } : method) })
+  }
+
   const updateCoin = (id: string, change: Partial<PlatformPaymentSettings['cryptocurrencies'][string]>) => {
     const current = settings.cryptocurrencies[id] || { enabled: false, address: '', network: '', label: '' }
     save({ ...settings, cryptocurrencies: { ...settings.cryptocurrencies, [id]: { ...current, ...change } } })
   }
+
+  const readyCryptoCount = Object.values(settings.cryptocurrencies).filter(coin => coin.enabled && coin.address.trim() && coin.network.trim()).length
+  const methodsNeedingSetup = settings.methods.filter(method => method.enabled && ((method.id === 'paypal' && !/^\S+@\S+\.\S+$/.test(method.destination.trim())) || (method.id === 'cash_app' && !/^\$[A-Za-z0-9_]{1,20}$/.test(method.destination.trim())) || (method.id !== 'cryptocurrency' && !method.instructions.trim()))).length
+  const cryptoNeedsSetup = settings.methods.some(method => method.id === 'cryptocurrency' && method.enabled) && readyCryptoCount === 0
 
   return (
     <div className="space-y-5">
@@ -2206,7 +2220,7 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
           <button key={t} onClick={() => setTab(t)}
             className="flex-1 py-2.5 text-sm font-semibold rounded-xl transition-all"
             style={{ background: tab === t ? T.emerald : 'transparent', color: tab === t ? T.bg : T.textMuted }}>
-            {label}
+            <span className="inline-flex items-center gap-2">{label}{((t === 'methods' && methodsNeedingSetup > 0) || (t === 'crypto' && cryptoNeedsSetup)) && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-amber-400 px-1 text-[9px] font-black text-zinc-950">{t === 'methods' ? methodsNeedingSetup : '!'}</span>}</span>
           </button>
         ))}
       </div>
@@ -2219,6 +2233,8 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
           </div>
           {sortedMethods.map((method, idx) => {
             const iconUrl = getPaymentIcon(method.id)
+            const destinationMissing = method.id === 'paypal' ? !/^\S+@\S+\.\S+$/.test(method.destination.trim()) : method.id === 'cash_app' ? !/^\$[A-Za-z0-9_]{1,20}$/.test(method.destination.trim()) : false
+            const methodNeedsSetup = method.enabled && (destinationMissing || (method.id !== 'cryptocurrency' && !method.instructions.trim()) || (method.id === 'cryptocurrency' && readyCryptoCount === 0))
             return (
               <div key={method.id}
                 className="rounded-2xl p-4 transition-all"
@@ -2249,6 +2265,7 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
                       {method.isDefault && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-mono" style={{ background: T.emeraldGlow, color: T.emerald }}>Default</span>
                       )}
+                      {methodNeedsSetup && <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-300">Setup required</span>}
                       <span className="text-[10px]" style={{ color: method.enabled ? T.emerald : T.textMuted }}>
                         {method.enabled ? '● Enabled' : '○ Disabled'}
                       </span>
@@ -2273,6 +2290,10 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
                     </button>
                   </div>
                 </div>
+                {method.enabled && method.id !== 'cryptocurrency' && <div className="mt-4 grid gap-3 border-t pt-4 md:grid-cols-2" style={{ borderColor: T.border }}>
+                  {(method.id === 'paypal' || method.id === 'cash_app') && <label className="block"><span className="mb-1.5 block text-[10px] font-mono uppercase tracking-wider" style={{ color: destinationMissing ? T.gold : T.textMuted }}>{method.id === 'paypal' ? 'Receiving PayPal Email' : 'Cash App $Cashtag'} {destinationMissing && '• Required'}</span><input value={method.destination} onChange={event => updateMethod(method.id, { destination: event.target.value })} placeholder={method.id === 'paypal' ? 'payments@example.com' : '$YourCashtag'} className={inp} style={{ ...inpStyle, borderColor: destinationMissing ? 'rgba(245,158,11,.45)' : T.border }} /></label>}
+                  <label className={`block ${(method.id === 'paypal' || method.id === 'cash_app') ? '' : 'md:col-span-2'}`}><span className="mb-1.5 block text-[10px] font-mono uppercase tracking-wider" style={{ color: !method.instructions.trim() ? T.gold : T.textMuted }}>Customer Instructions {!method.instructions.trim() && '• Required'}</span><textarea value={method.instructions} onChange={event => updateMethod(method.id, { instructions: event.target.value })} rows={2} className={`${inp} resize-none`} style={{ ...inpStyle, borderColor: !method.instructions.trim() ? 'rgba(245,158,11,.45)' : T.border }} /></label>
+                </div>}
               </div>
             )
           })}
@@ -2302,6 +2323,7 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
           {/* Per-coin cards */}
           {cryptoCoins.map(coin => {
             const cConfig = settings.cryptocurrencies[coin.id] || { enabled: false, address: '', network: '', label: '' }
+            const coinNeedsSetup = cConfig.enabled && (!cConfig.address.trim() || !cConfig.network.trim())
             return (
               <div key={coin.id}
                 className="rounded-2xl overflow-hidden"
@@ -2320,6 +2342,7 @@ function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
                   {settings.defaultCrypto === coin.id && (
                     <span className="order-last text-[10px] px-2 py-0.5 rounded-full font-mono sm:order-none" style={{ background: T.emeraldGlow, color: T.emerald }}>Default</span>
                   )}
+                  {coinNeedsSetup && <span className="order-last rounded-full bg-amber-400/10 px-2 py-0.5 text-[10px] font-bold text-amber-300 sm:order-none">Setup required</span>}
                   {/* Enable toggle */}
                   <button
                     onClick={() => updateCoin(coin.id, { enabled: !cConfig.enabled })}
@@ -2478,28 +2501,51 @@ function TeamManagementPanel({ show }: { show: (message: string) => void }) {
 function SettingsPage({ show }: { show: (m: string) => void }) {
   const { role } = useAuth()
   const [activeSection, setActiveSection] = useState('organization')
+  const [, setReadinessVersion] = useState(0)
   const SECTIONS = ['organization', ...(role === 'owner' ? ['team'] : []), 'email','branding','payments','media','notifications','social proof','localization','backup']
   const [organization, setOrganization] = useState<OrganizationSettings>(() => adminSettingsStore.get().organization)
   const [brand, setBrand] = useState(() => adminSettingsStore.get().branding)
   const [notificationPrefs, setNotificationPrefs] = useState(() => adminSettingsStore.get().notifications)
   const togglePref = (key: keyof typeof notificationPrefs) => setNotificationPrefs(current => ({ ...current, [key]: !current[key] }))
-  useEffect(() => adminSettingsStore.subscribe(() => { const settings = adminSettingsStore.get(); setOrganization(settings.organization); setBrand(settings.branding); setNotificationPrefs(settings.notifications) }), [])
+  useEffect(() => {
+    const refresh = () => setReadinessVersion(version => version + 1)
+    const unsubscribers = [
+      adminSettingsStore.subscribe(() => { const settings = adminSettingsStore.get(); setOrganization(settings.organization); setBrand(settings.branding); setNotificationPrefs(settings.notifications); refresh() }),
+      platformPaymentStore.subscribe(refresh),
+      emailService.subscribe(refresh),
+      mediaLibraryStore.subscribe(refresh),
+      socialProofStore.subscribe(refresh),
+    ]
+    return () => unsubscribers.forEach(unsubscribe => unsubscribe())
+  }, [])
+  const readiness = getSettingsReadiness()
+  const setupSections = SECTIONS.filter((section): section is SetupSection => section in readiness)
+  const incompleteSections = setupSections.filter(section => !readiness[section].complete)
+  const completedCount = setupSections.length - incompleteSections.length
+  const activeReadiness = activeSection in readiness ? readiness[activeSection as SetupSection] : null
 
   return (
     <div className="flex flex-col gap-5 lg:flex-row" style={{ animation: 'fade-in-up 0.3s ease' }}>
       <div className="w-full shrink-0 lg:w-52">
+        <div className="mb-3 rounded-2xl p-4" style={{ background: incompleteSections.length ? 'rgba(245,158,11,.08)' : T.emeraldGlow, border: `1px solid ${incompleteSections.length ? 'rgba(245,158,11,.25)' : 'rgba(0,255,136,.25)'}` }}>
+          <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: incompleteSections.length ? T.gold : T.emerald }}>{incompleteSections.length ? 'Setup in progress' : 'Setup complete'}</div>
+          <div className="mt-1 text-xl font-bold" style={{ color: T.text }}>{completedCount}/{setupSections.length}</div>
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: T.inputBg }}><div className="h-full rounded-full transition-[width]" style={{ width: `${setupSections.length ? (completedCount / setupSections.length) * 100 : 100}%`, background: incompleteSections.length ? T.gold : T.emerald }} /></div>
+          {incompleteSections.length > 0 && <button onClick={() => setActiveSection(incompleteSections[0])} className="mt-3 text-left text-[10px] font-semibold" style={{ color: T.gold }}>Continue setup →</button>}
+        </div>
         <div className="flex overflow-x-auto rounded-2xl lg:block" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
           {SECTIONS.map(s => (
             <button key={s} onClick={() => setActiveSection(s)}
               className="shrink-0 whitespace-nowrap border-r px-4 py-3 text-left text-xs capitalize transition-colors last:border-0 lg:block lg:w-full lg:border-b lg:border-r-0"
               style={{ borderColor: T.border, background: activeSection === s ? 'rgba(0,255,136,0.07)' : 'transparent', color: activeSection === s ? T.emerald : T.textSub }}>
-              {s}
+              <span className="flex items-center justify-between gap-2"><span>{s}</span>{s in readiness && !readiness[s as SetupSection].complete && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-amber-400 px-1 text-[9px] font-black text-zinc-950">{readiness[s as SetupSection].issues.length}</span>}{s in readiness && readiness[s as SetupSection].complete && <span className="text-[10px]" style={{ color: T.emerald }}>✓</span>}</span>
             </button>
           ))}
         </div>
       </div>
 
       <div className="min-w-0 flex-1 space-y-5">
+        {activeReadiness && !activeReadiness.complete && <div className="rounded-2xl border border-amber-400/25 bg-amber-400/[.07] p-4"><div className="flex items-start gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-amber-400 text-sm font-black text-zinc-950">!</span><div><div className="text-sm font-bold" style={{ color: T.gold }}>Setup required</div><p className="mt-1 text-xs" style={{ color: T.textSub }}>Complete these items before relying on this configuration in a live event.</p><div className="mt-3 flex flex-wrap gap-2">{activeReadiness.issues.map(issue => <span key={issue} className="rounded-full border border-amber-400/20 bg-black/10 px-2.5 py-1 text-[10px] text-amber-200">{issue}</span>)}</div></div></div></div>}
         {activeSection === 'team' && role === 'owner' && <TeamManagementPanel show={show} />}
         {activeSection === 'organization' && (
           <div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
@@ -2711,6 +2757,7 @@ export default function AdminDashboard({ onExitAdmin, initialPage = 'dashboard',
   const [isLg, setIsLg] = useState(typeof window !== 'undefined' ? window.innerWidth >= 1024 : true)
   const { msg, show } = useToast()
   const [eventCreateRequest, setEventCreateRequest] = useState(0)
+  const [settingsSetupIssueCount, setSettingsSetupIssueCount] = useState(() => Object.values(getSettingsReadiness()).filter(section => !section.complete).length)
 
   useEffect(() => {
     const fn = () => setIsLg(window.innerWidth >= 1024)
@@ -2720,6 +2767,11 @@ export default function AdminDashboard({ onExitAdmin, initialPage = 'dashboard',
 
   useEffect(() => setPage(initialPage), [initialPage])
   useEffect(() => { void adminEventStore.hydrate().catch(() => undefined) }, [])
+  useEffect(() => {
+    const refresh = () => setSettingsSetupIssueCount(Object.values(getSettingsReadiness()).filter(section => !section.complete).length)
+    const unsubscribers = [adminSettingsStore.subscribe(refresh), platformPaymentStore.subscribe(refresh), emailService.subscribe(refresh), mediaLibraryStore.subscribe(refresh), socialProofStore.subscribe(refresh)]
+    return () => unsubscribers.forEach(unsubscribe => unsubscribe())
+  }, [])
   const navigatePage = (next: Page) => { setPage(next); onNavigate?.(next) }
   const contentLeft = collapsed ? 64 : 240
 
@@ -2740,7 +2792,7 @@ export default function AdminDashboard({ onExitAdmin, initialPage = 'dashboard',
       {/* Ambient bg */}
       <div className="fixed inset-0 pointer-events-none" style={{ zIndex: 0, background: 'radial-gradient(ellipse 80% 50% at 50% -20%,rgba(0,255,136,0.03) 0%,transparent 60%)' }}/>
 
-      <Sidebar page={page} setPage={navigatePage} collapsed={collapsed} setCollapsed={setCollapsed} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen}/>
+      <Sidebar page={page} setPage={navigatePage} collapsed={collapsed} setCollapsed={setCollapsed} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} setupIssueCount={settingsSetupIssueCount}/>
       <TopNav page={page} onExitAdmin={onExitAdmin} collapsed={collapsed} show={show} onHamburger={() => setMobileOpen(true)} onCreateEvent={() => { navigatePage('events'); setEventCreateRequest(value => value + 1) }} onOpenNotifications={() => navigatePage('notifications')}/>
 
       <main className="transition-all duration-300" style={{ paddingTop: 56 }}>

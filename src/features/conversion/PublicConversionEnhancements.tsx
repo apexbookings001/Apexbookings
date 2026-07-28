@@ -59,11 +59,11 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
           onTransitionEnd={handleOverlayTransitionEnd}
         />
       ) : toast ? (
-        <div className={`fixed z-[135] flex w-auto max-w-[min(26rem,calc(100%_-_2rem))] items-start gap-3.5 rounded-2xl p-4 shadow-2xl animate-[fade-in-up_.3s_ease] ${positionClass[toast.position]}`}
+        <div className={`social-proof-desktop fixed z-[135] flex w-auto max-w-[min(26rem,calc(100%_-_2rem))] items-start gap-3.5 rounded-2xl p-4 shadow-2xl animate-[fade-in-up_.3s_ease] ${positionClass[toast.position]}`}
           style={{ background: t.isDark ? 'rgba(18,18,22,0.95)' : 'rgba(255,255,255,0.98)', border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.12)' : t.border}`, color: t.text, boxShadow: t.isDark ? '0 16px 48px rgba(0,0,0,0.5)' : '0 14px 32px rgba(23,26,31,0.12), 0 2px 6px rgba(23,26,31,0.04)' }}>
           <div className="relative shrink-0 mt-0.5">
             {toast.avatar ? (
-              <img src={toast.avatar} className="h-10 w-10 rounded-full object-cover ring-2 ring-white/10 shadow-sm" alt={toast.name}/>
+              <img src={toast.avatar} width="40" height="40" className="social-proof-avatar h-10 w-10 rounded-full object-cover ring-2 ring-white/10 shadow-sm" alt={toast.name}/>
             ) : (
               <div className="grid h-10 w-10 place-items-center rounded-full text-xs font-bold"
                 style={{ background: t.isDark ? 'rgba(0,255,136,0.15)' : `${t.accent}10`, color: t.accent }}>
@@ -105,7 +105,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
       ) : null}
 
       {showBar && (
-        <div className="fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[130] flex items-center gap-3 p-3 backdrop-blur md:hidden"
+        <div className="mobile-booking-island fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[130] flex items-center gap-3 p-3 backdrop-blur md:hidden"
           style={{
             background: t.isDark ? 'rgba(9,9,11,0.95)' : 'rgba(255,255,255,0.95)',
             border: `1px solid ${t.isDark ? '#10b981' : t.accent}`,

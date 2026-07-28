@@ -613,6 +613,7 @@ function MessageBubble({
 
       {/* Bubble */}
       <div
+        className="support-chat-overlay"
         style={{
           maxWidth: 'min(78%, 340px)',
           borderRadius: isCustomer ? customerRadius : adminRadius,
@@ -1057,10 +1058,11 @@ function ChatWindow({
         }}
       >
         <div
+          className="support-chat-surface"
           style={{
             display: 'flex', flexDirection: 'column',
             width: isDesktop ? 'min(980px, 100%)' : '100%',
-            height: isDesktop ? 'min(88vh, 720px)' : '100dvh',
+            height: isDesktop ? 'min(88vh, 720px)' : '100svh',
             background: isDark ? '#111113' : '#F8FAFC',
             borderRadius: isDesktop ? 24 : 0,
             border: isDesktop ? `1px solid ${isDark ? 'rgba(255,255,255,0.07)' : '#E2E8F0'}` : 'none',
@@ -1348,7 +1350,7 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
 
       {open && !isPreview && !customerEmail && (
         <div className="fixed inset-0 z-[10010] grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
-          <form onSubmit={event => { event.preventDefault(); const email = emailDraft.trim().toLowerCase(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return; setCustomerEmail(email) }} className="w-full max-w-sm rounded-3xl p-6 shadow-2xl" style={{ background: isDark ? '#111113' : '#FFFFFF', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}` }}>
+          <form onSubmit={event => { event.preventDefault(); const email = emailDraft.trim().toLowerCase(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return; setCustomerEmail(email) }} className="support-email-card w-full max-w-sm rounded-3xl p-6 shadow-2xl" style={{ background: isDark ? '#111113' : '#FFFFFF', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}` }}>
             <div className="grid h-11 w-11 place-items-center rounded-2xl" style={{ background: isDark ? 'rgba(0,255,136,.12)' : 'rgba(21,94,239,.1)', color: isDark ? '#00FF88' : '#155EEF' }}>?</div>
             <h2 className="mt-4 font-serif text-2xl font-bold" style={{ color: isDark ? '#FAFAFA' : '#171A1F' }}>Welcome to Support</h2>
             <p className="mt-2 text-sm" style={{ color: isDark ? '#A1A1AA' : '#5F6773' }}>Enter your email to continue an existing conversation or start a new one.</p>

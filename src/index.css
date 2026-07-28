@@ -66,6 +66,491 @@
   }
 }
 
+/* Premium public booking experience */
+.booking-experience {
+  --experience-accent: #00ff88;
+  --experience-accent-rgb: 0, 255, 136;
+  --experience-surface: rgba(255, 255, 255, 0.045);
+  --experience-line: rgba(255, 255, 255, 0.09);
+  --experience-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+  position: relative;
+  width: 100%;
+  overflow-x: clip;
+  isolation: isolate;
+  text-rendering: optimizeLegibility;
+}
+
+.booking-experience[data-theme='light'] {
+  --experience-accent: #155eef;
+  --experience-accent-rgb: 21, 94, 239;
+  --experience-surface: rgba(255, 255, 255, 0.88);
+  --experience-line: rgba(15, 23, 42, 0.09);
+  --experience-shadow: 0 24px 70px rgba(32, 54, 86, 0.12);
+}
+
+.booking-experience #hero::before,
+.booking-experience #hero::after {
+  display: none;
+}
+
+.booking-section {
+  scroll-margin-top: 6.5rem;
+  position: relative;
+}
+
+.booking-section::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background:
+    radial-gradient(circle at 12% 12%, rgba(var(--experience-accent-rgb), 0.075), transparent 24rem),
+    radial-gradient(circle at 88% 88%, rgba(var(--experience-accent-rgb), 0.045), transparent 28rem);
+}
+
+.booking-nav {
+  max-width: min(80rem, calc(100% - 2rem));
+}
+
+.booking-mobile-menu,
+.premium-card,
+.premium-info-card,
+.metric-card,
+.timeline-card,
+.ticket-tier-card,
+.testimonial-card,
+.faq-card,
+.checkout-summary,
+.payment-method-card,
+.support-email-card {
+  -webkit-tap-highlight-color: transparent;
+  transform: translateZ(0);
+}
+
+.premium-media,
+.premium-cta-card {
+  box-shadow: var(--experience-shadow);
+}
+
+.premium-media img,
+.premium-cta-card > img {
+  transition: transform 900ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.premium-media:hover img,
+.premium-cta-card:hover > img {
+  transform: scale(1.035);
+}
+
+.premium-float-card {
+  animation: premium-float-card 5s ease-in-out infinite;
+}
+
+.metric-card,
+.premium-card,
+.premium-info-card,
+.timeline-card,
+.ticket-tier-card,
+.testimonial-card,
+.faq-card,
+.payment-method-card {
+  transition:
+    transform 260ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 260ms ease,
+    border-color 260ms ease,
+    background-color 260ms ease;
+}
+
+.metric-card:hover,
+.premium-card:hover,
+.premium-info-card:hover,
+.timeline-card:hover,
+.testimonial-card:hover,
+.faq-card:hover,
+.payment-method-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(var(--experience-accent-rgb), 0.28) !important;
+  box-shadow: var(--experience-shadow) !important;
+}
+
+.metric-card {
+  overflow: hidden;
+}
+
+.metric-card::after {
+  content: '';
+  position: absolute;
+  inset: auto -25% -65% 25%;
+  height: 5rem;
+  border-radius: 999px;
+  background: rgba(var(--experience-accent-rgb), 0.12);
+  filter: blur(24px);
+  pointer-events: none;
+}
+
+.timeline-card {
+  margin-left: 0.25rem;
+}
+
+.timeline-card:hover > div:first-child {
+  transform: scale(1.06) rotate(-3deg);
+}
+
+.timeline-card > div:first-child {
+  transition: transform 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ticket-tier-card {
+  overflow: hidden;
+}
+
+.ticket-tier-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(120deg, transparent 25%, rgba(255, 255, 255, 0.08) 48%, transparent 70%);
+  transform: translateX(-70%);
+  transition: opacity 220ms ease, transform 650ms ease;
+}
+
+.ticket-tier-card:hover {
+  transform: translateY(-8px) !important;
+  border-color: rgba(var(--experience-accent-rgb), 0.38) !important;
+  box-shadow: 0 28px 75px rgba(var(--experience-accent-rgb), 0.14), var(--experience-shadow) !important;
+}
+
+.ticket-tier-card:hover::after {
+  opacity: 1;
+  transform: translateX(70%);
+}
+
+.package-card-badge {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  isolation: isolate;
+}
+
+.package-card-badge::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  z-index: -1;
+  border-radius: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.package-editor-panel {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.testimonial-track:hover {
+  animation-play-state: paused !important;
+}
+
+.testimonial-card {
+  position: relative;
+  min-height: 14rem;
+}
+
+.testimonial-card::before {
+  content: '“';
+  position: absolute;
+  right: 1.1rem;
+  top: 0.5rem;
+  font-family: Georgia, serif;
+  font-size: 4rem;
+  line-height: 1;
+  color: rgba(var(--experience-accent-rgb), 0.12);
+}
+
+.testimonial-card img,
+.social-proof-avatar {
+  transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 420ms ease;
+}
+
+.testimonial-card:hover img,
+.social-proof-desktop:hover .social-proof-avatar,
+.social-proof-mobile:hover .social-proof-avatar {
+  transform: scale(1.1) rotate(-2deg);
+  box-shadow: 0 8px 28px rgba(var(--experience-accent-rgb), 0.24);
+}
+
+.faq-card:hover button {
+  padding-left: 1.75rem;
+}
+
+.premium-cta-card::after {
+  content: '';
+  position: absolute;
+  inset: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 1.25rem;
+  pointer-events: none;
+}
+
+.booking-checkout {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.checkout-surface {
+  isolation: isolate;
+}
+
+.checkout-header,
+.checkout-footer {
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
+}
+
+.checkout-content {
+  scrollbar-gutter: stable;
+}
+
+.checkout-content input,
+.checkout-content textarea,
+.checkout-content select,
+.checkout-content button {
+  min-height: 2.75rem;
+}
+
+.checkout-summary {
+  position: relative;
+  overflow: hidden;
+}
+
+.checkout-summary::after {
+  content: '';
+  position: absolute;
+  width: 8rem;
+  height: 8rem;
+  right: -4rem;
+  top: -5rem;
+  border-radius: 50%;
+  background: rgba(var(--experience-accent-rgb), 0.12);
+  filter: blur(24px);
+  pointer-events: none;
+}
+
+.payment-method-card:hover {
+  transform: translateY(-2px) !important;
+}
+
+.social-proof-desktop,
+.social-proof-mobile > div,
+.mobile-booking-island,
+.support-chat-surface,
+.support-email-card {
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+
+.social-proof-desktop,
+.social-proof-mobile {
+  transform-origin: top center;
+}
+
+.social-proof-avatar {
+  animation: social-proof-avatar-in 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.mobile-booking-island {
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
+}
+
+.support-chat-overlay {
+  overscroll-behavior: contain;
+}
+
+.support-chat-surface {
+  min-height: 0;
+  max-width: 100%;
+}
+
+@keyframes premium-float-card {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -6px, 0); }
+}
+
+@keyframes social-proof-avatar-in {
+  from { opacity: 0; transform: scale(0.72) rotate(-8deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+@media (max-width: 767px) {
+  .booking-section {
+    padding: 4.75rem 1.1rem;
+    scroll-margin-top: 5.5rem;
+  }
+
+  .booking-section h2 {
+    letter-spacing: -0.035em;
+  }
+
+  .booking-nav {
+    top: max(0.75rem, env(safe-area-inset-top, 0.75rem));
+    width: calc(100% - 1.25rem);
+    padding: 0.65rem 0.75rem;
+    border-radius: 1.1rem;
+  }
+
+  .booking-mobile-menu {
+    max-height: min(70svh, 34rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .premium-media-wrap {
+    margin-bottom: 3.5rem;
+  }
+
+  .premium-float-card {
+    left: 0.75rem !important;
+    right: 0.75rem !important;
+    bottom: -2.5rem !important;
+    min-width: 0 !important;
+  }
+
+  .premium-info-card {
+    padding: 1.1rem;
+  }
+
+  .premium-info-card > div:last-child {
+    grid-template-columns: 1fr;
+  }
+
+  .premium-venue .premium-media {
+    min-height: 26rem;
+  }
+
+  .premium-venue .premium-media > div:last-child > div {
+    flex-direction: column;
+  }
+
+  .premium-venue .premium-media a {
+    width: 100%;
+    text-align: center;
+  }
+
+  .premium-timeline .absolute.left-6 {
+    display: none;
+  }
+
+  .timeline-card {
+    margin-left: 0;
+  }
+
+  .ticket-tier-card {
+    padding: 1.5rem;
+  }
+
+  .testimonial-card {
+    width: min(19rem, calc(100vw - 2.5rem));
+  }
+
+  .premium-cta-card {
+    padding: 4.5rem 1.25rem;
+    border-radius: 1.75rem;
+  }
+
+  .premium-cta-card::after {
+    inset: 0.65rem;
+  }
+
+  .booking-checkout {
+    align-items: flex-end;
+    padding: 0;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .checkout-surface {
+    height: calc(100svh - env(safe-area-inset-top, 0px)) !important;
+    max-height: calc(100svh - env(safe-area-inset-top, 0px)) !important;
+    border-radius: 1.5rem 1.5rem 0 0;
+  }
+
+  .checkout-header {
+    padding: 0.85rem 1rem;
+  }
+
+  .checkout-header > div:first-child {
+    min-width: 0;
+  }
+
+  .checkout-header > div:first-child > div:last-child {
+    min-width: 0;
+  }
+
+  .checkout-header > div:first-child > div:last-child > div:last-child {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 14rem;
+  }
+
+  .checkout-content {
+    padding: 1rem;
+    overscroll-behavior-y: contain;
+  }
+
+  .checkout-footer {
+    gap: 0.75rem;
+    padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .checkout-footer button:last-child {
+    min-width: 0 !important;
+    padding-left: 1.15rem;
+    padding-right: 1.15rem;
+  }
+
+  .social-proof-mobile {
+    pointer-events: auto;
+  }
+
+  .support-chat-surface {
+    height: 100svh !important;
+    min-height: 100svh;
+  }
+}
+
+@media (hover: none) {
+  .premium-media:hover img,
+  .premium-cta-card:hover > img,
+  .metric-card:hover,
+  .premium-card:hover,
+  .premium-info-card:hover,
+  .timeline-card:hover,
+  .ticket-tier-card:hover,
+  .testimonial-card:hover,
+  .faq-card:hover,
+  .payment-method-card:hover {
+    transform: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .premium-float-card,
+  .social-proof-avatar {
+    animation: none !important;
+  }
+
+  .premium-media img,
+  .premium-cta-card > img,
+  .metric-card,
+  .premium-card,
+  .premium-info-card,
+  .timeline-card,
+  .ticket-tier-card,
+  .testimonial-card,
+  .faq-card,
+  .payment-method-card {
+    transition-duration: 0.01ms !important;
+  }
+}
+
 button[role="switch"] {
   overflow: hidden;
 }
@@ -1006,6 +1491,115 @@ select option:checked {
   }
   50% {
     opacity: 1;
+  }
+}
+
+@keyframes hero-machine-power-on {
+  0% { opacity: 0; transform: translateY(34px) scale(.96); filter: brightness(.55) blur(8px); }
+  58% { opacity: 1; transform: translateY(-3px) scale(1.01); filter: brightness(1.18) blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: brightness(1) blur(0); }
+}
+
+@keyframes hero-machine-dock {
+  0% { opacity: 0; transform: translateX(52px) rotateY(-7deg) scale(.94); }
+  65% { opacity: 1; transform: translateX(-4px) rotateY(0) scale(1.01); }
+  100% { opacity: 1; transform: none; }
+}
+
+@keyframes hero-icon-lock {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  42% { transform: translateY(-3px) rotate(-8deg); }
+  68% { transform: translateY(1px) rotate(5deg); }
+}
+
+.hero-machine-entry .hero-machine-copy > * {
+  opacity: 0;
+  animation: hero-machine-power-on .72s cubic-bezier(.16,1,.3,1) forwards;
+}
+
+.hero-machine-entry .hero-machine-copy > :nth-child(1) { animation-delay: .08s; }
+.hero-machine-entry .hero-machine-copy > :nth-child(2) { animation-delay: .2s; }
+.hero-machine-entry .hero-machine-copy > :nth-child(3) { animation-delay: .32s; }
+.hero-machine-entry .hero-machine-copy > :nth-child(4) { animation-delay: .44s; }
+.hero-machine-entry .hero-machine-copy > :nth-child(5) { animation-delay: .56s; }
+.hero-machine-entry .hero-machine-copy > :nth-child(6) { animation-delay: .68s; }
+.hero-machine-entry .hero-machine-card {
+  opacity: 0;
+  transform-origin: right center;
+  animation: hero-machine-dock .9s .72s cubic-bezier(.16,1,.3,1) forwards;
+}
+.hero-machine-entry .hero-machine-icon { animation: hero-icon-lock 2.8s 1.25s ease-in-out infinite; }
+
+.premium-issued-ticket {
+  border-radius: 28px;
+  isolation: isolate;
+  box-shadow: 0 30px 90px color-mix(in srgb, var(--ticket-accent) 24%, transparent), 0 2px 0 rgba(255,255,255,.08) inset !important;
+}
+.premium-issued-ticket::before,
+.premium-issued-ticket::after {
+  content: '';
+  position: absolute;
+  z-index: 5;
+  top: 148px;
+  width: 25px;
+  height: 25px;
+  border-radius: 999px;
+  background: #09090b;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ticket-accent) 30%, transparent);
+}
+.premium-issued-ticket::before { left: -13px; }
+.premium-issued-ticket::after { right: -13px; }
+.premium-ticket-banner::after {
+  content: '';
+  position: absolute;
+  inset: auto 18px 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--ticket-accent) 55%, transparent);
+}
+.premium-ticket-body::before {
+  content: 'APEX';
+  position: absolute;
+  right: -18px;
+  top: 42%;
+  font: 900 4.5rem/1 system-ui;
+  letter-spacing: .08em;
+  color: color-mix(in srgb, var(--ticket-accent) 5%, transparent);
+  transform: rotate(-90deg);
+  pointer-events: none;
+}
+.premium-ticket-seal {
+  color: var(--ticket-accent);
+  border: 1px solid color-mix(in srgb, var(--ticket-accent) 38%, transparent);
+  background: color-mix(in srgb, var(--ticket-accent) 11%, transparent);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--ticket-accent) 15%, transparent);
+}
+.premium-ticket-details > div {
+  min-height: 72px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--ticket-accent) 16%, rgba(255,255,255,.06));
+  background: color-mix(in srgb, var(--ticket-accent) 5%, rgba(255,255,255,.02));
+}
+.premium-ticket-benefits { position: relative; overflow: hidden; }
+.premium-ticket-benefits::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--ticket-accent);
+}
+.premium-ticket-qr {
+  position: relative;
+  box-shadow: 0 12px 35px rgba(0,0,0,.28), 0 0 0 5px color-mix(in srgb, var(--ticket-accent) 10%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-machine-entry .hero-machine-copy > *,
+  .hero-machine-entry .hero-machine-card,
+  .hero-machine-entry .hero-machine-icon {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    animation: none !important;
   }
 }
 

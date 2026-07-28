@@ -182,6 +182,7 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
     duplicate.bookingPage.hero.date = change.date
     duplicate.bookingPage.hero.venue = change.venue
     duplicate.bookingPage.venue.name = change.venue
+    duplicate.bookingPage.editorState = { touchedSections: [], updatedAtBySection: {} }
   }
   return {
     ...duplicate,

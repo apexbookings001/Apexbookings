@@ -3,16 +3,16 @@ import { supabase } from '../../lib/supabase'
 import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
 
-export type PlatformMethodConfig = { id: PaymentMethod; enabled: boolean; isDefault: boolean; order: number }
+export type PlatformMethodConfig = { id: PaymentMethod; enabled: boolean; isDefault: boolean; order: number; destination: string; instructions: string }
 export type PlatformPaymentSettings = { methods: PlatformMethodConfig[]; cryptocurrencies: Record<string, CryptoCoinConfig>; defaultCrypto: string }
 
 const DEFAULT_SETTINGS: PlatformPaymentSettings = {
   methods: [
-    { id: 'apple_gift_card', enabled: true, isDefault: true, order: 0 },
-    { id: 'paypal', enabled: true, isDefault: false, order: 1 },
-    { id: 'cryptocurrency', enabled: true, isDefault: false, order: 2 },
-    { id: 'cash_app', enabled: true, isDefault: false, order: 3 },
-    { id: 'bank_transfer', enabled: true, isDefault: false, order: 4 },
+    { id: 'apple_gift_card', enabled: true, isDefault: true, order: 0, destination: '', instructions: 'Upload clear images of the gift card and receipt for manual verification.' },
+    { id: 'paypal', enabled: true, isDefault: false, order: 1, destination: '', instructions: 'Send the exact amount to the PayPal account, then upload the transaction confirmation.' },
+    { id: 'cryptocurrency', enabled: true, isDefault: false, order: 2, destination: '', instructions: 'Select a supported cryptocurrency and send the exact amount to its configured wallet.' },
+    { id: 'cash_app', enabled: true, isDefault: false, order: 3, destination: '', instructions: 'Send the exact amount to the configured Cash App account and upload your receipt.' },
+    { id: 'bank_transfer', enabled: true, isDefault: false, order: 4, destination: '', instructions: 'Request temporary bank details and complete the transfer within the provided payment window.' },
   ],
   cryptocurrencies: {
     bitcoin: { enabled: true, address: '', network: 'Bitcoin', label: 'Bitcoin (BTC)', instructions: 'Send exact amount to the wallet address below.' },
@@ -37,6 +37,8 @@ async function persist(settings: PlatformPaymentSettings) {
     enabled: method.enabled,
     is_default: method.isDefault,
     display_order: method.order,
+    destination: method.destination || null,
+    instructions: method.instructions,
     deleted_at: null,
   })), { onConflict: 'organization_id,method' })
   if (methodResult.error) throw methodResult.error
@@ -72,8 +74,12 @@ export const platformPaymentStore = {
       ])
       if (methodsResult.error) throw methodsResult.error
       if (walletsResult.error) throw walletsResult.error
+      const defaultMethods = cloneDefaults().methods
       const methods = methodsResult.data?.length
-        ? methodsResult.data.map(row => ({ id: row.method as PaymentMethod, enabled: row.enabled, isDefault: row.is_default, order: row.display_order }))
+        ? methodsResult.data.map(row => {
+          const fallbackMethod = defaultMethods.find(method => method.id === row.method)
+          return { id: row.method as PaymentMethod, enabled: row.enabled, isDefault: row.is_default, order: row.display_order, destination: row.destination ?? '', instructions: row.instructions || fallbackMethod?.instructions || '' }
+        })
         : cloneDefaults().methods
       const cryptocurrencies = walletsResult.data?.length
         ? Object.fromEntries(walletsResult.data.map(row => [row.coin, { enabled: row.enabled, address: row.wallet_address, network: row.network, label: row.label ?? row.coin, instructions: row.instructions ?? '' }]))

@@ -32,6 +32,10 @@ export type BookingPageData = {
   venueFacts: { id: string; label: string; value: string; visible: boolean }[]
   importantInfo: { id: string; title: string; icon: string; body: string; visible: boolean }[]
   sectionHeadings: Record<string, string>
+  editorState: {
+    touchedSections: BookingSectionId[]
+    updatedAtBySection: Partial<Record<BookingSectionId, string>>
+  }
 }
 
 export type BookingSetupValues = {
@@ -53,7 +57,7 @@ const id = () => crypto.randomUUID()
 
 export const DEFAULT_BOOKING_TEMPLATE: BookingPageData = {
   hero: {
-    eyebrow: 'Live in New York · September 20', title: 'DRAKE', tour: "It's All A Blur Tour", date: 'Saturday, September 20, 2025', doors: '6:00 PM', show: '8:00 PM EDT', venue: 'Madison Square Garden', address: '4 Pennsylvania Plaza, New York, NY 10001', guests: ['21 Savage'], primaryCta: 'Book tickets', primaryLink: '#tickets', secondaryCta: 'Event details', secondaryLink: '#about',
+    eyebrow: 'Live in New York · September 20', title: 'DRAKE', tour: "It's All A Blur Tour", date: 'Saturday, September 20, 2025', doors: '6:00 PM', show: '8:00 PM EDT', venue: 'Madison Square Garden', address: '4 Pennsylvania Plaza, New York, NY 10001', guests: ['21 Savage'], primaryCta: 'Choose your tickets', primaryLink: '#tickets', secondaryCta: 'Explore the event', secondaryLink: '#about',
     images: [
       'https://images.unsplash.com/photo-1546707012-c46675f12716?w=1600&h=900&fit=crop&auto=format',
       'https://images.unsplash.com/photo-1577648884063-1d3d1477b8a7?w=1600&h=900&fit=crop&auto=format',
@@ -78,9 +82,9 @@ export const DEFAULT_BOOKING_TEMPLATE: BookingPageData = {
     { id: id(), time: '10:30 PM', title: 'Grand Finale & Encore', desc: 'Closing ceremony with pyrotechnics and a setlist deep cut you will never forget.', icon: '🎆', accent: '#F59E0B' },
   ],
   packages: [
-    { id: 'general-admission', name: 'General Admission', price: 189, desc: 'Upper level seating', badge: null, accent: '#71717A', glow: 'rgba(113,113,122,0.18)', seats: 312, icon: '🎟', sections: ['301', '302', '303', '304', '305', '306', '307', '308', '309', '310', '311', '312'], benefits: ['Standard entry', 'Upper level seating', 'Mobile ticket delivery', 'Event program'] },
-    { id: 'vip-floor', name: 'VIP Floor', price: 450, desc: 'Premium lower bowl', badge: 'Best Seller', accent: '#00FF88', glow: 'rgba(0,255,136,0.22)', seats: 86, icon: '⭐', sections: ['101', '102', '103', '104', '105', '106', '107', '108', '109', '110'], benefits: ['Priority fast-lane entry', 'Premium floor seating', 'Complimentary drinks (2)', 'Exclusive VIP lounge', 'Meet & greet opportunity'] },
-    { id: 'vvip-platinum', name: 'VVIP Platinum', price: 850, desc: 'Floor level & private lounge', badge: 'Recommended', accent: '#F59E0B', glow: 'rgba(245,158,11,0.22)', seats: 12, icon: '👑', sections: ['GA Floor', 'Platinum Suite A', 'Platinum Suite B'], benefits: ['Private escort entrance', 'Front-row floor seating', 'Unlimited premium bar', 'Backstage access pass', 'Personal meet & greet', 'Signed collectible gift', 'Professional photo session'] },
+    { id: 'regular', name: 'Regular', price: 189, desc: 'Upper level seating', badge: 'Great Value', accent: '#64748B', glow: 'rgba(100,116,139,0.2)', seats: 312, icon: '🎫', sections: ['301', '302', '303', '304', '305', '306', '307', '308', '309', '310', '311', '312'], benefits: ['Standard entry', 'Upper level seating', 'Mobile ticket delivery', 'Event program'] },
+    { id: 'vip-floor', name: 'VIP Floor', price: 450, desc: 'Premium lower bowl', badge: 'Best Seller', accent: '#00D982', glow: 'rgba(0,217,130,0.24)', seats: 86, icon: '💎', sections: ['101', '102', '103', '104', '105', '106', '107', '108', '109', '110'], benefits: ['Priority fast-lane entry', 'Premium floor seating', 'Complimentary drinks (2)', 'Exclusive VIP lounge', 'Meet & greet opportunity'] },
+    { id: 'vvip-platinum', name: 'VVIP Platinum', price: 850, desc: 'Floor level & private lounge', badge: 'Ultimate Access', accent: '#F59E0B', glow: 'rgba(245,158,11,0.25)', seats: 12, icon: '👑', sections: ['GA Floor', 'Platinum Suite A', 'Platinum Suite B'], benefits: ['Private escort entrance', 'Front-row floor seating', 'Unlimited premium bar', 'Backstage access pass', 'Personal meet & greet', 'Signed collectible gift', 'Professional photo session'] },
   ],
   testimonials: [
     { id: id(), name: 'Sophia Chen', role: 'Concert Enthusiast', avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=80&h=80&fit=crop&auto=format', text: "VIP experience was absolutely flawless. Private lounge, priority entry, complimentary drinks. Apex is the only platform I'll ever use.", accent: '#00FF88', rating: 5 },
@@ -110,10 +114,12 @@ export const DEFAULT_BOOKING_TEMPLATE: BookingPageData = {
     { id: id(), title: 'Important Info', icon: '📌', body: '• Doors open at 6:00 PM\n• No re-entry after 9:00 PM\n• Clear bag policy in effect\n• Professional cameras prohibited\n• Arrive 30 min early for best experience', visible: true }
   ],
   sectionHeadings: { hero: '', about: 'About the Show', venue: 'Venue', venueFacts: 'Venue Facts', timeline: 'The Evening', tickets: 'Select Packages', testimonials: 'Customer Reviews', faq: 'Common Questions', cta: 'Limited Availability', footer: '' },
+  editorState: { touchedSections: [], updatedAtBySection: {} },
 }
 
 export const createBookingPageData = (setup: BookingSetupValues = {}, source: BookingPageData = DEFAULT_BOOKING_TEMPLATE): BookingPageData => {
   const page = clone(source)
+  page.editorState = { touchedSections: [], updatedAtBySection: {} }
   const guests = (setup.guestPerformers ?? []).map(item => item.trim()).filter(Boolean)
   if (setup.name?.trim()) {
     page.hero.title = setup.name.trim()
@@ -138,7 +144,14 @@ export const createBookingPageData = (setup: BookingSetupValues = {}, source: Bo
 }
 
 const templateCache = createProtectedMemoryStore<BookingPageData>(() => createBookingPageData())
-const mergeTemplate = (parsed: BookingPageData) => ({ ...createBookingPageData(), ...parsed, venueFacts: parsed.venueFacts ?? clone(DEFAULT_BOOKING_TEMPLATE.venueFacts), importantInfo: parsed.importantInfo ?? clone(DEFAULT_BOOKING_TEMPLATE.importantInfo), sectionHeadings: parsed.sectionHeadings ?? clone(DEFAULT_BOOKING_TEMPLATE.sectionHeadings) })
+const mergeTemplate = (parsed: BookingPageData) => ({
+  ...createBookingPageData(),
+  ...parsed,
+  venueFacts: parsed.venueFacts ?? clone(DEFAULT_BOOKING_TEMPLATE.venueFacts),
+  importantInfo: parsed.importantInfo ?? clone(DEFAULT_BOOKING_TEMPLATE.importantInfo),
+  sectionHeadings: parsed.sectionHeadings ?? clone(DEFAULT_BOOKING_TEMPLATE.sectionHeadings),
+  editorState: parsed.editorState ?? { touchedSections: [], updatedAtBySection: {} },
+})
 
 export const masterBookingTemplateStore = {
   load: () => templateCache.get(),
