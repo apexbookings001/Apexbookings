@@ -14,6 +14,7 @@ export type RealtimeTable =
   | 'payment_methods'
   | 'crypto_wallets'
   | 'social_proof_items'
+  | 'media'
 
 export function subscribeToTable(table: RealtimeTable, filter: string | undefined, onChange: () => void): RealtimeChannel {
   const options = { event: '*' as const, schema: 'public', table, ...(filter ? { filter } : {}) }

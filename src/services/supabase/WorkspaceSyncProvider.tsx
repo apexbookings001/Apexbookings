@@ -78,6 +78,7 @@ export function WorkspaceSyncProvider({ children }: PropsWithChildren) {
       subscribe('payment_methods', organizationFilter, 'payments-settings', platformPaymentStore.hydrate),
       subscribe('crypto_wallets', organizationFilter, 'payments-settings', platformPaymentStore.hydrate),
       subscribe('social_proof_items', organizationFilter, 'social-proof', socialProofStore.hydrate),
+      subscribe('media', organizationFilter, 'media', mediaLibraryStore.hydrate),
     ]
     return () => {
       timers.forEach(timer => window.clearTimeout(timer))

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   CHAT_ASSET_CATEGORIES,
   EVENT_ASSET_CATEGORIES,
@@ -440,19 +440,30 @@ export function MediaLibraryPage({ show }: { show: (message: string) => void }) 
   const [dragging, setDragging] = useState(false)
   const [selectedId, setSelectedId] = useAdminRecoveryState<string | null>('media.selectedAssetId', null, value => value === null || typeof value === 'string')
   const [, forceRefresh] = useState(0)
+  const [uploading, setUploading] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const refresh = () => forceRefresh(n => n + 1)
   const selected = mediaLibraryStore.list().find(asset => asset.id === selectedId) ?? null
+  const storeStatus = mediaLibraryStore.snapshot()
+
+  useEffect(() => mediaLibraryStore.subscribe(refresh), [])
 
   const uploadFiles = async (files: FileList | File[]) => {
     const valid = Array.from(files).filter(f => f.size > 0)
     if (!valid.length) return
+    setUploading(true)
     try {
-      await Promise.all(valid.map(f => mediaLibraryStore.upload(f, 'Other')))
-      refresh()
-      show(`${valid.length} asset${valid.length > 1 ? 's' : ''} uploaded`)
-    } catch (err) {
-      show(err instanceof Error ? err.message : 'Upload failed.')
+      const results = await Promise.allSettled(valid.map(file => mediaLibraryStore.upload(file, 'Other')))
+      const uploaded = results.filter(result => result.status === 'fulfilled').length
+      const failed = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      if (uploaded) show(`${uploaded} asset${uploaded > 1 ? 's' : ''} uploaded and saved to Media Center`)
+      if (failed.length) {
+        const reason = failed[0].reason
+        show(reason instanceof Error ? reason.message : `${failed.length} upload${failed.length > 1 ? 's' : ''} failed.`)
+      }
+    } finally {
+      setUploading(false)
+      if (fileInput.current) fileInput.current.value = ''
     }
   }
 
@@ -471,10 +482,11 @@ export function MediaLibraryPage({ show }: { show: (message: string) => void }) 
         </div>
         {group === 'event' && (
           <button
+            disabled={uploading}
             onClick={() => fileInput.current?.click()}
-            className="rounded-xl bg-emerald-400 px-4 py-2 text-xs font-bold text-zinc-950 hover:bg-emerald-300 transition-colors"
+            className="rounded-xl bg-emerald-400 px-4 py-2 text-xs font-bold text-zinc-950 transition-colors hover:bg-emerald-300 disabled:cursor-wait disabled:opacity-60"
           >
-            Upload media
+            {uploading ? 'Uploading media…' : 'Upload media'}
           </button>
         )}
         <input
@@ -486,6 +498,12 @@ export function MediaLibraryPage({ show }: { show: (message: string) => void }) 
           onChange={e => void uploadFiles(e.target.files ?? [])}
         />
       </div>
+
+      {storeStatus.error && (
+        <div role="alert" className="rounded-xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-xs text-red-200">
+          Media Center could not synchronize: {storeStatus.error}
+        </div>
+      )}
 
       {/* Group tabs */}
       <div

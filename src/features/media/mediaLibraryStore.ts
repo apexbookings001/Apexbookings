@@ -57,6 +57,8 @@ export type LibraryAsset = {
   id: string
   name: string
   url: string
+  bucket: string
+  path: string
   category: MediaCategory
   mimeType: string
   size: number
@@ -83,6 +85,25 @@ function bucketForCategory(category: MediaCategory) {
   if (category === 'Payment Proofs') return 'payment-proofs'
   if (category === 'Ticket Assets') return 'ticket-assets'
   return 'event-images'
+}
+
+const mimeByExtension: Record<string, string> = {
+  avif: 'image/avif', gif: 'image/gif', heic: 'image/heic', heif: 'image/heif', jpeg: 'image/jpeg', jpg: 'image/jpeg', png: 'image/png', svg: 'image/svg+xml', webp: 'image/webp',
+  m4v: 'video/x-m4v', mov: 'video/quicktime', mp4: 'video/mp4', webm: 'video/webm',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', pdf: 'application/pdf',
+}
+
+function normalizedMimeType(file: File) {
+  if (file.type) return file.type.toLowerCase()
+  return mimeByExtension[file.name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream'
+}
+
+async function storedAssetUrl(bucket: string, path: string) {
+  if (!supabase) throw new Error('Supabase is not configured.')
+  if (bucket === 'event-images') return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl
+  const signed = await supabase.storage.from(bucket).createSignedUrl(path, 24 * 60 * 60)
+  if (signed.error) throw signed.error
+  return signed.data.signedUrl
 }
 
 function imageDimensions(url: string): Promise<{ width?: number; height?: number }> {
@@ -118,19 +139,20 @@ export const mediaLibraryStore = {
       if (error) throw error
       const assets = await Promise.all((data ?? []).map(async row => {
         const metadata = (row.metadata ?? {}) as Partial<LibraryAsset>
-        const signed = await client.storage.from(row.bucket).createSignedUrl(row.path, 24 * 60 * 60)
         return {
           id: row.id,
-          name: metadata.name ?? row.path.split('/').at(-1) ?? 'file',
-          url: signed.data?.signedUrl ?? '',
-          category: metadata.category ?? 'Other',
+          name: row.original_name ?? metadata.name ?? row.path.split('/').at(-1) ?? 'file',
+          url: await storedAssetUrl(row.bucket, row.path),
+          bucket: row.bucket,
+          path: row.path,
+          category: row.category ?? metadata.category ?? 'Other',
           mimeType: row.mime_type ?? 'application/octet-stream',
           size: Number(row.size_bytes ?? 0),
-          width: metadata.width,
-          height: metadata.height,
+          width: row.width ?? metadata.width,
+          height: row.height ?? metadata.height,
           createdAt: row.created_at,
           uploadedBy: metadata.uploadedBy ?? 'Admin',
-          usageCount: metadata.usageCount ?? 0,
+          usageCount: Number(row.usage_count ?? metadata.usageCount ?? 0),
           eventIds: metadata.eventIds ?? [],
         } as LibraryAsset
       }))
@@ -159,33 +181,42 @@ export const mediaLibraryStore = {
     category: MediaCategory = 'Other',
     uploadedBy = 'Admin',
   ): Promise<LibraryAsset> {
+    const mimeType = normalizedMimeType(file)
     const allowed = ['image/', 'video/', 'application/pdf', 'audio/']
-    if (!allowed.some(prefix => file.type.startsWith(prefix))) {
+    if (!allowed.some(prefix => mimeType.startsWith(prefix))) {
       throw new Error('Only images, videos, audio, and PDFs can be uploaded.')
     }
-    if (file.size > 20 * 1024 * 1024) {
-      throw new Error('Files must be 20 MB or smaller.')
+    const maximumBytes = mimeType.startsWith('video/') ? 50 * 1024 * 1024 : 20 * 1024 * 1024
+    if (file.size > maximumBytes) {
+      throw new Error(`${mimeType.startsWith('video/') ? 'Videos must be 50 MB' : 'Files must be 20 MB'} or smaller.`)
     }
 
     if (!supabase) throw new Error('Supabase is not configured.')
     const organizationId = requireOrganizationId()
     const localUrl = URL.createObjectURL(file)
-    const dimensions = file.type.startsWith('image/') ? await imageDimensions(localUrl) : {}
+    const dimensions = mimeType.startsWith('image/') ? await imageDimensions(localUrl) : {}
     URL.revokeObjectURL(localUrl)
     const bucket = bucketForCategory(category)
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-').slice(-100)
     const path = `${organizationId}/${crypto.randomUUID()}-${safeName}`
-    const upload = await supabase.storage.from(bucket).upload(path, file, { contentType: file.type, upsert: false })
+    const upload = await supabase.storage.from(bucket).upload(path, file, { contentType: mimeType, upsert: false })
     if (upload.error) throw upload.error
-    const signed = await supabase.storage.from(bucket).createSignedUrl(path, 24 * 60 * 60)
-    if (signed.error) throw signed.error
+    let url: string
+    try {
+      url = await storedAssetUrl(bucket, path)
+    } catch (error) {
+      await supabase.storage.from(bucket).remove([path])
+      throw error
+    }
 
     const asset: LibraryAsset = {
       id: crypto.randomUUID(),
       name: file.name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '-'),
-      url: signed.data.signedUrl,
+      url,
+      bucket,
+      path,
       category,
-      mimeType: file.type || 'application/octet-stream',
+      mimeType,
       size: file.size,
       createdAt: new Date().toISOString(),
       uploadedBy,
@@ -194,7 +225,21 @@ export const mediaLibraryStore = {
       ...dimensions,
     }
 
-    const insert = await supabase.from('media').insert({ id: asset.id, organization_id: organizationId, bucket, path, mime_type: asset.mimeType, size_bytes: asset.size, is_chat_media: isChatAssetCategory(category), metadata: { name: asset.name, category: asset.category, width: asset.width, height: asset.height, uploadedBy: asset.uploadedBy, usageCount: 0, eventIds: [] } })
+    const insert = await supabase.from('media').insert({
+      id: asset.id,
+      organization_id: organizationId,
+      bucket,
+      path,
+      mime_type: asset.mimeType,
+      size_bytes: asset.size,
+      category: asset.category,
+      original_name: asset.name,
+      width: asset.width,
+      height: asset.height,
+      usage_count: 0,
+      is_chat_media: isChatAssetCategory(category),
+      metadata: { name: asset.name, category: asset.category, width: asset.width, height: asset.height, uploadedBy: asset.uploadedBy, usageCount: 0, eventIds: [] },
+    })
     if (insert.error) {
       await supabase.storage.from(bucket).remove([path])
       throw insert.error
@@ -224,6 +269,8 @@ export const mediaLibraryStore = {
       id: crypto.randomUUID(),
       name: options.name,
       url: options.url,
+      bucket: 'chat-files',
+      path: '',
       category,
       mimeType: options.mimeType,
       size: options.size,
@@ -244,7 +291,14 @@ export const mediaLibraryStore = {
     const next = read().map(item => item.id === asset.id ? asset : item)
     void cache.optimistic(next, async () => {
       if (!supabase) throw new Error('Supabase is not configured.')
-      const { error } = await supabase.from('media').update({ metadata: { name: asset.name, category: asset.category, width: asset.width, height: asset.height, uploadedBy: asset.uploadedBy, usageCount: asset.usageCount, eventIds: asset.eventIds } }).eq('id', asset.id).eq('organization_id', requireOrganizationId())
+      const { error } = await supabase.from('media').update({
+        original_name: asset.name,
+        category: asset.category,
+        width: asset.width,
+        height: asset.height,
+        usage_count: asset.usageCount,
+        metadata: { name: asset.name, category: asset.category, width: asset.width, height: asset.height, uploadedBy: asset.uploadedBy, usageCount: asset.usageCount, eventIds: asset.eventIds },
+      }).eq('id', asset.id).eq('organization_id', requireOrganizationId())
       if (error) throw error
     }).catch(() => undefined)
   },
