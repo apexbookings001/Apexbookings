@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   CHAT_ASSET_CATEGORIES,
   EVENT_ASSET_CATEGORIES,
@@ -217,10 +217,12 @@ function FilterBar({
 
 // ─── Event Assets tab ─────────────────────────────────────────────────────────
 function EventAssetsTab({
+  assets,
   onSelect,
   show,
   onUploadClick,
 }: {
+  assets: LibraryAsset[]
   onSelect: (asset: LibraryAsset) => void
   show: (msg: string) => void
   onUploadClick: () => void
@@ -231,8 +233,7 @@ function EventAssetsTab({
   const [view, setView] = useState<'grid' | 'list'>('grid')
 
   const filtered = useMemo(() => {
-    return mediaLibraryStore
-      .listEventAssets()
+    return assets
       .filter(
         a =>
           (category === 'All' || a.category === category) &&
@@ -245,7 +246,7 @@ function EventAssetsTab({
             ? b.usageCount - a.usageCount
             : b.createdAt.localeCompare(a.createdAt),
       )
-  }, [query, category, sort])
+  }, [assets, query, category, sort])
 
   return (
     <div className="space-y-4">
@@ -323,15 +324,14 @@ function EventAssetsTab({
 }
 
 // ─── Chat Attachments tab ─────────────────────────────────────────────────────
-function ChatAttachmentsTab({ onSelect }: { onSelect: (asset: LibraryAsset) => void }) {
+function ChatAttachmentsTab({ assets, onSelect }: { assets: LibraryAsset[]; onSelect: (asset: LibraryAsset) => void }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<ChatAssetCategory | 'All'>('All')
   const [sort, setSort] = useState<SortKey>('newest')
   const [view, setView] = useState<'grid' | 'list'>('grid')
 
   const filtered = useMemo(() => {
-    return mediaLibraryStore
-      .listChatAssets()
+    return assets
       .filter(
         a =>
           (category === 'All' || a.category === category) &&
@@ -344,7 +344,7 @@ function ChatAttachmentsTab({ onSelect }: { onSelect: (asset: LibraryAsset) => v
             ? b.usageCount - a.usageCount
             : b.createdAt.localeCompare(a.createdAt),
       )
-  }, [query, category, sort])
+  }, [assets, query, category, sort])
 
   return (
     <div className="space-y-4">
@@ -439,27 +439,33 @@ export function MediaLibraryPage({ show }: { show: (message: string) => void }) 
   const [group, setGroup] = useAdminRecoveryState<MediaGroup>('media.group', 'event', value => value === 'event' || value === 'chat')
   const [dragging, setDragging] = useState(false)
   const [selectedId, setSelectedId] = useAdminRecoveryState<string | null>('media.selectedAssetId', null, value => value === null || typeof value === 'string')
-  const [, forceRefresh] = useState(0)
   const [uploading, setUploading] = useState(false)
+  const [uploadFeedback, setUploadFeedback] = useState<{ kind: 'progress' | 'success' | 'error'; message: string } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
-  const refresh = () => forceRefresh(n => n + 1)
-  const selected = mediaLibraryStore.list().find(asset => asset.id === selectedId) ?? null
-  const storeStatus = mediaLibraryStore.snapshot()
-
-  useEffect(() => mediaLibraryStore.subscribe(refresh), [])
+  const storeStatus = useSyncExternalStore(mediaLibraryStore.subscribe, mediaLibraryStore.snapshot, mediaLibraryStore.snapshot)
+  const eventAssets = storeStatus.data.filter(asset => isEventAssetCategory(asset.category))
+  const chatAssets = storeStatus.data.filter(asset => isChatAssetCategory(asset.category))
+  const selected = storeStatus.data.find(asset => asset.id === selectedId) ?? null
 
   const uploadFiles = async (files: FileList | File[]) => {
     const valid = Array.from(files).filter(f => f.size > 0)
     if (!valid.length) return
     setUploading(true)
+    setUploadFeedback({ kind: 'progress', message: `Uploading ${valid.length} file${valid.length > 1 ? 's' : ''}…` })
     try {
       const results = await Promise.allSettled(valid.map(file => mediaLibraryStore.upload(file, 'Other')))
       const uploaded = results.filter(result => result.status === 'fulfilled').length
       const failed = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      if (uploaded) show(`${uploaded} asset${uploaded > 1 ? 's' : ''} uploaded and saved to Media Center`)
+      if (uploaded) {
+        const message = `${uploaded} asset${uploaded > 1 ? 's' : ''} uploaded and saved to Media Center`
+        setUploadFeedback({ kind: failed.length ? 'error' : 'success', message: failed.length ? `${message}; ${failed.length} failed.` : message })
+        show(message)
+      }
       if (failed.length) {
         const reason = failed[0].reason
-        show(reason instanceof Error ? reason.message : `${failed.length} upload${failed.length > 1 ? 's' : ''} failed.`)
+        const message = reason instanceof Error ? reason.message : `${failed.length} upload${failed.length > 1 ? 's' : ''} failed.`
+        if (!uploaded) setUploadFeedback({ kind: 'error', message })
+        show(message)
       }
     } finally {
       setUploading(false)
@@ -502,6 +508,11 @@ export function MediaLibraryPage({ show }: { show: (message: string) => void }) 
       {storeStatus.error && (
         <div role="alert" className="rounded-xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-xs text-red-200">
           Media Center could not synchronize: {storeStatus.error}
+        </div>
+      )}
+      {uploadFeedback && (
+        <div role="status" aria-live="polite" className={`rounded-xl border px-4 py-3 text-xs ${uploadFeedback.kind === 'success' ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200' : uploadFeedback.kind === 'error' ? 'border-red-400/20 bg-red-400/10 text-red-200' : 'border-cyan-400/20 bg-cyan-400/10 text-cyan-200'}`}>
+          {uploadFeedback.message}
         </div>
       )}
 
@@ -565,12 +576,13 @@ export function MediaLibraryPage({ show }: { show: (message: string) => void }) 
       {/* Tab content */}
       {group === 'event' ? (
         <EventAssetsTab
+          assets={eventAssets}
           onSelect={asset => setSelectedId(asset.id)}
           show={show}
           onUploadClick={() => fileInput.current?.click()}
         />
       ) : (
-        <ChatAttachmentsTab onSelect={asset => setSelectedId(asset.id)} />
+        <ChatAttachmentsTab assets={chatAssets} onSelect={asset => setSelectedId(asset.id)} />
       )}
 
       {/* Detail modal */}
@@ -580,12 +592,10 @@ export function MediaLibraryPage({ show }: { show: (message: string) => void }) 
           onClose={() => setSelectedId(null)}
           onRename={(asset, name) => {
             mediaLibraryStore.update({ ...asset, name })
-            refresh()
             setSelectedId(asset.id)
           }}
           onDelete={asset => {
             mediaLibraryStore.remove(asset.id)
-            refresh()
             setSelectedId(null)
           }}
           show={show}
