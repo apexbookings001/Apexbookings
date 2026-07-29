@@ -2202,7 +2202,28 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
     if (target.section === 'testimonials' && target.index !== undefined) next.testimonials.splice(target.index + 1, 0, { ...next.testimonials[target.index], id: crypto.randomUUID(), name: `${next.testimonials[target.index].name} (Copy)` })
     if (target.section === 'faq' && target.index !== undefined) next.faq.splice(target.index + 1, 0, { ...next.faq[target.index], id: crypto.randomUUID(), q: `${next.faq[target.index].q} (Copy)` })
   })
-  const remove = () => mutate(next => { if (target.section === 'timeline' && target.index !== undefined) next.timeline.splice(target.index, 1); if (target.section === 'tickets' && target.index !== undefined && next.packages.length > 1) next.packages.splice(target.index, 1); if (target.section === 'testimonials' && target.index !== undefined) next.testimonials.splice(target.index, 1); if (target.section === 'faq' && target.index !== undefined) next.faq.splice(target.index, 1) })
+  const remove = () => mutate(next => { if (target.section === 'timeline' && target.index !== undefined) next.timeline.splice(target.index, 1); if (target.section === 'testimonials' && target.index !== undefined) next.testimonials.splice(target.index, 1); if (target.section === 'faq' && target.index !== undefined) next.faq.splice(target.index, 1) })
+  const addBlankPackage = () => {
+    const starter = createPackageFromType(PACKAGE_TYPE_LIBRARY[0])
+    mutate(next => { next.packages.push({ ...starter, name: 'New Package', desc: 'Describe what this package includes', badge: null, price: 0, seats: 100 }) })
+    setPackageNotice('New package card added. Apply your changes, then tap the new card to customize it.')
+  }
+  const removePackageById = (packageId: string) => {
+    if (draft.packages.length <= 1) return setPackageNotice('At least one package card is required. Hide the Packages section if tickets are not needed.')
+    const packageName = draft.packages.find(item => item.id === packageId)?.name ?? 'package'
+    mutate(next => { next.packages = next.packages.filter(item => item.id !== packageId) })
+    setPackageNotice(`${packageName} was removed. All other package cards were preserved.`)
+  }
+  const removeSelectedPackage = () => {
+    if (target.section !== 'tickets' || target.index === undefined) return
+    if (draft.packages.length <= 1) return setPackageNotice('At least one package card is required. Hide the Packages section if tickets are not needed.')
+    const item = draft.packages[target.index]
+    if (!item || !window.confirm(`Remove only the "${item.name}" package card?`)) return
+    const next = structuredClone(draft)
+    next.packages.splice(target.index, 1)
+    onApply(next)
+    close()
+  }
   const restore = () => mutate(next => {
     const original = DEFAULT_BOOKING_TEMPLATE
     if (target.section === 'hero') next.hero = structuredClone(original.hero)
@@ -2307,6 +2328,7 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
           <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[.035] p-4">
             <div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl text-2xl" style={{ background: `${item.accent}18`, border: `1px solid ${item.accent}40` }}>{item.icon}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="font-serif text-lg font-bold text-white">{item.name}</div>{item.badge && <span className="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase" style={{ background: `${item.accent}18`, color: item.accent }}>{item.badge}</span>}</div><div className="mt-1 text-xs text-zinc-400">{item.desc}</div><div className="mt-2 text-xs font-bold" style={{ color: item.accent }}>{item.seats.toLocaleString()} available · {item.benefits.length} benefits</div></div></div>
           </div>
+          <div className="rounded-xl border border-white/10 bg-white/[.025] p-3"><div><div className="text-xs font-bold text-white">Manage package cards</div><div className="mt-1 text-[10px] text-zinc-500">Add another card or remove only {item.name}; every other package remains unchanged.</div></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={addBlankPackage} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">+ Add another package</button><button type="button" disabled={draft.packages.length <= 1} onClick={removeSelectedPackage} className="rounded-lg bg-red-500/10 px-3 py-2 text-xs font-bold text-red-300 disabled:cursor-not-allowed disabled:opacity-40">Remove only this package</button></div></div>
           <PackageTypeLibraryPicker currentName={item.name} action="replace" onSelect={applyPackageType} />
           {packageNotice && <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-xs text-emerald-200">✓ {packageNotice}</div>}
           {input('Package name', item.name, value => mutate(next => { next.packages[target.index!].name = value }))}
@@ -2320,12 +2342,12 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
         </>
       }
       return <>{headingInput('tickets', 'Select Packages')}
+        <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs font-bold text-white">Package card manager</div><div className="mt-1 text-[10px] text-zinc-500">Add a new card or remove one card at a time. Existing cards are never replaced by these controls.</div></div><button type="button" onClick={addBlankPackage} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">+ Add blank package</button></div><div className="mt-3 space-y-2">{draft.packages.map(item => <div key={item.id} className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[.035] p-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-lg" style={{ background: `${item.accent}18` }}>{item.icon}</span><div className="min-w-0 flex-1"><div className="truncate text-xs font-bold text-white">{item.name}</div><div className="mt-0.5 text-[10px] text-zinc-500">{item.seats.toLocaleString()} seats · ${item.price.toLocaleString()}</div></div><button type="button" disabled={draft.packages.length <= 1} onClick={() => removePackageById(item.id)} aria-label={`Remove ${item.name} package`} className="shrink-0 rounded-lg bg-red-500/10 px-2.5 py-1.5 text-[10px] font-bold text-red-300 disabled:cursor-not-allowed disabled:opacity-35">Remove</button></div>)}</div></div>
         <PackageTypeLibraryPicker action="add" onSelect={type => { mutate(next => { next.packages.push(createPackageFromType(type)) }); setPackageNotice(`${type.name} was added. Apply these changes, then tap its card to customize it.`) }} />
         {packageNotice && <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-xs text-emerald-200">✓ {packageNotice}</div>}
-        <div className="rounded-xl border border-white/10 bg-white/[.025] p-3"><div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Current packages</div><div className="mt-2 flex flex-wrap gap-2">{draft.packages.map(item => <span key={item.id} className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] text-zinc-300"><span>{item.icon}</span>{item.name}</span>)}</div></div>
         <div className="mt-4 pt-4 border-t border-white/10">
-          <div className="text-xs font-semibold mb-1 text-emerald-400">Quick show bundles</div>
-          <div className="mb-3 text-[10px] text-zinc-500">Replace all packages with a ready-made two-tier show setup.</div>
+          <div className="text-xs font-semibold mb-1 text-emerald-400">Add quick show bundles</div>
+          <div className="mb-3 text-[10px] text-zinc-500">Append a ready-made two-tier setup without removing existing package cards.</div>
           <div className="grid grid-cols-2 gap-2">
             {Object.entries({
               'Concert': [
@@ -2345,8 +2367,8 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
                 { id: 'stalls', name: 'Premium Stalls', price: 145, desc: 'Main floor', badge: 'Best View', accent: '#22D3EE', glow: 'rgba(34,211,238,0.22)', seats: 400, icon: '✨', sections: ['Stalls'], benefits: ['Premium seat', 'Lounge access'] }
               ]
             }).map(([presetName, presetData]) => (
-              <button key={presetName} onClick={() => mutate(next => { next.packages = presetData })} className="bg-white/5 border border-white/10 rounded-xl p-2 text-xs hover:bg-white/10 transition-colors">
-                {presetName}
+              <button key={presetName} onClick={() => { mutate(next => { next.packages.push(...presetData.map(item => ({ ...item, id: crypto.randomUUID(), sections: [...item.sections], benefits: [...item.benefits] }))) }); setPackageNotice(`${presetName} bundle added. Existing package cards were preserved.`) }} className="bg-white/5 border border-white/10 rounded-xl p-2 text-xs hover:bg-white/10 transition-colors">
+                + {presetName}
               </button>
             ))}
           </div>
@@ -2369,7 +2391,7 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
     return <>{input('Brand', draft.footer.brand, value => mutate(next => { next.footer.brand = value }))}{input('Description', draft.footer.description, value => mutate(next => { next.footer.description = value }), true)}{input('Copyright', draft.footer.copyright, value => mutate(next => { next.footer.copyright = value }))}</>
   }
   const canDuplicate = ['timeline', 'tickets', 'testimonials', 'faq'].includes(target.section) && target.index !== undefined
-  const canDelete = ['timeline', 'tickets', 'testimonials', 'faq'].includes(target.section) && target.index !== undefined
+  const canDelete = ['timeline', 'testimonials', 'faq'].includes(target.section) && target.index !== undefined
   return <aside className="package-editor-panel fixed inset-y-0 right-0 z-[300] flex w-full max-w-lg flex-col border-l border-white/10 bg-[#111113] text-white shadow-2xl"><div className="flex items-center justify-between border-b border-white/10 p-5"><div><p className="font-mono text-[10px] uppercase tracking-widest text-emerald-400">Booking page editor</p><h2 className="font-serif text-xl font-bold">Edit {sectionLabel[target.section]}</h2></div><button type="button" onClick={close} className="text-zinc-400">✕</button></div><div className="flex-1 space-y-4 overflow-y-auto p-5">{fields()}<div className="border-t border-white/10 pt-4"><label className="flex items-center justify-between text-sm"><span>{draft.visibility[target.section] ? 'Visible section' : 'Hidden section'}</span><input type="checkbox" checked={draft.visibility[target.section]} onChange={event => mutate(next => { next.visibility[target.section] = event.target.checked })} /></label><div className="mt-3 flex flex-wrap gap-3 text-xs"><button type="button" onClick={restore} className="text-emerald-300">Restore default</button>{canDuplicate && <button type="button" onClick={duplicate} className="text-zinc-300">Duplicate</button>}{canDelete && <button type="button" onClick={remove} className="text-red-300">Delete</button>}</div></div></div><div className="flex gap-2 border-t border-white/10 p-4"><button type="button" onClick={close} className="flex-1 rounded-xl bg-white/5 px-3 py-2.5 text-sm">Cancel</button><button type="button" onClick={() => { onApply(draft); close() }} className="flex-1 rounded-xl bg-emerald-400 px-3 py-2.5 text-sm font-bold text-zinc-950">Apply</button></div></aside>
 }
 
