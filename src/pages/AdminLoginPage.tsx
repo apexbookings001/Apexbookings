@@ -6,6 +6,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../features/auth/AuthContext'
 import { notificationStore } from '../features/notifications/notificationStore'
 import { ROUTES } from '../constants/routes'
+import { getAdminResumeRoute } from '../features/recovery/recoveryStorage'
 
 const schema = z.object({ email: z.string().email('Enter a valid email address'), password: z.string().min(6, 'Password must contain at least 6 characters'), remember: z.boolean() })
 type LoginValues = z.infer<typeof schema>
@@ -15,7 +16,7 @@ const unreadNotificationCount = () => notificationStore.unreadCount()
 export function AdminLoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { signIn, resetPassword } = useAuth()
+  const { signIn, resetPassword, session, loading } = useAuth()
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [unreadCount, setUnreadCount] = useState(unreadNotificationCount)
@@ -25,6 +26,10 @@ export function AdminLoginPage() {
     const refresh = () => setUnreadCount(unreadNotificationCount())
     return notificationStore.subscribe(refresh)
   }, [])
+
+  useEffect(() => {
+    if (!loading && session) navigate((location.state as { from?: string } | null)?.from ?? getAdminResumeRoute(session.user.id) ?? ROUTES.admin.dashboard, { replace: true })
+  }, [loading, location.state, navigate, session])
 
   const onSubmit = async (values: LoginValues) => {
     const message = await signIn(values.email, values.password, values.remember)

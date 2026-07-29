@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import movieTicketLogo from '../../../icons/movie-ticket.gif'
 import { createPortal } from 'react-dom'
 import { supportStore, type AttachmentMeta, type ConversationDraft, type MessageType, type ReplyRef, type SupportConversation, type SupportMessage } from './supportStore'
 import { useTheme } from '../../theme'
 import { useAuth } from '../auth/AuthContext'
+import { emailService } from '../email/emailService'
+import { useSocialProofOverlay } from '../conversion/SocialProofOverlayContext'
+import { useBookingRecoveryState } from '../recovery/BookingSessionRecoveryProvider'
+import { useLocale } from '../../i18n/LocaleContext'
 
 // ─── Brand palettes ───────────────────────────────────────────────────────────
 // Dark mode: emerald  |  Light mode: blue
@@ -966,6 +970,7 @@ function ChatWindow({
   onSend: (payload: { type: MessageType; body: string; attachment?: AttachmentMeta; replyTo?: ReplyRef }) => void
   isDark: boolean
 }) {
+  const { t: translate } = useLocale()
   const [replyTo, setReplyTo] = useState<ReplyRef | undefined>()
   const [showTyping, setShowTyping] = useState(false)
   const [mediaViewer, setMediaViewer] = useState<{ url: string; type: 'image' | 'video' } | null>(null)
@@ -1102,10 +1107,10 @@ function ChatWindow({
               }} />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 800, fontSize: 15, color: isDark ? '#FFFFFF' : '#0F172A', letterSpacing: '-0.01em' }}>Apex Support</div>
+              <div style={{ fontWeight: 800, fontSize: 15, color: isDark ? '#FFFFFF' : '#0F172A', letterSpacing: '-0.01em' }}>{translate('chat.title')}</div>
               <div style={{ fontSize: 11, color: isDark ? 'rgba(255,255,255,0.72)' : '#94A3B8', display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
                 <span style={{ width: 5, height: 5, borderRadius: '50%', background: isDark ? '#FFFFFF' : '#22C55E', display: 'inline-block' }} />
-                Online · typically replies in minutes
+                {translate('chat.online')}
               </div>
             </div>
             <button
@@ -1121,7 +1126,7 @@ function ChatWindow({
               onMouseEnter={e => (e.currentTarget.style.background = isDark ? 'rgba(255,255,255,0.2)' : '#E2E8F0')}
               onMouseLeave={e => (e.currentTarget.style.background = isDark ? 'rgba(255,255,255,0.12)' : '#F1F5F9')}
             >
-              Close
+              {translate('chat.close')}
             </button>
           </div>
 
@@ -1197,15 +1202,35 @@ function ChatWindow({
 // ─── Public Support Chat (exported component) ─────────────────────────────────
 export function PublicSupportChat({ eventId, isPreview = false }: { eventId: string; isPreview?: boolean }) {
   const { t } = useTheme()
+  const { t: translate } = useLocale()
   const { user } = useAuth()
   const isDark = t.isDark
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useBookingRecoveryState(`chat:${eventId}:open`, false, value => typeof value === 'boolean')
   const [conversation, setConversation] = useState<SupportConversation | null>(null)
-  const [customerEmail, setCustomerEmail] = useState(() => isPreview ? user?.email ?? '' : '')
-  const [emailDraft, setEmailDraft] = useState(() => isPreview ? user?.email ?? '' : '')
+  const [customerEmail, setCustomerEmail] = useBookingRecoveryState(`chat:${eventId}:customerEmail`, isPreview ? user?.email ?? '' : '', value => typeof value === 'string')
+  const [emailDraft, setEmailDraft] = useBookingRecoveryState(`chat:${eventId}:emailDraft`, isPreview ? user?.email ?? '' : '', value => typeof value === 'string')
   const [unreadCount, setUnreadCount] = useState(0)
   const [dockOffset, setDockOffset] = useState(0)
   const btnRef = useRef<HTMLButtonElement>(null)
+  const { setChatActive } = useSocialProofOverlay()
+
+  useEffect(() => {
+    setChatActive(open)
+    return () => setChatActive(false)
+  }, [open, setChatActive])
+  const submitEmail = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const email = emailDraft.trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return
+    setCustomerEmail(email)
+    void emailService.dispatchAdmin(eventId, {
+      kind: 'support_contact',
+      subject: 'New Support Contact',
+      data: { Customer: email.split('@')[0] || 'Event guest', Email: email, Time: new Date().toLocaleString() },
+      deepLink: `${window.location.origin}/admin/chat`,
+      actionLabel: 'Open Support Inbox',
+    }).catch(() => undefined)
+  }
 
   useEffect(() => {
     if (!isPreview || !user?.email) return
@@ -1247,7 +1272,7 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
       const ce = e as CustomEvent<{ context?: string }>
       if (ce.detail?.context && !isPreview) {
         const ctx = ce.detail.context
-        const msgText = `What would you like me to help you with today regarding ${ctx}?`
+        const msgText = translate('chat.helpContext', { context: ctx })
         setTimeout(() => {
           const c = conversation
           const hasMessage = c?.messages.some(m => m.body === msgText && m.from === 'admin')
@@ -1322,7 +1347,7 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
       {!open && <button
         ref={btnRef}
         onClick={() => setOpen(true)}
-        aria-label="Open support chat"
+        aria-label={translate('chat.open')}
         className={`chat-btn${isDark ? '' : ' chat-btn-light'}`}
         style={{
           transform: `translateY(${dockOffset}px)`,
@@ -1350,12 +1375,12 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
 
       {open && !isPreview && !customerEmail && (
         <div className="fixed inset-0 z-[10010] grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
-          <form onSubmit={event => { event.preventDefault(); const email = emailDraft.trim().toLowerCase(); if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return; setCustomerEmail(email) }} className="support-email-card w-full max-w-sm rounded-3xl p-6 shadow-2xl" style={{ background: isDark ? '#111113' : '#FFFFFF', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}` }}>
+          <form onSubmit={submitEmail} className="support-email-card w-full max-w-sm rounded-3xl p-6 shadow-2xl" style={{ background: isDark ? '#111113' : '#FFFFFF', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}` }}>
             <div className="grid h-11 w-11 place-items-center rounded-2xl" style={{ background: isDark ? 'rgba(0,255,136,.12)' : 'rgba(21,94,239,.1)', color: isDark ? '#00FF88' : '#155EEF' }}>?</div>
-            <h2 className="mt-4 font-serif text-2xl font-bold" style={{ color: isDark ? '#FAFAFA' : '#171A1F' }}>Welcome to Support</h2>
-            <p className="mt-2 text-sm" style={{ color: isDark ? '#A1A1AA' : '#5F6773' }}>Enter your email to continue an existing conversation or start a new one.</p>
-            <label className="mt-5 block text-xs font-mono uppercase tracking-wider" style={{ color: isDark ? '#A1A1AA' : '#87909D' }}>Email address<input autoFocus type="email" required value={emailDraft} onChange={event => setEmailDraft(event.target.value)} placeholder="you@example.com" className="mt-2 w-full rounded-xl px-4 py-3 text-sm outline-none" style={{ background: isDark ? 'rgba(255,255,255,.05)' : '#FAFBFC', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}`, color: isDark ? '#FAFAFA' : '#171A1F' }}/></label>
-            <div className="mt-5 flex gap-3"><button type="button" onClick={() => setOpen(false)} className="flex-1 rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: isDark ? 'rgba(255,255,255,.06)' : '#F1F3F5', color: isDark ? '#FAFAFA' : '#171A1F' }}>Cancel</button><button type="submit" className="flex-1 rounded-xl px-4 py-3 text-sm font-bold" style={{ background: isDark ? '#00FF88' : '#155EEF', color: isDark ? '#09090B' : '#FFFFFF' }}>Continue</button></div>
+            <h2 className="mt-4 font-serif text-2xl font-bold" style={{ color: isDark ? '#FAFAFA' : '#171A1F' }}>{translate('chat.welcome')}</h2>
+            <p className="mt-2 text-sm" style={{ color: isDark ? '#A1A1AA' : '#5F6773' }}>{translate('chat.emailPrompt')}</p>
+            <label className="mt-5 block text-xs font-mono uppercase tracking-wider" style={{ color: isDark ? '#A1A1AA' : '#87909D' }}>{translate('chat.email')}<input autoFocus type="email" required value={emailDraft} onChange={event => setEmailDraft(event.target.value)} placeholder="you@example.com" className="mt-2 w-full rounded-xl px-4 py-3 text-sm outline-none" style={{ background: isDark ? 'rgba(255,255,255,.05)' : '#FAFBFC', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}`, color: isDark ? '#FAFAFA' : '#171A1F' }}/></label>
+            <div className="mt-5 flex gap-3"><button type="button" onClick={() => setOpen(false)} className="flex-1 rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: isDark ? 'rgba(255,255,255,.06)' : '#F1F3F5', color: isDark ? '#FAFAFA' : '#171A1F' }}>{translate('common.cancel')}</button><button type="submit" className="flex-1 rounded-xl px-4 py-3 text-sm font-bold" style={{ background: isDark ? '#00FF88' : '#155EEF', color: isDark ? '#09090B' : '#FFFFFF' }}>{translate('chat.continue')}</button></div>
           </form>
         </div>
       )}

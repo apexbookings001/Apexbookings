@@ -98,7 +98,7 @@ export const paymentReviewStore = {
   },
   update: (record: PaymentReviewRecord) => {
     const next = cache.get().map(item => item.id === record.id ? record : item)
-    void cache.optimistic(next, () => persist(record)).catch(() => undefined)
+    void cache.optimistic(next, async () => { await persist(record) }).catch(() => undefined)
   },
   updateAsync: async (record: PaymentReviewRecord) => {
     const result = await persist(record)

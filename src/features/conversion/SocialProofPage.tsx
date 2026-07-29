@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { mediaLibraryStore } from '../media/mediaLibraryStore'
 import { socialProofStore, type SocialProofItem, type SocialProofSettings } from './socialProofStore'
+import { useAdminRecoveryState } from '../recovery/AdminSessionRecoveryProvider'
 
 const inputClass = 'mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-emerald-400'
 
 export function SocialProofPage({ show }: { show: (message: string) => void }) {
-  const [settings, setSettings] = useState<SocialProofSettings>(socialProofStore.settings)
+  const [settings, setSettings] = useAdminRecoveryState<SocialProofSettings>('settings.socialProofDraft', socialProofStore.settings(), (value): value is SocialProofSettings => Boolean(value && typeof value === 'object' && typeof (value as SocialProofSettings).enabled === 'boolean'))
   const [items, setItems] = useState<SocialProofItem[]>(socialProofStore.list)
-  const [selected, setSelected] = useState<SocialProofItem | null>(null)
+  const [selected, setSelected] = useAdminRecoveryState<SocialProofItem | null>('settings.socialProofSelected', null, (value): value is SocialProofItem | null => value === null || Boolean(value && typeof value === 'object' && typeof (value as SocialProofItem).id === 'string'))
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const itemInput = useRef<HTMLInputElement>(null)

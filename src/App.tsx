@@ -7,7 +7,7 @@ import { useAuth } from './features/auth/AuthContext'
 import { adminEventStore, PLATFORM_PAYMENT_DEFAULTS, type EventPaymentSettings, type EventSocialProofOverride } from './features/events/adminEventStore'
 import type { PaymentMethod } from './types/domain'
 import { analyticsStore } from './features/analytics/analyticsStore'
-import { DEFAULT_BOOKING_TEMPLATE, createBookingPageData, masterBookingTemplateStore, type BookingPageData, type BookingSectionId, type BookingPackage } from './features/events/bookingTemplate'
+import { DEFAULT_BOOKING_TEMPLATE, createBookingPageData, masterBookingTemplateStore, normalizeBookingPageData, type BookingPageData, type BookingSectionId, type BookingPackage } from './features/events/bookingTemplate'
 import { PACKAGE_TYPE_LIBRARY, createPackageFromType, type PackageTypeDefinition } from './features/events/packageTypeLibrary'
 import { mediaLibraryStore } from './features/media/mediaLibraryStore'
 import { PublicConversionEnhancements } from './features/conversion/PublicConversionEnhancements'
@@ -34,11 +34,15 @@ import { createPublicCheckout } from './services/supabase/publicCheckoutReposito
 import { createPublicBankTransfer } from './services/supabase/publicBankTransferRepository'
 import { uploadPaymentProofs } from './services/supabase/paymentProofRepository'
 import { QRCodeSVG } from 'qrcode.react'
-import { sessionPersistence } from './features/bookings/sessionPersistence'
+import { sessionPersistence, type PersistedBookingState } from './features/bookings/sessionPersistence'
 import { TicketVerificationPage } from './pages/TicketVerificationPage'
 import { LocaleProvider, useLocale, tr as trFn } from './i18n/LocaleContext'
 import { LocaleIndicator } from './components/LocaleIndicator'
 import { LanguageSwitcher } from './components/LanguageSwitcher'
+import { EventHero } from './components/EventHero'
+import { useAdminSessionRecovery } from './features/recovery/AdminSessionRecoveryProvider'
+import { useBookingSessionRecovery } from './features/recovery/BookingSessionRecoveryProvider'
+import { getAdminResumeRoute } from './features/recovery/recoveryStorage'
 const AdminDashboard = lazy(() => import('./AdminDashboard'))
 
 import { ThemeCtx, useTheme, DARK, LIGHT } from './theme'
@@ -78,7 +82,7 @@ const TIERS = [
 ]
 
 // ─── Hooks ────────────────────────────────────────────────────────────────────
-function useReveal() {
+function useReveal(dependency?: unknown) {
   useEffect(() => {
     const obs = new IntersectionObserver(
       (e) => e.forEach((x) => { if (x.isIntersecting) x.target.classList.add('visible') }),
@@ -86,7 +90,7 @@ function useReveal() {
     )
     document.querySelectorAll('.reveal,.reveal-left,.reveal-right').forEach((el) => obs.observe(el))
     return () => obs.disconnect()
-  }, [])
+  }, [dependency])
 }
 
 function AnimatedMetric({ value }: { value: string | number }) {
@@ -252,7 +256,7 @@ function LocalizedNewsletterRow({ email, setEmail, show }: { email: string; setE
 }
 
 function LocalizedFooterBottom({ show }: { show: (m: string) => void }) {
-  const { translations: tr } = useLocale()
+  const { translations: tr, t: translate } = useLocale()
   const { data } = useBooking()
   const { t } = useTheme()
   return (
@@ -260,7 +264,7 @@ function LocalizedFooterBottom({ show }: { show: (m: string) => void }) {
       <div className="text-xs" style={{ color: t.isDark ? t.textMuted : '#475569' }}>{data.footer.copyright}</div>
       <div className="flex items-center gap-5">
         {([tr.footer.privacy, tr.footer.terms, tr.footer.cookies] as string[]).map((l) => (
-          <button key={l} onClick={() => show(`Opening ${l}...`)} className="text-xs transition-colors" style={{ color: t.isDark ? t.textMuted : '#475569' }}>{l}</button>
+          <button key={l} onClick={() => show(translate('footer.opening', { label: l }))} className="text-xs transition-colors" style={{ color: t.isDark ? t.textMuted : '#475569' }}>{l}</button>
         ))}
       </div>
       <div className="flex items-center gap-2 text-xs" style={{ color: t.isDark ? t.textMuted : '#475569' }}>
@@ -273,14 +277,15 @@ function LocalizedFooterBottom({ show }: { show: (m: string) => void }) {
 
 // ─── Nav ──────────────────────────────────────────────────────────────────────
 const NAV_LINKS = [
-  { label: 'Home', id: 'hero' }, { label: 'About', id: 'about' },
-  { label: 'Venue', id: 'venue' }, { label: 'Packages', id: 'tickets' },
-  { label: 'Timeline', id: 'timeline' }, { label: 'FAQ', id: 'faq' },
-  { label: 'Contact', id: 'footer' },
+  { key: 'navigation.home', id: 'hero' }, { key: 'navigation.about', id: 'about' },
+  { key: 'navigation.venue', id: 'venue' }, { key: 'navigation.packages', id: 'tickets' },
+  { key: 'navigation.timeline', id: 'timeline' }, { key: 'navigation.reviews', id: 'testimonials' },
+  { key: 'navigation.faq', id: 'faq' }, { key: 'navigation.contact', id: 'footer' },
 ]
 
 function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdminClick: () => void }) {
   const { t } = useTheme()
+  const { t: translate } = useLocale()
   const { data } = useBooking()
   const [scrolled, setScrolled] = useState(false)
   const [open, setOpen] = useState(false)
@@ -347,7 +352,7 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
             style={{ color: t.textSub }}
             onMouseEnter={(e) => (e.currentTarget.style.color = t.text)}
             onMouseLeave={(e) => (e.currentTarget.style.color = t.textSub)}
-          >{l.label}</button>
+          >{translate(l.key)}</button>
         ))}
       </div>
 
@@ -360,7 +365,7 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
           onClick={onToggleTheme}
           className="w-9 h-9 rounded-xl flex items-center justify-center transition-all"
           style={{ background: t.card, border: `1px solid ${t.border}`, color: t.textSub }}
-          title={t.isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          title={translate(t.isDark ? 'navigation.lightMode' : 'navigation.darkMode')}
         >
           {t.isDark
             ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="12" r="5" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
@@ -372,7 +377,7 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
       </div>
 
       {/* Mobile toggle */}
-      <button className="lg:hidden ml-auto p-2 rounded-lg transition-all hover:-translate-y-0.5" style={{ color: t.textSub, background: t.card, border: `1px solid ${t.isDark ? t.border : '#E5E7EB'}`, boxShadow: t.isDark ? '0 4px 16px rgba(0,255,136,0.2)' : '0 2px 8px rgba(0,0,0,0.08)' }} onClick={() => setOpen(!open)}>
+      <button aria-label={translate(open ? 'navigation.closeMenu' : 'navigation.openMenu')} className="lg:hidden ml-auto p-2 rounded-lg transition-all hover:-translate-y-0.5" style={{ color: t.textSub, background: t.card, border: `1px solid ${t.isDark ? t.border : '#E5E7EB'}`, boxShadow: t.isDark ? '0 4px 16px rgba(0,255,136,0.2)' : '0 2px 8px rgba(0,0,0,0.08)' }} onClick={() => setOpen(!open)}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
           {open ? <path d="M18 6L6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
         </svg>
@@ -394,11 +399,11 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
               style={{ color: t.textSub, background: 'transparent' }}
               onMouseEnter={(e) => { e.currentTarget.style.background = t.card; e.currentTarget.style.color = t.text }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = t.textSub }}
-            >{l.label}</button>
+            >{translate(l.key)}</button>
           ))}
           <div className="flex gap-2 pt-3 mt-2 border-t" style={{ borderColor: t.border }}>
             <button onClick={onToggleTheme} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs flex-1 justify-center" style={{ background: t.card, border: `1px solid ${t.border}`, color: t.textSub }}>
-              {t.isDark ? '☀️ Light Mode' : '🌙 Dark Mode'}
+              {translate(t.isDark ? 'navigation.lightMode' : 'navigation.darkMode')}
             </button>
             <NavBookBtn mobile />
           </div>
@@ -417,7 +422,7 @@ const HERO_IMAGES = [
   'https://images.unsplash.com/photo-1501962679900-bea61483313b?w=1600&h=900&fit=crop&auto=format',
 ]
 
-function Hero() {
+function LegacyHero() {
   const { t } = useTheme()
   const { data, mode } = useBooking()
   const { formatPrice } = useLocale()
@@ -490,10 +495,23 @@ function Hero() {
     </section>
   </EditableTarget>
 }
-function AboutShow() {
+function Hero() {
   const { t } = useTheme()
   const { data, mode } = useBooking()
+  const { formatPrice } = useLocale()
+  if (!data.visibility.hero && mode !== 'editor') return null
+  return <EditableTarget target={{ section: 'hero' }}>
+    <div className={!data.visibility.hero ? 'opacity-40' : ''}>
+      <EventHero hero={data.hero} packages={data.packages} accent={t.isDark ? t.accent : '#60A5FA'} formatPrice={formatPrice} onPrimary={() => scrollTo('tickets')} onSecondary={() => scrollTo('about')} editorMode={mode === 'editor'} />
+    </div>
+  </EditableTarget>
+}
+function AboutShow() {
+  const { t } = useTheme()
+  const { t: translate } = useLocale()
+  const { data, mode } = useBooking()
   const about = data.about
+  const mediaIsVideo = about.mediaType === 'video'
 
   if (!data.visibility.about && mode !== 'editor') return null
 
@@ -501,21 +519,32 @@ function AboutShow() {
     <EditableTarget target={{ section: 'about' }}><section id="about" className={`booking-section premium-about py-24 px-6 relative overflow-hidden ${!data.visibility.about ? 'opacity-40' : ''}`} style={{ background: t.isDark ? 'transparent' : t.bg3 }}>
       <div className="max-w-7xl mx-auto">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
-          <div className="premium-media-wrap relative reveal-left">
-            <div className="premium-media rounded-3xl overflow-hidden aspect-[4/3]">
-              <img src={about.image} alt="Concert performance" width="960" height="720" className="w-full h-full object-cover" />
-              <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg,rgba(139,92,246,0.2),transparent 60%)' }} />
-            </div>
-            <div className="premium-float-card absolute -bottom-5 -right-5 rounded-2xl p-5 shadow-xl" style={{ background: t.isDark ? '#18181B' : '#FFFFFF', border: `1px solid ${t.isDark ? t.border : '#E5E7EB'}`, minWidth: 180, boxShadow: t.isDark ? '0 16px 48px rgba(0,0,0,0.5)' : '0 8px 32px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.06)' }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: t.textMuted }}>Show Date</div>
-              <div className="font-serif text-2xl font-bold mb-0.5" style={{ color: t.text }}>{about.dateLabel}</div>
-              <div className="text-xs" style={{ color: t.textSub }}>{about.dateDetail}</div>
-              <div className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider" style={{ color: t.accent }}><span className="h-1.5 w-1.5 rounded-full animate-pulse" style={{ background: t.accent }} /> Official event</div>
+          <div className="about-media-reveal reveal">
+            <div className="about-media-card" style={{ background: t.isDark ? '#111311' : '#FFFFFF', borderColor: t.isDark ? 'rgba(255,255,255,.11)' : '#E5E7EB', boxShadow: t.isDark ? '0 28px 80px rgba(0,0,0,.42)' : '0 24px 70px rgba(15,23,42,.14)' }}>
+              <div className="about-media-viewport">
+                {about.image ? mediaIsVideo ? (
+                  <video src={about.image} controls playsInline preload="metadata" aria-label={`${about.heading} event video`} className="h-full w-full object-contain" />
+                ) : (
+                  <img src={about.image} alt={`${about.heading} event`} width="960" height="720" loading="lazy" className="h-full w-full object-contain" />
+                ) : (
+                  <div className="grid h-full min-h-72 place-items-center px-6 text-center text-sm" style={{ color: t.textMuted }}>{translate('about.mediaEmpty')}</div>
+                )}
+                <div className="about-media-sheen" aria-hidden="true" />
+                <span className="about-media-kind">{translate(mediaIsVideo ? 'about.eventVideo' : 'about.eventImage')}</span>
+              </div>
+              <div className="about-media-details">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-[0.18em]" style={{ color: t.textMuted }}>{translate('about.showDate')}</div>
+                  <div className="mt-1 font-serif text-2xl font-bold" style={{ color: t.text }}>{about.dateLabel}</div>
+                  <div className="mt-1 text-xs" style={{ color: t.textSub }}>{about.dateDetail}</div>
+                </div>
+                <div className="about-media-official" style={{ color: t.accent, borderColor: `${t.accent}45`, background: `${t.accent}12` }}><span className="h-1.5 w-1.5 rounded-full" style={{ background: t.accent }} /> {translate('about.official')}</div>
+              </div>
             </div>
           </div>
 
           <div className="reveal-right">
-            <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{data.sectionHeadings?.about || 'About the Show'}</div>
+            <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{data.sectionHeadings?.about || translate('about.section')}</div>
             <h2 className="font-serif text-4xl md:text-5xl font-bold mb-6 leading-tight" style={{ color: t.text, textShadow: t.isDark ? '0 2px 8px rgba(0,0,0,0.35)' : '0 1px 2px rgba(15,23,42,0.12)' }}>
               {about.heading}<br /><span className="text-gradient-emerald">{about.accentHeading}</span>
             </h2>
@@ -535,7 +564,7 @@ function AboutShow() {
             </div>}
 
             <div className="premium-info-card p-6 rounded-2xl" style={{ background: t.isDark ? 'rgba(0,255,136,0.05)' : 'rgba(37,99,235,0.05)', border: `1px solid ${t.isDark ? 'rgba(0,255,136,0.15)' : 'rgba(37,99,235,0.15)'}` }}>
-              <div className="text-xs font-mono uppercase tracking-wider mb-3" style={{ color: t.accent }}>Every Ticket Includes</div>
+              <div className="text-xs font-mono uppercase tracking-wider mb-3" style={{ color: t.accent }}>{translate('about.everyTicket')}</div>
               <div className="grid grid-cols-2 gap-2">
                 {about.inclusions.map((f) => (
                   <div key={f} className="flex items-center gap-2 text-sm" style={{ color: t.textSub }}>
@@ -557,6 +586,7 @@ function AboutShow() {
 // ─── Venue Map ────────────────────────────────────────────────────────────────
 function VenueMap() {
   const { t } = useTheme()
+  const { t: translate } = useLocale()
   const { data, mode } = useBooking()
   const venue = data.venue
   const venueFacts = data.venueFacts || []
@@ -567,7 +597,7 @@ function VenueMap() {
     <EditableTarget target={{ section: 'venue' }}><section id="venue" className={`booking-section premium-venue py-24 px-6 ${!data.visibility.venue ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg2 : t.sectionAlt }}>
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-14 reveal">
-          <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{data.sectionHeadings?.venue || 'Venue'}</div>
+          <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{data.sectionHeadings?.venue || translate('venue.section')}</div>
           <h2 className="font-serif text-4xl md:text-5xl font-bold mb-4" style={{ color: t.text }}>{venue.name}</h2>
           <p style={{ color: t.textSub }}>{venue.address}</p>
         </div>
@@ -589,7 +619,7 @@ function VenueMap() {
                   <a href={venue.mapLink} target="_blank" rel="noopener noreferrer"
                     className="shrink-0 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all hover:-translate-y-1 hover:scale-105"
                     style={{ background: `linear-gradient(135deg,${t.accent},${t.accentDim})`, color: t.accentText, boxShadow: `0 4px 16px ${t.accentGlow}` }}>
-                    Open in Maps →
+                    {translate('venue.openMaps')} →
                   </a>
                 </div>
               </div>
@@ -599,7 +629,7 @@ function VenueMap() {
           <div className="space-y-4 reveal-right flex flex-col justify-center">
             {venueFacts.some(f => f.visible) && (
               <div className="premium-card p-6 rounded-3xl" style={{ background: t.card, border: `1px solid ${t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
-                <div className="text-xs font-mono uppercase tracking-wider mb-4" style={{ color: t.textMuted }}>{data.sectionHeadings?.venueFacts || 'Venue Facts'}</div>
+                <div className="text-xs font-mono uppercase tracking-wider mb-4" style={{ color: t.textMuted }}>{data.sectionHeadings?.venueFacts || translate('venue.facts')}</div>
                 {venueFacts.filter(f => f.visible).map(fact => (
                   <div key={fact.id} className="flex justify-between py-2.5 border-b text-sm last:border-b-0 last:pb-0" style={{ borderColor: t.isDark ? t.border : '#F3F4F6' }}>
                     <span style={{ color: t.textMuted }}>{fact.label}</span>
@@ -641,14 +671,15 @@ const TIMELINE = [
 
 function EventTimeline() {
   const { t } = useTheme()
+  const { t: translate } = useLocale()
   const { data, mode } = useBooking()
   if (!data.visibility.timeline && mode !== 'editor') return null
   return (
     <EditableTarget target={{ section: 'timeline' }}><section id="timeline" className={`booking-section premium-timeline py-24 px-6 ${!data.visibility.timeline ? 'opacity-40' : ''}`}>
       <div className="max-w-3xl mx-auto">
         <div className="text-center mb-16 reveal">
-          <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{data.sectionHeadings?.timeline || 'The Evening'}</div>
-          <h2 className="font-serif text-4xl font-bold mb-4" style={{ color: t.text }}>Show Schedule</h2>
+          <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{data.sectionHeadings?.timeline || translate('timeline.eyebrow')}</div>
+          <h2 className="font-serif text-4xl font-bold mb-4" style={{ color: t.text }}>{translate('timeline.heading')}</h2>
         </div>
         <div className="relative">
           <div className="absolute left-6 top-0 bottom-0 w-px" style={{ background: `linear-gradient(to bottom, transparent, ${t.border} 10%, ${t.border} 90%, transparent)` }} />
@@ -787,25 +818,29 @@ const OTHER_PKG_SEATS: Record<number, number[]> = {
 }
 const TOTAL_SEATS: Record<number, number> = { 0: 100, 1: 60, 2: 20 }
 
-function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = false }: { tier: Omit<BookingPackage, 'id'> & { id: number }; onClose: () => void; initialStep?: BStep; previewOnly?: boolean }) {
+function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = false, recoveredState }: { tier: Omit<BookingPackage, 'id'> & { id: number; packageKey?: string }; onClose: () => void; initialStep?: BStep; previewOnly?: boolean; recoveredState?: PersistedBookingState | null }) {
   const { t } = useTheme()
   const checkoutAccent = t.isDark ? tier.accent : t.accent
-  const { translations: tr, formatPrice, locale } = useLocale()
+  const { translations: tr, formatPrice, locale, t: translate } = useLocale()
   const { data, payments, eventId, mode } = useBooking()
-  const [step, setStep] = useState<BStep>(initialStep)
-  const [selectedSeat, setSelectedSeat] = useState<number | null>(previewOnly ? 12 : null)
-  const [info, setInfo] = useState(previewOnly ? { name: 'Preview Customer', email: 'preview@example.com' } : { name: '', email: '' })
-  const [payMethod, setPayMethod] = useState<PaymentMethod | null>(previewOnly ? 'paypal' : null)
+  const location = useLocation()
+  const navigate = useNavigate()
+  const bookingRecovery = useBookingSessionRecovery()
+  const [step, setStep] = useState<BStep>(() => recoveredState?.step as BStep || initialStep)
+  const [selectedSeat, setSelectedSeat] = useState<number | null>(() => previewOnly ? 12 : recoveredState?.selectedSeat ?? null)
+  const [info, setInfo] = useState(() => previewOnly ? { name: 'Preview Customer', email: 'preview@example.com' } : recoveredState?.info ?? { name: '', email: '' })
+  const [payMethod, setPayMethod] = useState<PaymentMethod | null>(() => previewOnly ? 'paypal' : recoveredState?.payMethod as PaymentMethod | null ?? null)
   const [selectedCoin, setSelectedCoin] = useState<CryptoCoin | null>(null)
   const [proofFiles, setProofFiles] = useState<File[]>([])
-  const [bankRequestId, setBankRequestId] = useState<string | null>(null)
+  const [bankRequestId, setBankRequestId] = useState<string | null>(() => recoveredState?.bankTransferRequestId ?? null)
   const [showBankConfirmation, setShowBankConfirmation] = useState(false)
   const [processing, setProcessing] = useState(false)
-  const [reviewRecordId, setReviewRecordId] = useState<string | null>(null)
-  const [ticketId, setTicketId] = useState<string | null>(null)
-  const [declineReason, setDeclineReason] = useState(previewOnly && initialStep === 'declined' ? 'The uploaded proof could not be verified.' : '')
+  const [reviewRecordId, setReviewRecordId] = useState<string | null>(() => recoveredState?.reviewRecordId ?? null)
+  const [serverBookingId, setServerBookingId] = useState<string | null>(() => recoveredState?.bookingId ?? null)
+  const [ticketId, setTicketId] = useState<string | null>(() => recoveredState?.ticketId ?? null)
+  const [declineReason, setDeclineReason] = useState(() => recoveredState?.declineReason ?? (previewOnly && initialStep === 'declined' ? 'The uploaded proof could not be verified.' : ''))
   const { msg: seatMsg, show: showSeatMsg } = useToast()
-  const bookingId = useRef(`APEX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`).current
+  const [bookingId] = useState(() => recoveredState?.bookingReference || `APEX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`)
   const contentRef = useRef<HTMLDivElement>(null)
   const ticketDownloadRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -824,46 +859,69 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     setTimeout(() => setStep(s), 50)
   }
 
-  // Load session
-  useEffect(() => {
-    if (previewOnly) return
-    const persistenceId = eventId ?? data.hero?.title ?? 'event'
-    let active = true
-    void sessionPersistence.loadRemote(persistenceId).then(s => {
-      if (active && s) {
-      if (s.step !== 'done' && s.step !== 'declined') {
-        setStep(s.step as BStep)
-        setSelectedSeat(s.selectedSeat)
-        setInfo(s.info)
-        setPayMethod(s.payMethod as PaymentMethod | null)
-        if (s.reviewRecordId) setReviewRecordId(s.reviewRecordId)
-        if (s.ticketId) setTicketId(s.ticketId)
-        if (s.bankTransferRequestId) setBankRequestId(s.bankTransferRequestId)
-      }
-      }
-    }).catch(() => undefined)
-    return () => { active = false }
-  }, [data.hero?.title, eventId, previewOnly])
-
   // Save session
   useEffect(() => {
     if (previewOnly) return
-    if (step === 'done' || step === 'declined') {
-      sessionPersistence.clear(eventId ?? data.hero?.title ?? 'event')
-    } else {
-      sessionPersistence.save({
-        eventId: eventId ?? data.hero?.title ?? 'event',
-        step,
-        selectedSeat,
-        info,
-        payMethod: payMethod as string | null,
-        selectedCoinId: selectedCoin?.id ?? null,
-        reviewRecordId,
-        ticketId,
-        bankTransferRequestId: bankRequestId
-      })
+    const persistenceId = eventId ?? data.hero?.title ?? 'event'
+    sessionPersistence.save({
+      eventId: persistenceId,
+      eventSlug: location.pathname.split('/').filter(Boolean).at(1),
+      route: `${location.pathname}${location.search}${location.hash}`,
+      packageIndex: tier.id,
+      packageId: tier.packageKey ?? tier.name,
+      quantity: 1,
+      step,
+      selectedSeat,
+      info,
+      locale: { country: locale.country, language: locale.bcp47, currency: locale.currency },
+      payMethod: payMethod as string | null,
+      selectedCoinId: selectedCoin?.id ?? recoveredState?.selectedCoinId ?? null,
+      proofFileNames: proofFiles.map(file => file.name),
+      proofUploadProgress: processing && proofFiles.length ? 50 : 0,
+      reviewRecordId,
+      bookingId: serverBookingId,
+      bookingReference: bookingId,
+      ticketId,
+      bankTransferRequestId: bankRequestId,
+      declineReason,
+      scrollPosition: contentRef.current?.scrollTop ?? 0,
+    })
+  }, [bankRequestId, bookingId, data.hero?.title, declineReason, eventId, info, locale.bcp47, locale.country, locale.currency, location.hash, location.pathname, location.search, payMethod, previewOnly, processing, proofFiles, recoveredState?.selectedCoinId, reviewRecordId, selectedCoin, selectedSeat, serverBookingId, step, ticketId, tier.id, tier.name, tier.packageKey])
+
+  useEffect(() => {
+    if (previewOnly) return
+    const persistenceId = eventId ?? data.hero?.title ?? 'event'
+    return bookingRecovery.registerFlusher(`booking:${persistenceId}`, () => sessionPersistence.flush(persistenceId))
+  }, [bookingRecovery, data.hero?.title, eventId, previewOnly])
+
+  useEffect(() => {
+    if (previewOnly) return
+    const persistenceId = eventId ?? data.hero?.title ?? 'event'
+    const markInactive = () => {
+      sessionPersistence.touch(persistenceId)
+      void sessionPersistence.flush(persistenceId)
     }
-  }, [step, selectedSeat, info, payMethod, selectedCoin, reviewRecordId, ticketId, bankRequestId, data.hero?.title, eventId, previewOnly])
+    const onVisibility = () => { if (document.visibilityState === 'hidden') markInactive() }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', markInactive)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', markInactive)
+    }
+  }, [data.hero?.title, eventId, previewOnly])
+
+  useEffect(() => {
+    if (previewOnly) return
+    const base = location.pathname.replace(/\/(checkout|payment|booking\/[^/]+)\/?$/, '')
+    const suffix = step === 'seats' || step === 'details' ? '/checkout' : step === 'done' || step === 'declined' ? `/booking/${encodeURIComponent(bookingId)}` : '/payment'
+    const nextPath = `${base}${suffix}`
+    if (location.pathname !== nextPath) navigate(nextPath, { replace: true })
+  }, [bookingId, location.pathname, navigate, previewOnly, step])
+
+  useEffect(() => {
+    if (!recoveredState?.scrollPosition) return
+    window.setTimeout(() => contentRef.current?.scrollTo({ top: recoveredState.scrollPosition, behavior: 'auto' }), 80)
+  }, [recoveredState?.scrollPosition])
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape' && step !== 'done' && step !== 'declined' && step !== 'bank_waiting') onClose() }
@@ -936,6 +994,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   const handleConfirm = async () => {
     if (previewOnly) { go('waiting'); return }
+    if (reviewRecordId || serverBookingId) { go('waiting'); return }
     if (!eventId) {
       showSeatMsg('Publish this event before testing a live payment.')
       return
@@ -967,6 +1026,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       paymentReviewStore.acceptRemote(checkout.payment)
       ticketStore.acceptRemote(checkout.ticket)
       setReviewRecordId(checkout.payment.id)
+      setServerBookingId(checkout.bookingId)
       setTicketId(checkout.ticket.id)
       go('waiting')
     } catch (error) {
@@ -979,6 +1039,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const bankRequest = bankTransferStore.find(bankRequestId)
   const createBankTransferRequest = async () => {
     if (previewOnly) { setStep('bank_details'); return }
+    if (bankRequestId || serverBookingId) { setStep(bankRequestId ? 'bank_waiting' : 'waiting'); return }
     if (!eventId) {
       showSeatMsg('Publish this event before testing a bank transfer.')
       return
@@ -1010,6 +1071,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       paymentReviewStore.acceptRemote(result.payment)
       ticketStore.acceptRemote(result.ticket)
       setBankRequestId(result.request.id)
+      setServerBookingId(result.request.bookingId)
       setReviewRecordId(result.payment.id)
       setTicketId(result.ticket.id)
       setShowBankConfirmation(false)
@@ -1055,13 +1117,13 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     <div className="flex flex-col lg:flex-row gap-6">
       <div className="flex-1">
         <div className="text-base font-semibold uppercase tracking-wider mb-4 text-center lg:text-left" style={{ color: t.text, textShadow: t.isDark ? '0 2px 8px rgba(0,0,0,0.6)' : '0 1px 4px rgba(0,0,0,0.1)' }}>
-          Select Your Seat — {tier.name} · {TOTAL_SEATS[tier.id]} seats available
+          {translate('booking.selectSeatHeading', { package: tier.name, count: TOTAL_SEATS[tier.id] })}
         </div>
         <SeatGrid
           totalSeats={TOTAL_SEATS[tier.id]}
           selectedSeat={selectedSeat}
           onSelectSeat={(n) => setSelectedSeat(prev => prev === n ? null : n)}
-          onAttemptTakenSeat={() => showSeatMsg('Already taken')}
+          onAttemptTakenSeat={() => showSeatMsg(translate('booking.alreadyTaken'))}
           soldSeats={SOLD_SEATS[tier.id] || []}
           otherPkgSeats={OTHER_PKG_SEATS[tier.id] || []}
         />
@@ -1069,7 +1131,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
           <div className="mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl" style={{ background: `${checkoutAccent}12`, border: `1px solid ${checkoutAccent}40` }}>
             <span style={{ color: checkoutAccent }}>✓</span>
             <span className="text-sm font-semibold" style={{ color: checkoutAccent }}>
-              Seat {String(selectedSeat).padStart(3, '0')} selected
+              {translate('booking.seatSelected', { seat: String(selectedSeat).padStart(3, '0') })}
             </span>
           </div>
         )}
@@ -1077,7 +1139,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       <div className="lg:w-64 space-y-4">
         <Summary />
         <div className="text-sm font-medium p-4 rounded-xl shadow-xl" style={{ background: t.inputBg, color: t.text, border: `1px solid ${t.border}`, textShadow: t.isDark ? '0 1px 3px rgba(0,0,0,0.5)' : 'none' }}>
-          You can only book 1 seat per transaction. Want another seat? Book again after completion.
+          {translate('booking.oneSeat')}
         </div>
       </div>
     </div>
@@ -1097,7 +1159,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
           </div>
         ))}
         <p className="text-sm font-medium p-3 rounded-xl shadow-lg mt-4" style={{ background: `${checkoutAccent}0D`, border: `1px solid ${checkoutAccent}28`, color: t.text, textShadow: t.isDark ? '0 1px 3px rgba(0,0,0,0.5)' : 'none' }}>
-          Your ticket and QR code will be sent to the email address above after payment confirmation.
+          {translate('booking.ticketEmail')}
         </p>
       </div>
       <div className="lg:w-64"><Summary /></div>
@@ -1109,11 +1171,11 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   // ─── Payment method definitions ─────────────────────────────────────────────
   const enabledMethods = [
-    { id: 'apple_gift_card', label: 'Apple Gift Card', desc: 'Upload your gift card code as proof', badge: 'Default' },
-    { id: 'paypal', label: 'PayPal', desc: 'Send payment via PayPal' },
-    { id: 'cryptocurrency', label: 'Cryptocurrency', desc: 'Bitcoin, Ethereum, USDT and more' },
-    { id: 'cash_app', label: 'Cash App', desc: 'Send via Cash App $Cashtag' },
-    { id: 'bank_transfer', label: 'Bank Transfer', desc: '30-minute window to complete transfer', badge: '30 min' },
+    { id: 'apple_gift_card', label: 'Apple Gift Card', desc: translate('payment.appleGiftCardDescription'), badge: translate('payment.default') },
+    { id: 'paypal', label: 'PayPal', desc: translate('payment.paypalDescription') },
+    { id: 'cryptocurrency', label: translate('payment.cryptocurrency'), desc: translate('payment.cryptoDescription') },
+    { id: 'cash_app', label: 'Cash App', desc: translate('payment.cashAppDescription') },
+    { id: 'bank_transfer', label: translate('payment.bankTransfer'), desc: translate('payment.bankTransferDescription'), badge: '30 min' },
   ].filter(m => payments.methods[m.id as PaymentMethod]?.enabled && !payments.methods[m.id as PaymentMethod]?.hidden)
     .sort((a, b) => (payments.methods[a.id as PaymentMethod]?.order ?? 99) - (payments.methods[b.id as PaymentMethod]?.order ?? 99)) as { id: PaymentMethod; label: string; desc: string; badge?: string }[]
 
@@ -1155,7 +1217,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
           transform: copied ? 'scale(0.96)' : 'scale(1)',
         }}
       >
-        {copied ? '✓ Copied' : 'Copy'}
+        {copied ? `✓ ${translate('common.copied')}` : translate('common.copy')}
       </button>
     )
   }
@@ -1182,30 +1244,36 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     <div className="rounded-2xl p-5 sm:p-6" style={{ background: t.card, border: `1px solid ${t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
       <div className="flex items-center gap-3">
         {(() => { const icon = getPaymentIcon('bank_transfer'); return icon ? <img src={icon} alt="Bank Transfer" className="h-11 w-11 rounded-xl object-contain" /> : null })()}
-        <div><p className="text-xs font-mono uppercase tracking-widest" style={{ color: t.textMuted }}>Bank Transfer</p><h3 className="font-serif text-xl font-bold" style={{ color: t.text }}>Request transfer details</h3></div>
+        <div><p className="text-xs font-mono uppercase tracking-widest" style={{ color: t.textMuted }}>{translate('payment.bankTransfer')}</p><h3 className="font-serif text-xl font-bold" style={{ color: t.text }}>{translate('payment.requestBank')}</h3></div>
       </div>
-      <p className="mt-5 text-sm leading-6" style={{ color: t.textSub }}>Bank account details are generated individually for every request. After requesting your transfer details, they will be prepared by our team and sent shortly. Once issued, the transfer details remain valid for 30 minutes.</p>
+      <p className="mt-5 text-sm leading-6" style={{ color: t.textSub }}>{translate('payment.bankBody')}</p>
       <div className="mt-5 grid gap-3 rounded-xl p-4 text-sm sm:grid-cols-2" style={{ background: t.inputBg, border: `1px solid ${t.border}` }}>
-        {[["Event", data.hero?.title || 'Event'], ['Selected package', tier.name], ['Selected seat', selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD'], ['Total amount', formatPrice(total)], ['Customer email', info.email], ['Country', locale.country], ['Currency', locale.currency]].map(([label, value]) => <div key={label} className="min-w-0"><div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: t.textMuted }}>{label}</div><div className="mt-1 truncate font-medium" style={{ color: t.text }}>{value}</div></div>)}
+        {[[translate('booking.eventName'), data.hero?.title || 'Event'], [translate('booking.selectedPackage'), tier.name], [translate('booking.selectedSeat'), selectedSeat ? `${tr.booking.seat} ${String(selectedSeat).padStart(3, '0')}` : tr.common.tbd], [translate('booking.totalAmount'), formatPrice(total)], [translate('booking.customerEmail'), info.email], [translate('booking.country'), locale.country], [translate('booking.currency'), locale.currency]].map(([label, value]) => <div key={label} className="min-w-0"><div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: t.textMuted }}>{label}</div><div className="mt-1 truncate font-medium" style={{ color: t.text }}>{value}</div></div>)}
       </div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-2"><button onClick={() => setShowBankConfirmation(true)} className="rounded-xl px-4 py-3 text-sm font-bold" style={{ background: t.isDark ? '#00FF88' : '#2563EB', color: t.isDark ? '#08110d' : '#fff' }}>Request Bank Details</button><button onClick={() => setPayMethod(null)} className="rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>Choose Another Payment Method</button></div>
-      {showBankConfirmation && <div className="fixed inset-0 z-[10020] grid place-items-center bg-black/70 p-4 backdrop-blur-sm"><div className="w-full max-w-md rounded-2xl p-6 shadow-2xl" style={{ background: t.isDark ? '#18181B' : t.card, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.14)' : t.cardBorder}`, boxShadow: t.isDark ? '0 24px 64px rgba(0,0,0,0.72)' : t.cardShadow }}><h3 className="font-serif text-xl font-bold" style={{ color: t.text }}>Request Bank Transfer Details?</h3><p className="mt-3 text-sm leading-6" style={{ color: t.textSub }}>A temporary bank account will be generated specifically for this booking. Once issued, the transfer details will remain valid for 30 minutes. If the transfer window expires, you will need to request a new account.</p><div className="mt-6 flex gap-3"><button onClick={() => setShowBankConfirmation(false)} className="flex-1 rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>Cancel</button><button onClick={createBankTransferRequest} className="flex-1 rounded-xl px-4 py-3 text-sm font-bold" style={{ background: t.isDark ? '#00FF88' : t.accent, color: t.isDark ? '#08110d' : '#fff' }}>Continue</button></div></div></div>}
+      <div className="mt-5 grid gap-3 sm:grid-cols-2"><button onClick={() => setShowBankConfirmation(true)} className="rounded-xl px-4 py-3 text-sm font-bold" style={{ background: t.isDark ? '#00FF88' : '#2563EB', color: t.isDark ? '#08110d' : '#fff' }}>{translate('payment.requestBank')}</button><button onClick={() => setPayMethod(null)} className="rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>{translate('payment.chooseAnother')}</button></div>
+      {showBankConfirmation && <div className="fixed inset-0 z-[10020] grid place-items-center bg-black/70 p-4 backdrop-blur-sm"><div className="w-full max-w-md rounded-2xl p-6 shadow-2xl" style={{ background: t.isDark ? '#18181B' : t.card, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.14)' : t.cardBorder}`, boxShadow: t.isDark ? '0 24px 64px rgba(0,0,0,0.72)' : t.cardShadow }}><h3 className="font-serif text-xl font-bold" style={{ color: t.text }}>{translate('payment.confirmBank')}</h3><p className="mt-3 text-sm leading-6" style={{ color: t.textSub }}>{translate('payment.bankBody')}</p><div className="mt-6 flex gap-3"><button onClick={() => setShowBankConfirmation(false)} className="flex-1 rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>{translate('common.cancel')}</button><button onClick={createBankTransferRequest} className="flex-1 rounded-xl px-4 py-3 text-sm font-bold" style={{ background: t.isDark ? '#00FF88' : t.accent, color: t.isDark ? '#08110d' : '#fff' }}>{translate('booking.continue')}</button></div></div></div>}
     </div>
   )
 
   const BankTransferWaitingScreen = () => (
     <div className="mx-auto max-w-2xl rounded-3xl py-8 px-5 text-center sm:p-10" style={{ background: t.isDark ? 'transparent' : t.card, border: `1px solid ${t.isDark ? 'transparent' : t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
       <div className="relative mx-auto mb-6 grid h-24 w-24 place-items-center rounded-full" style={{ background: t.isDark ? 'rgba(16,185,129,.12)' : 'rgba(37,99,235,.1)', border: `1px solid ${t.isDark ? 'rgba(16,185,129,.35)' : 'rgba(37,99,235,.22)'}` }}><div className="h-12 w-12 animate-spin rounded-full border-4 border-transparent" style={{ borderTopColor: t.isDark ? '#34D399' : '#2563EB', borderRightColor: t.isDark ? '#34D399' : '#2563EB' }} /><div className="absolute h-4 w-4 rounded-full" style={{ background: t.isDark ? '#34D399' : '#2563EB' }} /></div>
-      <p className="text-xs font-mono uppercase tracking-widest" style={{ color: t.isDark ? '#34D399' : '#2563EB' }}>Bank Transfer Request</p><h3 className="mt-2 font-serif text-2xl font-bold sm:text-3xl" style={{ color: t.text }}>Waiting for Your Bank Transfer Details</h3><p className="mx-auto mt-3 max-w-xl text-sm leading-6" style={{ color: t.textSub }}>Your request has been received. We are preparing your temporary bank account details. This page will update automatically once your transfer details become available.</p>
-      <div className="mt-7 grid gap-3 rounded-2xl p-4 text-left text-sm sm:grid-cols-2" style={{ background: t.card, border: `1px solid ${t.cardBorder}` }}>{[['Booking Reference', bookingId], ['Event Name', data.hero?.title || 'Event'], ['Package', tier.name], ['Seat', selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD'], ['Country', locale.country], ['Currency', locale.currency], ['Current Status', 'Waiting for Bank Details']].map(([label, value]) => <div key={label}><div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: t.textMuted }}>{label}</div><div className="mt-1 font-medium" style={{ color: label === 'Current Status' ? (t.isDark ? '#34D399' : '#2563EB') : t.text }}>{value}</div></div>)}</div>
-      <p className="mt-6 text-sm font-semibold" style={{ color: t.text }}>Do not close this page.</p>
+      <p className="text-xs font-mono uppercase tracking-widest" style={{ color: t.isDark ? '#34D399' : '#2563EB' }}>{translate('payment.bankRequest')}</p><h3 className="mt-2 font-serif text-2xl font-bold sm:text-3xl" style={{ color: t.text }}>{translate('payment.awaitingBank')}</h3><p className="mx-auto mt-3 max-w-xl text-sm leading-6" style={{ color: t.textSub }}>{translate('payment.bankWaitingBody')}</p>
+      <div className="mt-7 grid gap-3 rounded-2xl p-4 text-left text-sm sm:grid-cols-2" style={{ background: t.card, border: `1px solid ${t.cardBorder}` }}>{[[translate('booking.reference'), bookingId], [translate('booking.eventName'), data.hero?.title || 'Event'], [tr.booking.package, tier.name], [tr.booking.seat, selectedSeat ? `${tr.booking.seat} ${String(selectedSeat).padStart(3, '0')}` : tr.common.tbd], [translate('booking.country'), locale.country], [translate('booking.currency'), locale.currency], [translate('booking.currentStatus'), translate('booking.waitingBank')]].map(([label, value]) => <div key={label}><div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: t.textMuted }}>{label}</div><div className="mt-1 font-medium" style={{ color: label === translate('booking.currentStatus') ? (t.isDark ? '#34D399' : '#2563EB') : t.text }}>{value}</div></div>)}</div>
+      <p className="mt-6 text-sm font-semibold" style={{ color: t.text }}>{translate('payment.doNotClose')}</p>
     </div>
   )
 
   const BankTransferDetailsScreen = () => {
     const details = bankRequest?.details ?? { bankName: 'Apex Settlement Bank', accountHolder: 'Apex Event Services Ltd', accountNumber: '0214 8800 3791', routingNumber: '110000000', referenceNumber: bankRequest?.id ?? bookingId }
     const allDetails = `${details.bankName}\n${details.accountHolder}\n${details.accountNumber}\n${details.routingNumber ?? ''}\n${details.referenceNumber ?? ''}\n${formatPrice(total)} ${locale.currency}`
-    return <div className="mx-auto max-w-2xl space-y-4 py-2"><div className="rounded-2xl p-5" style={{ background: t.card, border: `1px solid ${t.isDark ? 'rgba(16,185,129,.35)' : t.accent}`, boxShadow: t.isDark ? 'none' : `0 14px 30px ${t.accentGlow}` }}><p className="text-xs font-mono uppercase tracking-widest" style={{ color: t.isDark ? '#34D399' : t.accent }}>Temporary transfer details</p><h3 className="mt-2 font-serif text-2xl font-bold" style={{ color: t.text }}>Bank Details Available</h3><p className="mt-2 text-sm" style={{ color: t.textSub }}>Use these details for this booking only. The transfer-window countdown will be connected when live updates are introduced.</p><div className="mt-5 space-y-3">{[['Bank Name', details.bankName], ['Account Holder', details.accountHolder], ['Account Number', details.accountNumber], ['Routing / Sort Code', details.routingNumber || 'Not required'], ['Reference Number', details.referenceNumber || 'Not required'], ['Amount', formatPrice(total)], ['Currency', locale.currency], ['Expiration Time', 'Available when transfer window activates'], ['Countdown', 'Will activate when details are issued']].map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4 rounded-xl p-3 text-sm" style={{ background: t.inputBg, border: `1px solid ${t.border}`, boxShadow: t.isDark ? 'none' : '0 3px 8px rgba(23,26,31,0.035)' }}><span style={{ color: t.textMuted }}>{label}</span><span className="min-w-0 truncate text-right font-mono font-semibold" style={{ color: t.text }}>{value}</span></div>)}</div><div className="mt-5 grid gap-3 sm:grid-cols-2"><CopyButton text={details.accountNumber} /><button onClick={() => navigator.clipboard.writeText(allDetails)} className="rounded-xl px-3 py-2 text-xs font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>Copy All Details</button><button onClick={() => fileInputRef.current?.click()} className="rounded-xl px-3 py-3 text-sm font-bold" style={{ background: t.isDark ? '#00FF88' : t.accent, color: t.isDark ? '#08110d' : '#fff' }}>Upload Payment Proof</button><button onClick={() => { setPayMethod(null); go('payment') }} className="rounded-xl px-3 py-3 text-sm font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>Choose Another Payment Method</button></div><input ref={fileInputRef} type="file" multiple accept="image/*" className="hidden" onChange={handleProofUpload} /></div></div>
+    const rows: Array<[string, string]> = [
+      [translate('payment.bankName'), details.bankName], [translate('payment.accountHolder'), details.accountHolder],
+      [translate('payment.accountNumber'), details.accountNumber], [translate('payment.routingCode'), details.routingNumber || translate('common.notRequired')],
+      [translate('payment.reference'), details.referenceNumber || translate('common.notRequired')], [translate('booking.totalAmount'), formatPrice(total)],
+      [translate('booking.currency'), locale.currency], [translate('payment.expirationTime'), translate('payment.availableWhenActive')],
+    ]
+    return <div className="mx-auto max-w-2xl space-y-4 py-2"><div className="rounded-2xl p-5" style={{ background: t.card, border: `1px solid ${t.isDark ? 'rgba(16,185,129,.35)' : t.accent}`, boxShadow: t.isDark ? 'none' : `0 14px 30px ${t.accentGlow}` }}><p className="text-xs font-mono uppercase tracking-widest" style={{ color: t.isDark ? '#34D399' : t.accent }}>{translate('payment.instructions')}</p><h3 className="mt-2 font-serif text-2xl font-bold" style={{ color: t.text }}>{translate('payment.bankAvailable')}</h3><p className="mt-2 text-sm" style={{ color: t.textSub }}>{translate('payment.bankDetailsOnly')}</p><div className="mt-5 space-y-3">{rows.map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4 rounded-xl p-3 text-sm" style={{ background: t.inputBg, border: `1px solid ${t.border}`, boxShadow: t.isDark ? 'none' : '0 3px 8px rgba(23,26,31,0.035)' }}><span style={{ color: t.textMuted }}>{label}</span><span className="min-w-0 truncate text-right font-mono font-semibold" style={{ color: t.text }}>{value}</span></div>)}</div><div className="mt-5 grid gap-3 sm:grid-cols-2"><CopyButton text={details.accountNumber} /><button onClick={() => navigator.clipboard.writeText(allDetails)} className="rounded-xl px-3 py-2 text-xs font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>{translate('payment.copyAll')}</button><button onClick={() => fileInputRef.current?.click()} className="rounded-xl px-3 py-3 text-sm font-bold" style={{ background: t.isDark ? '#00FF88' : t.accent, color: t.isDark ? '#08110d' : '#fff' }}>{translate('payment.uploadProof')}</button><button onClick={() => { setPayMethod(null); go('payment') }} className="rounded-xl px-3 py-3 text-sm font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>{translate('payment.chooseAnother')}</button></div><input ref={fileInputRef} type="file" multiple accept="image/*" className="hidden" onChange={handleProofUpload} /></div></div>
   }
 
   const StepPayment = () => (
@@ -1217,14 +1285,14 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
               <div className="w-12 h-12 mx-auto rounded-full flex items-center justify-center mb-3" style={{ background: `${checkoutAccent}12`, color: checkoutAccent }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-6 h-6"><path d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
               </div>
-              <h4 className="font-bold mb-2" style={{ color: t.text }}>Having trouble paying?</h4>
-              <p className="text-xs mb-5" style={{ color: t.textSub }}>We're here to help you complete your booking smoothly.</p>
+              <h4 className="font-bold mb-2" style={{ color: t.text }}>{translate('payment.needHelpTitle')}</h4>
+              <p className="text-xs mb-5" style={{ color: t.textSub }}>{translate('payment.needHelpBody')}</p>
               <div className="flex gap-3">
                 <button onClick={() => { setShowExitPopup(false); setPayMethod(null); if (payMethod !== 'cryptocurrency') setSelectedCoin(null) }} className="flex-1 py-2.5 rounded-xl text-xs font-bold transition-colors" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>
-                  Go Back
+                  {translate('booking.back')}
                 </button>
                 <button onClick={() => { setShowExitPopup(false); window.dispatchEvent(new CustomEvent('apex-open-support', { detail: { context: enabledMethods.find(m => m.id === payMethod)?.label || 'Payment' } })) }} className="flex-1 py-2.5 rounded-xl text-xs font-bold transition-colors" style={{ background: checkoutAccent, color: t.isDark ? '#09090B' : '#FFFFFF' }}>
-                  Get Help Now
+                  {translate('payment.getHelp')}
                 </button>
               </div>
             </div>
@@ -1261,7 +1329,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
               className="flex items-center gap-1.5 text-xs transition-opacity hover:opacity-70 mb-2"
               style={{ color: tier.accent }}
             >
-              ← Choose another payment method
+              ← {translate('payment.chooseAnother')}
             </button>
 
         {/* ── Apple Gift Card detail ── */}
@@ -1718,7 +1786,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         )}
         {step === 'done' && (
           <div className="px-6 pb-6 text-center shrink-0">
-            <button onClick={onClose} className="text-sm transition-colors" style={{ color: t.textMuted }}>{tr.done.closeReturn}</button>
+            <button onClick={() => { sessionPersistence.clear(eventId ?? data.hero?.title ?? 'event'); onClose() }} className="text-sm transition-colors" style={{ color: t.textMuted }}>{tr.done.closeReturn}</button>
           </div>
         )}
       </div>
@@ -1731,10 +1799,17 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 // ─── Ticket Section ───────────────────────────────────────────────────────────
 function TicketSection() {
   const { t } = useTheme()
-  const { translations: tr, formatPrice } = useLocale()
-  const { data, mode, previewState, simulationOnly } = useBooking()
+  const { translations: tr, formatPrice, t: translate } = useLocale()
+  const { data, mode, previewState, simulationOnly, eventId } = useBooking()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const bookingRecovery = useBookingSessionRecovery()
+  const initialBookingPath = useRef(location.pathname).current
   const [modalTier, setModalTier] = useState<number | null>(null)
-  const tiers = data.packages.map((tier, id) => ({ ...tier, id }))
+  const [recoveredState, setRecoveredState] = useState<PersistedBookingState | null>(null)
+  const [expiredState, setExpiredState] = useState<PersistedBookingState | null>(null)
+  const [sessionExpired, setSessionExpired] = useState(false)
+  const tiers = data.packages.map((tier, id) => ({ ...tier, packageKey: tier.id, id }))
   const prices = tiers.map(tier => tier.price)
   const lowestPrice = Math.min(...prices)
   const highestPrice = Math.max(...prices)
@@ -1755,6 +1830,40 @@ function TicketSection() {
     } else setModalTier(0)
   }, [mode, previewState])
 
+  useEffect(() => {
+    if (mode !== 'published') return
+    const persistenceId = eventId ?? data.hero?.title ?? 'event'
+    let active = true
+    const restore = () => void sessionPersistence.loadRemote(persistenceId).then(result => {
+      if (!active) return
+      if (result.status === 'active') {
+        const packageIndex = Math.min(Math.max(0, result.state.packageIndex), Math.max(0, tiers.length - 1))
+        setRecoveredState(result.state)
+        setExpiredState(null)
+        setSessionExpired(false)
+        setModalTier(packageIndex)
+        bookingRecovery.notifyRestored()
+      } else if (result.status === 'expired') {
+        setExpiredState(result.state)
+        setSessionExpired(true)
+        setRecoveredState(null)
+        setModalTier(null)
+      } else if (/\/(checkout|payment|booking\/)/.test(initialBookingPath)) {
+        setSessionExpired(true)
+      }
+    }).catch(() => undefined)
+    restore()
+    window.addEventListener('apex:booking-resume-check', restore)
+    return () => { active = false; window.removeEventListener('apex:booking-resume-check', restore) }
+  }, [data.hero?.title, eventId, initialBookingPath, mode, tiers.length])
+
+  const closeBooking = () => {
+    setModalTier(null)
+    setRecoveredState(null)
+    const base = location.pathname.replace(/\/(checkout|payment|booking\/[^/]+)\/?$/, '')
+    if (location.pathname !== base) navigate(base, { replace: true })
+  }
+
   if (!data.visibility.tickets && mode !== 'editor') return null
   return (
     <EditableTarget target={{ section: 'tickets' }}><section id="tickets" className={`booking-section premium-tickets py-24 px-6 relative overflow-hidden ${!data.visibility.tickets ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg : t.bg2 }}>
@@ -1773,10 +1882,11 @@ function TicketSection() {
               style={{ background: t.isDark ? t.card : isPremium ? 'linear-gradient(145deg,#FFFFFF 0%,#EEF4FF 100%)' : isElevated ? 'linear-gradient(145deg,#FFFFFF 0%,#F7F9FF 100%)' : t.card, border: `1px solid ${t.isDark ? t.cardBorder : isPremium ? t.accent : isElevated ? `${t.accent}70` : t.cardBorder}`, boxShadow: t.isDark ? t.cardShadow : isPremium ? `0 16px 32px ${t.accentGlow}` : isElevated ? `0 10px 24px rgba(23,26,31,0.07)` : t.cardShadow }}
               onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-5px)'; (e.currentTarget as HTMLDivElement).style.borderColor = visualAccent; (e.currentTarget as HTMLDivElement).style.boxShadow = t.isDark ? `0 0 40px ${tier.glow}, 0 20px 60px rgba(0,0,0,0.3)` : `0 12px 28px ${visualGlow}` }}
               onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.transform = ''; (e.currentTarget as HTMLDivElement).style.borderColor = t.cardBorder; (e.currentTarget as HTMLDivElement).style.boxShadow = t.cardShadow }}>
-              {tier.badge && (
-                <div className="package-card-badge absolute -top-3 left-1/2 -translate-x-1/2 inline-flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-[.12em] px-4 py-2 rounded-full whitespace-nowrap" style={{ background: visualAccent, color: t.isDark ? '#09090B' : '#FFFFFF', boxShadow: `0 8px 24px ${visualGlow}` }}><span aria-hidden="true">✦</span>{tier.badge}</div>
-              )}
-              {isPremium && <div className="mb-4 rounded-full px-3 py-1 text-[10px] font-mono font-bold uppercase tracking-[0.14em]" style={{ background: `${t.accent}12`, border: `1px solid ${t.accent}30`, color: t.accent }}>Premium experience</div>}
+              <div className="package-card-badge-slot">
+                {tier.badge && (
+                  <div className="package-card-badge inline-flex items-center justify-center gap-1.5 rounded-full px-4 py-2 text-[10px] font-extrabold uppercase tracking-[.12em]" title={tier.badge} style={{ background: visualAccent, color: t.isDark ? '#09090B' : '#FFFFFF', boxShadow: `0 8px 24px ${visualGlow}` }}><span aria-hidden="true">✦</span><span className="truncate">{tier.badge}</span></div>
+                )}
+              </div>
               <div className="flex flex-col items-center justify-center text-center gap-2 mb-5">
                 <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-3xl mb-1" style={{ background: `${visualAccent}12`, border: `1px solid ${visualAccent}26` }}>{tier.icon}</div>
                 <div>
@@ -1806,7 +1916,8 @@ function TicketSection() {
           })}
         </div>
       </div>
-      {modalTier !== null && <BookingModal key={`${modalTier}-${previewState}`} tier={tiers[modalTier]} initialStep={previewStep} previewOnly={mode === 'editor' || simulationOnly} onClose={() => setModalTier(null)} />}
+      {modalTier !== null && tiers[modalTier] && <BookingModal key={`${modalTier}-${previewState}`} tier={tiers[modalTier]} recoveredState={recoveredState} initialStep={previewStep} previewOnly={mode === 'editor' || simulationOnly} onClose={closeBooking} />}
+      {mode === 'published' && sessionExpired && modalTier === null && <div className="fixed inset-0 z-[10000] grid place-items-center bg-black/80 p-4"><section className="w-full max-w-md rounded-3xl border border-amber-400/25 bg-[#111113] p-6 text-center text-white"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-amber-400/15 text-xl text-amber-300">!</div><h2 className="mt-4 font-serif text-2xl font-bold">{translate('booking.sessionExpired')}</h2><p className="mt-2 text-sm leading-relaxed text-zinc-400">{translate('booking.sessionExpiredBody')}</p>{expiredState?.bookingReference && <p className="mt-4 rounded-xl bg-white/5 p-3 font-mono text-xs text-emerald-300">{translate('booking.reference')}: {expiredState.bookingReference}</p>}<div className="mt-6 grid gap-2">{expiredState && (expiredState.bookingId || expiredState.reviewRecordId || expiredState.ticketId) && <button onClick={() => { setRecoveredState(expiredState); setSessionExpired(false); setModalTier(Math.min(Math.max(0, expiredState.packageIndex), Math.max(0, tiers.length - 1))) }} className="rounded-xl bg-emerald-400 px-4 py-3 text-sm font-bold text-zinc-950">{translate('booking.recover')}</button>}<button onClick={() => { sessionPersistence.clear(eventId ?? data.hero?.title ?? 'event'); setExpiredState(null); setSessionExpired(false); closeBooking(); window.setTimeout(() => document.getElementById('tickets')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50) }} className="rounded-xl bg-white/5 px-4 py-3 text-sm text-zinc-200">{translate('booking.restart')}</button></div></section></div>}
     </section></EditableTarget>
   )
 }
@@ -1822,14 +1933,15 @@ const TESTIMONIALS = [
 
 function Testimonials() {
   const { t } = useTheme()
+  const { t: translate } = useLocale()
   const { data, mode } = useBooking()
   const doubled = [...data.testimonials, ...data.testimonials]
   if (!data.visibility.testimonials && mode !== 'editor') return null
   return (
     <EditableTarget target={{ section: 'testimonials' }}><section id="testimonials" className={`booking-section premium-testimonials py-24 overflow-hidden ${!data.visibility.testimonials ? 'opacity-40' : ''}`}>
       <div className="max-w-7xl mx-auto px-6 mb-12 text-center reveal">
-        <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>From Our Attendees</div>
-        <h2 className="font-serif text-4xl md:text-5xl font-bold" style={{ color: t.text }}>What People Are Saying</h2>
+        <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{translate('reviews.eyebrow')}</div>
+        <h2 className="font-serif text-4xl md:text-5xl font-bold" style={{ color: t.text }}>{translate('reviews.heading')}</h2>
       </div>
       <div className="relative">
         <div className="absolute left-0 top-0 bottom-0 w-24 z-10 pointer-events-none" style={{ background: `linear-gradient(to right,${t.bg},transparent)` }} />
@@ -1868,6 +1980,7 @@ const FAQS = [
 
 function FAQ() {
   const { t } = useTheme()
+  const { t: translate } = useLocale()
   const { data, mode } = useBooking()
   const [open, setOpen] = useState<number | null>(0)
   if (!data.visibility.faq && mode !== 'editor') return null
@@ -1875,14 +1988,14 @@ function FAQ() {
     <EditableTarget target={{ section: 'faq' }}><section id="faq" className={`booking-section premium-faq py-24 px-6 ${!data.visibility.faq ? 'opacity-40' : ''}`} style={{ background: t.isDark ? t.bg2 : t.sectionAlt }}>
       <div className="max-w-3xl mx-auto">
         <div className="text-center mb-14 reveal">
-          <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>Questions</div>
-          <h2 className="font-serif text-4xl font-bold mb-4" style={{ color: t.text }}>Frequently Asked</h2>
+          <div className="text-xs font-mono tracking-widest uppercase mb-3" style={{ color: t.textMuted }}>{translate('faq.eyebrow')}</div>
+          <h2 className="font-serif text-4xl font-bold mb-4" style={{ color: t.text }}>{translate('faq.heading')}</h2>
         </div>
         <div className="space-y-3 reveal">
           {data.faq.map((faq, i) => (
             <EditableTarget key={faq.id} target={{ section: 'faq', index: i }}><div className="faq-card rounded-2xl overflow-hidden transition-all duration-300"
               style={{ background: open === i ? (t.isDark ? 'rgba(0,255,136,0.04)' : `${t.accent}08`) : t.card, border: `1px solid ${open === i ? (t.isDark ? 'rgba(0,255,136,0.25)' : `${t.accent}38`) : t.cardBorder}`, boxShadow: t.isDark ? 'none' : '0 2px 6px rgba(23,26,31,0.03)' }}>
-              <button className="w-full text-left px-6 py-5 flex items-center justify-between gap-4" onClick={() => setOpen(open === i ? null : i)}>
+              <button aria-label={translate(open === i ? 'faq.collapse' : 'faq.expand')} className="w-full text-left px-6 py-5 flex items-center justify-between gap-4" onClick={() => setOpen(open === i ? null : i)}>
                 <span className="font-semibold text-sm" style={{ color: t.text }}>{faq.q}</span>
                 <div className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all duration-300" style={{ background: open === i ? (t.isDark ? 'rgba(0,255,136,0.15)' : `${t.accent}12`) : t.inputBg, transform: open === i ? 'rotate(45deg)' : 'none' }}>
                   <svg viewBox="0 0 24 24" fill="none" stroke={open === i ? t.accent : t.textMuted} strokeWidth="2" className="w-4 h-4"><path d="M12 5v14M5 12h14" /></svg>
@@ -1936,6 +2049,7 @@ function CTASection() {
 // ─── Footer ───────────────────────────────────────────────────────────────────
 function Footer() {
   const { t } = useTheme()
+  const { t: translate } = useLocale()
   const { data, mode } = useBooking()
   const { show, msg } = useToast()
   const [email, setEmail] = useState('')
@@ -1961,7 +2075,7 @@ function Footer() {
                 { key: 'twitter', src: twitterIcon, alt: 'Twitter' },
                 { key: 'linkedin', src: linkedinIcon, alt: 'LinkedIn' },
               ].map((social) => (
-                <button key={social.key} onClick={() => show(`Opening ${social.alt} link!`)} className="w-9 h-9 rounded-xl flex items-center justify-center transition-colors overflow-hidden p-1.5"
+                <button key={social.key} aria-label={social.alt} onClick={() => show(translate('footer.opening', { label: social.alt }))} className="w-9 h-9 rounded-xl flex items-center justify-center transition-colors overflow-hidden p-1.5"
                   style={{ background: t.card, border: `1px solid ${t.border}`, boxShadow: t.isDark ? 'none' : '0 2px 5px rgba(23,26,31,0.03)' }}>
                   <img src={social.src} alt={social.alt} className="w-full h-full object-contain" />
                 </button>
@@ -1969,15 +2083,15 @@ function Footer() {
             </div>
           </div>
           {[
-            { heading: 'Event', links: ['About Drake', 'Schedule', 'Venue Info', 'Packages'] },
-            { heading: 'Support', links: ['Help Center', 'Contact Us', 'Refund Policy', 'Live Chat'] },
-            { heading: 'Legal', links: ['Privacy Policy', 'Terms of Service', 'Cookie Policy', 'Accessibility'] },
+            { heading: translate('footer.event'), links: [translate('footer.about'), translate('footer.schedule'), translate('footer.venue'), translate('footer.packages')] },
+            { heading: translate('footer.support'), links: [translate('footer.help'), translate('footer.contact'), translate('footer.refunds'), translate('footer.liveChat')] },
+            { heading: translate('footer.legal'), links: [translate('footer.privacy'), translate('footer.terms'), translate('footer.cookies'), translate('footer.accessibility')] },
           ].map((col) => (
             <div key={col.heading}>
               <div className="font-semibold text-sm mb-4" style={{ color: t.text }}>{col.heading}</div>
               <ul className="space-y-2.5">
                 {col.links.map((link) => (
-                  <li key={link}><button onClick={() => show(`Opening ${link}...`)} className="text-sm transition-colors text-left" style={{ color: t.textMuted }}
+                  <li key={link}><button onClick={() => show(translate('footer.opening', { label: link }))} className="text-sm transition-colors text-left" style={{ color: t.textMuted }}
                     onMouseEnter={(e) => e.currentTarget.style.color = t.textSub}
                     onMouseLeave={(e) => e.currentTarget.style.color = t.textMuted}>{link}</button></li>
                 ))}
@@ -2023,17 +2137,24 @@ function PackageTypeLibraryPicker({ currentName, action, onSelect }: { currentNa
 }
 
 
-function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPageData; target: EditorTarget | null; onApply: (data: BookingPageData) => void; close: () => void }) {
+function BookingEditorPanel({ data, target, onApply, onDraftChange, close }: { data: BookingPageData; target: EditorTarget | null; onApply: (data: BookingPageData) => void; onDraftChange?: (data: BookingPageData) => void; close: () => void }) {
   const [draft, setDraft] = useState<BookingPageData>(() => structuredClone(data))
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [packageNotice, setPackageNotice] = useState<string | null>(null)
+  const draftReady = useRef(false)
   useEffect(() => { setDraft(structuredClone(data)); setLibraryOpen(false); setUploadProgress(0); setUploadError(null); setPackageNotice(null) }, [data, target])
+  useEffect(() => {
+    if (!draftReady.current) { draftReady.current = true; return }
+    const timer = window.setTimeout(() => onDraftChange?.(structuredClone(draft)), 120)
+    return () => window.clearTimeout(timer)
+  }, [draft, onDraftChange])
   if (!target) return null
   const mutate = (change: (next: BookingPageData) => void) => setDraft(current => { const next = structuredClone(current); change(next); return next })
   const input = (label: string, value: string, set: (value: string) => void, multiline = false) => <label className="block"><span className="text-[11px] text-zinc-400">{label}</span>{multiline ? <textarea value={value} onChange={event => set(event.target.value)} className="mt-1.5 h-24 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" /> : <input value={value} onChange={event => set(event.target.value)} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />}</label>
   const applyImage = (url: string) => mutate(next => { if (target.section === 'hero') next.hero.images[0] = url; if (target.section === 'about') next.about.image = url; if (target.section === 'venue') next.venue.image = url; if (target.section === 'cta') next.cta.image = url; if (target.section === 'testimonials' && target.index !== undefined) next.testimonials[target.index].avatar = url })
+  const applyAboutMedia = (url: string, mediaType: 'image' | 'video') => mutate(next => { next.about.image = url; next.about.mediaType = mediaType })
   const upload = async (file?: File) => {
     if (!file) return
     setUploadError(null)
@@ -2041,11 +2162,12 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
     try {
       const asset = await mediaLibraryStore.upload(file, target.section === 'testimonials' ? 'Artist Photos' : 'Event Banners')
       setUploadProgress(90)
-      applyImage(asset.url)
+      if (target.section === 'about') applyAboutMedia(asset.url, file.type.startsWith('video/') ? 'video' : 'image')
+      else applyImage(asset.url)
       setUploadProgress(100)
     } catch (error) {
       setUploadProgress(0)
-      setUploadError(error instanceof Error ? error.message : 'Image upload failed.')
+      setUploadError(error instanceof Error ? error.message : 'Media upload failed.')
     }
   }
   const duplicate = () => mutate(next => {
@@ -2068,12 +2190,26 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
     if (target.section === 'footer') next.footer = structuredClone(original.footer)
   })
   const imageControls = <><label className="mt-4 block rounded-xl border border-dashed border-white/20 p-3 text-center text-xs text-zinc-300">Upload from device<input hidden type="file" accept="image/*" onChange={event => void upload(event.target.files?.[0])} /></label><button type="button" onClick={() => setLibraryOpen(value => !value)} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2 text-xs text-emerald-300">Choose from media library</button>{libraryOpen && <div className="mt-2 grid max-h-40 grid-cols-3 gap-2 overflow-y-auto">{mediaLibraryStore.listEventAssets().filter(asset => asset.mimeType.startsWith('image/')).map(asset => <button key={asset.id} type="button" onClick={() => applyImage(asset.url)} className="overflow-hidden rounded-lg border border-white/10"><img src={asset.url} className="aspect-square w-full object-cover" /></button>)}</div>}<button type="button" onClick={() => applyImage('')} className="mt-2 text-xs text-red-300">Delete image</button></>
+  const aboutMediaControls = target.section === 'about' ? <div className="mt-4 rounded-2xl border border-white/10 bg-white/[.03] p-4">
+    <div className="flex items-center justify-between gap-3"><div><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Event card media</div><div className="mt-1 text-[10px] text-zinc-500">Images display in full. Videos play inline on the event page.</div></div><span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-emerald-300">{draft.about.mediaType === 'video' ? 'Video' : 'Image'}</span></div>
+    {draft.about.image ? <div className="mt-3 overflow-hidden rounded-xl border border-white/10 bg-black/40">{draft.about.mediaType === 'video' ? <video src={draft.about.image} controls playsInline preload="metadata" className="aspect-video w-full object-contain" /> : <img src={draft.about.image} alt="Current event card media" className="aspect-video w-full object-contain" />}</div> : <div className="mt-3 grid aspect-video place-items-center rounded-xl border border-dashed border-white/10 text-xs text-zinc-500">No media selected</div>}
+    <label className="mt-3 block cursor-pointer rounded-xl bg-emerald-400 px-3 py-2.5 text-center text-xs font-bold text-zinc-950">Upload image or video<input hidden type="file" accept="image/*,video/*" onChange={event => void upload(event.target.files?.[0])} /></label>
+    <button type="button" onClick={() => setLibraryOpen(value => !value)} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Choose from media library</button>
+    {libraryOpen && <div className="mt-2 grid max-h-48 grid-cols-2 gap-2 overflow-y-auto">{mediaLibraryStore.listEventAssets().filter(asset => asset.mimeType.startsWith('image/') || asset.mimeType.startsWith('video/')).map(asset => {
+      const isVideo = asset.mimeType.startsWith('video/')
+      return <button key={asset.id} type="button" onClick={() => applyAboutMedia(asset.url, isVideo ? 'video' : 'image')} aria-label={`Use ${isVideo ? 'video' : 'image'} ${asset.name}`} className="relative overflow-hidden rounded-lg border border-white/10 bg-black/30">{isVideo ? <video src={asset.url} muted playsInline preload="metadata" className="aspect-video w-full object-contain" /> : <img src={asset.url} alt="" className="aspect-video w-full object-contain" />}<span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 py-0.5 text-[8px] font-bold uppercase text-white">{isVideo ? 'Video' : 'Image'}</span></button>
+    })}</div>}
+    <button type="button" onClick={() => applyAboutMedia('', 'image')} className="mt-2 text-xs text-red-300">Remove media</button>
+    {uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }} /></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}
+    {uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Media uploaded successfully.</div>}
+    {uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}
+  </div> : null
   const reviewImageControls = target.section === 'testimonials' && target.index !== undefined ? <div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] uppercase tracking-wider text-zinc-400">Current customer image</div>{draft.testimonials[target.index].avatar ? <img src={draft.testimonials[target.index].avatar} alt={draft.testimonials[target.index].name} className="mt-3 aspect-square w-28 rounded-2xl object-cover"/> : <div className="mt-3 grid aspect-square w-28 place-items-center rounded-2xl bg-white/5 text-xs text-zinc-500">No image</div>}<div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={() => applyImage(data.testimonials[target.index!]?.avatar ?? '')} className="rounded-lg bg-white/5 px-3 py-2 text-xs">Keep Current Image</button><label className="cursor-pointer rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Replace Image<input hidden type="file" accept="image/*" onChange={event => void upload(event.target.files?.[0])}/></label><button type="button" onClick={() => applyImage('')} className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-300">Remove Image</button></div>{uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }}/></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}{uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Image uploaded successfully.</div>}{uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}</div> : null
   const sectionLabel = BOOKING_SECTION_LABELS
   const headingInput = (key: string, defaultVal: string) => input('Section Heading', draft.sectionHeadings?.[key] ?? defaultVal, value => mutate(next => { if (!next.sectionHeadings) next.sectionHeadings = {}; next.sectionHeadings[key] = value }))
   const fields = () => {
     if (target.section === 'hero') return <>{input('Eyebrow', draft.hero.eyebrow, value => mutate(next => { next.hero.eyebrow = value }))}{input('Hero title', draft.hero.title, value => mutate(next => { next.hero.title = value }))}{input('Host / subtitle', draft.hero.tour, value => mutate(next => { next.hero.tour = value }))}{input('Date', draft.hero.date, value => mutate(next => { next.hero.date = value }))}{input('Venue', draft.hero.venue, value => mutate(next => { next.hero.venue = value }))}{input('Primary button text', draft.hero.primaryCta, value => mutate(next => { next.hero.primaryCta = value }))}{input('Secondary button text', draft.hero.secondaryCta, value => mutate(next => { next.hero.secondaryCta = value }))}{input('Guest performers (one per line)', draft.hero.guests.join('\n'), value => mutate(next => { next.hero.guests = value.split('\n').map(item => item.trim()).filter(Boolean) }), true)}{imageControls}</>
-    if (target.section === 'about') return <>{headingInput('about', 'About the Show')}{input('Heading', draft.about.heading, value => mutate(next => { next.about.heading = value }))}{input('Accent heading', draft.about.accentHeading, value => mutate(next => { next.about.accentHeading = value }))}{input('Description', draft.about.body, value => mutate(next => { next.about.body = value }), true)}{input('Supporting copy', draft.about.detail, value => mutate(next => { next.about.detail = value }), true)}{imageControls}</>
+    if (target.section === 'about') return <>{headingInput('about', 'About the Show')}{input('Heading', draft.about.heading, value => mutate(next => { next.about.heading = value }))}{input('Accent heading', draft.about.accentHeading, value => mutate(next => { next.about.accentHeading = value }))}{input('Description', draft.about.body, value => mutate(next => { next.about.body = value }), true)}{input('Supporting copy', draft.about.detail, value => mutate(next => { next.about.detail = value }), true)}{aboutMediaControls}</>
     if (target.section === 'venue') return <>{headingInput('venue', 'Venue')}{input('Venue name', draft.venue.name, value => mutate(next => { next.venue.name = value }))}{input('Address', draft.venue.address, value => mutate(next => { next.venue.address = value }), true)}{input('Google Maps link', draft.venue.mapLink, value => mutate(next => { next.venue.mapLink = value }))}{headingInput('venueFacts', 'Venue Facts')}
       {draft.venueFacts?.map((fact, i) => (
         <div key={fact.id} className="mt-4 border-t border-white/10 pt-4">
@@ -2182,6 +2318,7 @@ function BookingEditorPanel({ data, target, onApply, close }: { data: BookingPag
 
 // ─── Booking Site ─────────────────────────────────────────────────────────────
 type PublicationReview = { pageName: string; eventDate: string; venue: string; currency: string; language: string; publicUrl: string }
+type EventStudioRecoverySnapshot = { eventId: string; data: BookingPageData; selected: EditorTarget | null; previewState: StudioPreviewState; deviceMode: 'desktop' | 'tablet' | 'mobile'; publicationOpen: boolean; socialProofOpen: boolean; updatedAt: number }
 
 export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, payments: sourcePayments, eventId, eventCountryCode, eventCurrencyCode, eventLanguageCode, eventTitle, publicationReview, socialProofOverride, simulationOnly = false, onSocialProofChange, onSave, onPublish, onExit }: {
   onAdminClick: () => void
@@ -2201,19 +2338,68 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   onPublish?: (data: BookingPageData) => Promise<string>
   onExit?: () => void
 }) {
+  const { getUiState, setUiState, registerFlusher, saveStatus, setSaveStatus } = useAdminSessionRecovery()
+  const recoveryKey = `eventStudio:${eventId ?? (mode === 'editor' ? 'template' : 'preview')}`
+  const recoveredEditor = mode === 'editor' ? getUiState<EventStudioRecoverySnapshot>(recoveryKey) : undefined
+  const initialSource = sourceData ?? masterBookingTemplateStore.load()
+  const initialData = recoveredEditor?.eventId === (eventId ?? 'template') ? recoveredEditor.data : initialSource
   const [isDark, setIsDark] = useState(true)
   const t = isDark ? DARK : LIGHT
   const toggle = useCallback(() => setIsDark((d) => !d), [])
-  const [data, setData] = useState<BookingPageData>(() => structuredClone(sourceData ?? masterBookingTemplateStore.load()))
-  const [selected, setSelected] = useState<EditorTarget | null>(null)
-  const [previewState, setPreviewState] = useState<StudioPreviewState>('page')
-  const [publicationOpen, setPublicationOpen] = useState(false)
+  const [data, setData] = useState<BookingPageData>(() => structuredClone(initialData))
+  const [selected, setSelected] = useState<EditorTarget | null>(() => recoveredEditor?.selected ?? null)
+  const [previewState, setPreviewState] = useState<StudioPreviewState>(() => recoveredEditor?.previewState ?? 'page')
+  const [deviceMode, setDeviceMode] = useState<'desktop' | 'tablet' | 'mobile'>(() => recoveredEditor?.deviceMode ?? 'desktop')
+  const [publicationOpen, setPublicationOpen] = useState(() => recoveredEditor?.publicationOpen ?? false)
   const [publishing, setPublishing] = useState(false)
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null)
   const [publicationError, setPublicationError] = useState<string | null>(null)
-  const [socialProofOpen, setSocialProofOpen] = useState(false)
+  const [publicationNotice, setPublicationNotice] = useState<string | null>(null)
+  const [socialProofOpen, setSocialProofOpen] = useState(() => recoveredEditor?.socialProofOpen ?? false)
   const [eventSocialProof, setEventSocialProof] = useState<EventSocialProofOverride>(() => socialProofOverride ?? {})
-  useReveal()
+  const latestDataRef = useRef(data)
+  const lastSavedHash = useRef(JSON.stringify(initialSource))
+  const saveTimer = useRef<number | null>(null)
+  const saveInFlight = useRef<Promise<void> | null>(null)
+  useReveal(data)
+
+  useEffect(() => { latestDataRef.current = data }, [data])
+
+  const saveDraftNow = useCallback(async () => {
+    if (mode !== 'editor' || !onSave) return
+    if (!navigator.onLine) { setSaveStatus('offline'); return }
+    const next = latestDataRef.current
+    const nextHash = JSON.stringify(next)
+    if (nextHash === lastSavedHash.current) { setSaveStatus('saved'); return }
+    if (saveInFlight.current) await saveInFlight.current
+    setSaveStatus('saving')
+    const operation = Promise.resolve(onSave(next)).then(() => {
+      lastSavedHash.current = nextHash
+      setSaveStatus('saved')
+    }).catch(error => {
+      setSaveStatus(navigator.onLine ? 'error' : 'offline')
+      setPublicationError(error instanceof Error ? error.message : 'The page changes could not be saved.')
+    }).finally(() => { saveInFlight.current = null })
+    saveInFlight.current = operation
+    await operation
+  }, [mode, onSave, setSaveStatus])
+
+  useEffect(() => {
+    if (mode !== 'editor') return
+    const snapshot: EventStudioRecoverySnapshot = { eventId: eventId ?? 'template', data, selected, previewState, deviceMode, publicationOpen, socialProofOpen, updatedAt: Date.now() }
+    setUiState(recoveryKey, snapshot)
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    if (JSON.stringify(data) !== lastSavedHash.current) {
+      setSaveStatus(navigator.onLine ? 'saving' : 'offline')
+      saveTimer.current = window.setTimeout(() => void saveDraftNow(), 1500)
+    }
+    return () => { if (saveTimer.current) window.clearTimeout(saveTimer.current) }
+  }, [data, deviceMode, eventId, mode, previewState, publicationOpen, recoveryKey, saveDraftNow, selected, setSaveStatus, setUiState, socialProofOpen])
+
+  useEffect(() => {
+    if (mode !== 'editor') return
+    return registerFlusher(recoveryKey, saveDraftNow)
+  }, [mode, recoveryKey, registerFlusher, saveDraftNow])
 
   const touchedSectionSet = new Set(data.editorState?.touchedSections ?? [])
   const editedSections = BOOKING_SECTION_IDS.filter(section => touchedSectionSet.has(section))
@@ -2246,7 +2432,14 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
     document.body.style.color = t.text
   }, [t])
 
-  useEffect(() => { if (sourceData) setData(structuredClone(sourceData)) }, [sourceData])
+  useEffect(() => {
+    if (!sourceData) return
+    if (JSON.stringify(latestDataRef.current) === lastSavedHash.current) {
+      const next = structuredClone(sourceData)
+      setData(next)
+      lastSavedHash.current = JSON.stringify(next)
+    }
+  }, [sourceData])
   useEffect(() => setEventSocialProof(socialProofOverride ?? {}), [socialProofOverride])
   useEffect(() => {
     if (!publicationOpen && !socialProofOpen) return
@@ -2264,12 +2457,41 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
     setPublishing(true)
     setPublicationError(null)
     try {
+      await saveDraftNow()
       setPublishedUrl(await onPublish(data))
+      setPublicationNotice(null)
     } catch (error) {
       setPublicationError(error instanceof Error ? error.message : 'The page could not be published.')
     } finally {
       setPublishing(false)
     }
+  }
+
+  const copyPublishedLink = async () => {
+    if (!publishedUrl) return
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(publishedUrl)
+      else {
+        const input = document.createElement('textarea')
+        input.value = publishedUrl
+        input.style.position = 'fixed'
+        input.style.opacity = '0'
+        document.body.appendChild(input)
+        input.select()
+        if (!document.execCommand('copy')) throw new Error('Copy was not available')
+        input.remove()
+      }
+      setPublicationNotice('Published link copied.')
+    } catch {
+      setPublicationNotice('Copy failed. Select the link above to copy it manually.')
+    }
+  }
+
+  const openPublishedPage = () => {
+    if (!publishedUrl) return
+    const opened = window.open(publishedUrl, '_blank')
+    if (opened) opened.opener = null
+    else window.location.assign(publishedUrl)
   }
 
   const publicationSectionReview = <div className="mt-4 rounded-2xl border border-white/10 bg-white/[.025] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-sm font-bold">Page section review</div><div className="mt-1 text-xs text-zinc-500">Select any badge to jump directly to that editor section.</div></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} edited</span></div>{editedSections.length > 0 && <div className="mt-4"><div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Edited sections</div><div className="mt-2 flex flex-wrap gap-2">{editedSections.map(section => <button key={section} type="button" onClick={() => focusEditorSection(section)} className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1.5 text-[10px] font-semibold text-emerald-200">✓ {BOOKING_SECTION_LABELS[section]}</button>)}</div></div>}{untouchedSections.length > 0 && <div className="mt-4"><div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">Untouched sections — review recommended</div><div className="mt-2 flex flex-wrap gap-2">{untouchedSections.map(section => <button key={section} type="button" onClick={() => focusEditorSection(section)} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-[10px] font-semibold text-amber-200">● {BOOKING_SECTION_LABELS[section]}</button>)}</div></div>}</div>
@@ -2279,8 +2501,9 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
     <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly }}>
       <SocialProofOverlayProvider>
       <div className="booking-experience ios-stable-scroll" data-theme={t.isDark ? 'dark' : 'light'} style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
-        {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><span className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} sections edited</span><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}<button type="button" onClick={() => void onSave?.(data)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { setPublishedUrl(null); setPublicationError(null); setPublicationOpen(true) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={onExit} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
-        <div>
+        {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><span className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} sections edited</span><span role="status" className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${saveStatus === 'error' ? 'bg-red-400/10 text-red-200' : saveStatus === 'offline' ? 'bg-amber-400/10 text-amber-200' : 'bg-white/5 text-zinc-300'}`}>{saveStatus === 'saving' ? 'Saving…' : saveStatus === 'offline' ? 'Offline — changes pending' : saveStatus === 'error' ? 'Save failed — retry' : saveStatus === 'saved' ? 'Saved' : 'Ready'}</span><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}<button type="button" onClick={() => void saveDraftNow()} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { void saveDraftNow().then(() => { setPublishedUrl(null); setPublicationError(null); setPublicationOpen(true) }) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={() => { void saveDraftNow().then(() => onExit?.()) }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
+        {mode === 'editor' && <select aria-label="Editor device mode" value={deviceMode} onChange={event => setDeviceMode(event.target.value as 'desktop' | 'tablet' | 'mobile')} className="fixed right-3 top-24 z-[249] rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white shadow-xl"><option value="desktop">Desktop</option><option value="tablet">Tablet</option><option value="mobile">Mobile</option></select>}
+        <div data-editor-device={mode === 'editor' ? deviceMode : undefined} style={mode === 'editor' ? { width: '100%', maxWidth: deviceMode === 'mobile' ? 390 : deviceMode === 'tablet' ? 768 : 'none', marginInline: 'auto' } : undefined}>
           <ScrollProgress />
           <Nav onToggleTheme={toggle} onAdminClick={onAdminClick} />
           <Hero />
@@ -2293,12 +2516,12 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
           <CTASection />
           <Footer />
           <FloatingChatButton eventId={eventId ?? data?.hero?.title ?? 'default'} isPreview={mode === 'preview'} mode={mode} />
-          {mode !== 'editor' && <PublicConversionEnhancements packages={data.packages as any} seats={[]} eventId={eventId} isPreview={mode === 'preview'} />}
+          {mode !== 'editor' && <PublicConversionEnhancements packages={data.packages as any} seats={[]} eventId={eventId} isPreview={mode === 'preview'} settingsOverride={socialProofOverride} />}
           {mode !== 'published' && <PublicOnboardingGuide context={mode === 'editor' ? 'booking-page editor' : 'booking preview'} />}
         </div>
-        {mode === 'editor' && <BookingEditorPanel data={data} target={selected} onApply={applyEditorChanges} close={() => setSelected(null)} />}
+        {mode === 'editor' && <BookingEditorPanel data={data} target={selected} onDraftChange={setData} onApply={applyEditorChanges} close={() => setSelected(null)} />}
         {socialProofOpen && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#111113] p-6 text-white"><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Event override</p><h2 className="mt-2 font-serif text-2xl font-bold">Social proof for this event</h2><p className="mt-1 text-sm text-zinc-500">Only entered values override the defaults in Admin Settings.</p><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Enabled<input type="checkbox" checked={eventSocialProof.enabled ?? true} onChange={event => setEventSocialProof(current => ({ ...current, enabled: event.target.checked }))}/></label><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Show on mobile<input type="checkbox" checked={eventSocialProof.mobileVisible ?? true} onChange={event => setEventSocialProof(current => ({ ...current, mobileVisible: event.target.checked }))}/></label><label className="sm:col-span-2 text-xs text-zinc-400">Popup message<input value={eventSocialProof.message ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, message: event.target.value }))} placeholder="Use global default" className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white"/></label><label className="text-xs text-zinc-400">Duration<input type="number" value={eventSocialProof.duration ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, duration: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label><label className="text-xs text-zinc-400">Delay<input type="number" value={eventSocialProof.delay ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, delay: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label></div><div className="mt-6 flex justify-end gap-2"><button onClick={() => setSocialProofOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button onClick={() => { void onSocialProofChange?.(eventSocialProof); setSocialProofOpen(false) }} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save event override</button></div></section></div>}
-        {publicationOpen && publicationReview && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111113] p-6 text-white">{publishedUrl ? <div className="text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-400 text-xl font-bold text-zinc-950">✓</div><h2 className="mt-4 font-serif text-2xl font-bold">Page published successfully</h2><p className="mt-2 break-all text-sm text-zinc-400">{publishedUrl}</p><div className="mt-6 flex flex-wrap justify-center gap-2"><button onClick={() => void navigator.clipboard.writeText(publishedUrl)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Copy Link</button><a href={publishedUrl} target="_blank" rel="noreferrer" className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Open Published Page</a><button onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Close</button></div></div> : <><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Publication review</p><h2 className="mt-2 font-serif text-2xl font-bold">Review before publishing</h2><div className="mt-5 grid gap-3 sm:grid-cols-2">{[['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language], ['Public URL', publicationReview.publicUrl]].map(([label, value]) => <div key={label} className="rounded-xl bg-white/[.04] p-3"><div className="text-[10px] uppercase text-zinc-500">{label}</div><div className="mt-1 break-all text-sm font-semibold">{value || 'Missing'}</div></div>)}</div>{publicationSectionReview}{missingPublicationFields.length > 0 && <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">Missing required information: {missingPublicationFields.join(', ')}</div>}{publicationError && <div className="mt-4 rounded-xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-200">{publicationError}</div>}<div className="mt-6 flex flex-wrap justify-end gap-2"><button disabled={publishing} onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={publishing} onClick={() => window.open(eventId ? `/admin/events/${eventId}/preview` : '/demo', '_blank', 'noopener,noreferrer')} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Preview Page</button><button disabled={publishing || missingPublicationFields.length > 0} onClick={() => void confirmPublish()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-40">{publishing ? 'Publishing…' : 'Confirm and Publish'}</button></div></>}</section></div>}
+        {publicationOpen && publicationReview && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111113] p-6 text-white">{publishedUrl ? <div className="text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-400 text-xl font-bold text-zinc-950">✓</div><h2 className="mt-4 font-serif text-2xl font-bold">Page published successfully</h2><p className="mt-2 break-all text-sm text-zinc-400">{publishedUrl}</p>{publicationNotice && <p className="mt-3 text-xs text-emerald-300" role="status">{publicationNotice}</p>}<div className="mt-6 flex flex-wrap justify-center gap-2"><button type="button" onClick={() => void copyPublishedLink()} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Copy Link</button><button type="button" onClick={openPublishedPage} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Open Published Page</button><button type="button" onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Close</button></div></div> : <><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Publication review</p><h2 className="mt-2 font-serif text-2xl font-bold">Review before publishing</h2><div className="mt-5 grid gap-3 sm:grid-cols-2">{[['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language], ['Public URL', publicationReview.publicUrl]].map(([label, value]) => <div key={label} className="rounded-xl bg-white/[.04] p-3"><div className="text-[10px] uppercase text-zinc-500">{label}</div><div className="mt-1 break-all text-sm font-semibold">{value || 'Missing'}</div></div>)}</div>{publicationSectionReview}{missingPublicationFields.length > 0 && <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">Missing required information: {missingPublicationFields.join(', ')}</div>}{publicationError && <div className="mt-4 rounded-xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-200">{publicationError}</div>}<div className="mt-6 flex flex-wrap justify-end gap-2"><button disabled={publishing} onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={publishing} onClick={() => { void saveDraftNow().then(() => window.open(eventId ? `/admin/events/${eventId}/preview` : '/demo', '_blank', 'noopener,noreferrer')) }} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Preview Page</button><button disabled={publishing || missingPublicationFields.length > 0} onClick={() => void confirmPublish()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-40">{publishing ? 'Publishing…' : 'Confirm and Publish'}</button></div></>}</section></div>}
       </div>
       </SocialProofOverlayProvider>
     </BookingCtx.Provider></ThemeCtx.Provider>
@@ -2307,8 +2530,10 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
 }
 
 // ─── App Root ─────────────────────────────────────────────────────────────────
-const PAGE_BY_PATH = { '/admin': 'dashboard', '/admin/events': 'events', '/admin/bookings': 'bookings', '/admin/payments': 'payments', '/admin/media': 'media', '/admin/chat': 'chat', '/admin/notifications': 'notifications', '/admin/settings': 'settings', '/admin/documentation': 'documentation' } as const
-function AdminRoutePage() { const navigate = useNavigate(); const location = useLocation(); const { signOut } = useAuth(); const page = PAGE_BY_PATH[location.pathname as keyof typeof PAGE_BY_PATH] ?? 'dashboard'; return <Suspense fallback={<div className="grid min-h-screen place-items-center bg-zinc-950 text-sm text-zinc-400">Loading dashboard…</div>}><AdminDashboard initialPage={page} onNavigate={(next) => navigate(ROUTES.admin[next])} onExitAdmin={() => { void signOut(); navigate('/') }} /></Suspense> }
+const PAGE_BY_PATH = { '/admin/events': 'events', '/admin/bookings': 'bookings', '/admin/payments': 'payments', '/admin/media': 'media', '/admin/chat': 'chat', '/admin/notifications': 'notifications', '/admin/settings': 'settings', '/admin/documentation': 'documentation' } as const
+type AdminDashboardPage = 'dashboard' | 'events' | 'bookings' | 'payments' | 'media' | 'chat' | 'notifications' | 'settings' | 'documentation'
+function adminPageForPath(pathname: string): AdminDashboardPage { return (Object.entries(PAGE_BY_PATH).find(([path]) => pathname === path || pathname.startsWith(`${path}/`))?.[1] ?? 'dashboard') as AdminDashboardPage }
+function AdminRoutePage() { const navigate = useNavigate(); const location = useLocation(); const { signOut } = useAuth(); const page = adminPageForPath(location.pathname); return <Suspense fallback={<div className="grid min-h-screen place-items-center bg-zinc-950 text-sm text-zinc-400">Loading dashboard…</div>}><AdminDashboard initialPage={page} onNavigate={(next) => navigate(ROUTES.admin[next])} onExitAdmin={() => { void signOut(); navigate('/') }} /></Suspense> }
 function BookingEditorRoute() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -2370,7 +2595,7 @@ function AdminEventPreviewRoute() {
   const [event, setEvent] = useState(() => adminEventStore.list().find(item => item.id === id))
   useEffect(() => adminEventStore.subscribe(() => setEvent(adminEventStore.list().find(item => item.id === id))), [id])
   if (!event) return <Navigate to={ROUTES.admin.events} replace />
-  const data = event.bookingPage ?? createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
+  const data = event.bookingPage ? normalizeBookingPageData(event.bookingPage) : createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
   return <BookingSite mode="preview" data={data} payments={event.payments} eventId={event.id} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} simulationOnly onAdminClick={() => navigate(`/admin/events/${event.id}/edit`)} />
 }
 function PublicEventRoute({ short = false }: { short?: boolean }) {
@@ -2387,8 +2612,9 @@ function PublicEventRoute({ short = false }: { short?: boolean }) {
   useEffect(() => { if (event?.status === 'published') analyticsStore.record(event.id, 'views') }, [event?.id, event?.status])
   if (loading && !event) return <main className="grid min-h-screen place-items-center bg-[#09090B] text-zinc-400">Loading event…</main>
   if (!event || event.status !== 'published') return <Navigate to="/" replace />
-  const data = event.bookingPage ?? createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
+  const data = event.bookingPage ? normalizeBookingPageData(event.bookingPage) : createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
   return <BookingSite mode="published" data={data} payments={event.payments} eventId={event.id} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} />
 }
 function DefaultPreviewRoute() { const [data, setData] = useState(() => masterBookingTemplateStore.load()); useEffect(() => { let active = true; void masterBookingTemplateStore.hydratePublic().then(next => { if (active) setData(next) }).catch(() => undefined); const unsubscribe = masterBookingTemplateStore.subscribe(() => setData(masterBookingTemplateStore.load())); return () => { active = false; unsubscribe() } }, []); return <BookingSite mode="preview" data={data} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} /> }
-export default function App() { return <Routes><Route path="/" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/demo" element={<DefaultPreviewRoute />} /><Route path="/events" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/events/:slug" element={<PublicEventRoute />} /><Route path="/e/:code" element={<PublicEventRoute short />} /><Route path="/booking" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/payment" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/confirmation" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/support" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path={ROUTES.adminLogin} element={<AdminLoginPage />} /><Route path={ROUTES.ticket} element={<TicketVerificationPage />} /><Route element={<ProtectedRoute />}><Route path="/admin/events/:id/edit" element={<BookingEditorRoute />} /><Route path="/admin/events/:id/preview" element={<AdminEventPreviewRoute />} /><Route path="/admin/*" element={<AdminRoutePage />} /></Route><Route path="*" element={<Navigate to="/" replace />} /></Routes> }
+function RootRoute() { const { session, loading } = useAuth(); if (loading) return <main className="grid min-h-screen place-items-center bg-[#09090B] text-zinc-400">Restoring session…</main>; return <Navigate to={session ? (getAdminResumeRoute(session.user.id) ?? ROUTES.admin.dashboard) : ROUTES.adminLogin} replace /> }
+export default function App() { return <Routes><Route path="/" element={<RootRoute />} /><Route path="/demo" element={<DefaultPreviewRoute />} /><Route path="/events" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/events/:slug/*" element={<PublicEventRoute />} /><Route path="/e/:code/*" element={<PublicEventRoute short />} /><Route path="/booking" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/payment" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/confirmation" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path="/support" element={<Navigate to={ROUTES.adminLogin} replace />} /><Route path={ROUTES.adminLogin} element={<AdminLoginPage />} /><Route path={ROUTES.ticket} element={<LocaleProvider><TicketVerificationPage /></LocaleProvider>} /><Route element={<ProtectedRoute />}><Route path="/admin/events/:id/edit" element={<BookingEditorRoute />} /><Route path="/admin/events/:id/preview" element={<AdminEventPreviewRoute />} /><Route path="/admin/*" element={<AdminRoutePage />} /></Route><Route path="*" element={<Navigate to="/" replace />} /></Routes> }

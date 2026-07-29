@@ -10,6 +10,7 @@ import {
   type LibraryAsset,
   type MediaCategory,
 } from './mediaLibraryStore'
+import { useAdminRecoveryState } from '../recovery/AdminSessionRecoveryProvider'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const bytes = (value: number) =>
@@ -435,12 +436,13 @@ function ChatAttachmentsTab({ onSelect }: { onSelect: (asset: LibraryAsset) => v
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 export function MediaLibraryPage({ show }: { show: (message: string) => void }) {
-  const [group, setGroup] = useState<MediaGroup>('event')
+  const [group, setGroup] = useAdminRecoveryState<MediaGroup>('media.group', 'event', value => value === 'event' || value === 'chat')
   const [dragging, setDragging] = useState(false)
-  const [selected, setSelected] = useState<LibraryAsset | null>(null)
+  const [selectedId, setSelectedId] = useAdminRecoveryState<string | null>('media.selectedAssetId', null, value => value === null || typeof value === 'string')
   const [, forceRefresh] = useState(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const refresh = () => forceRefresh(n => n + 1)
+  const selected = mediaLibraryStore.list().find(asset => asset.id === selectedId) ?? null
 
   const uploadFiles = async (files: FileList | File[]) => {
     const valid = Array.from(files).filter(f => f.size > 0)
@@ -545,28 +547,28 @@ export function MediaLibraryPage({ show }: { show: (message: string) => void }) 
       {/* Tab content */}
       {group === 'event' ? (
         <EventAssetsTab
-          onSelect={setSelected}
+          onSelect={asset => setSelectedId(asset.id)}
           show={show}
           onUploadClick={() => fileInput.current?.click()}
         />
       ) : (
-        <ChatAttachmentsTab onSelect={setSelected} />
+        <ChatAttachmentsTab onSelect={asset => setSelectedId(asset.id)} />
       )}
 
       {/* Detail modal */}
       {selected && (
         <AssetModal
           asset={selected}
-          onClose={() => setSelected(null)}
+          onClose={() => setSelectedId(null)}
           onRename={(asset, name) => {
             mediaLibraryStore.update({ ...asset, name })
             refresh()
-            setSelected({ ...asset, name })
+            setSelectedId(asset.id)
           }}
           onDelete={asset => {
             mediaLibraryStore.remove(asset.id)
             refresh()
-            setSelected(null)
+            setSelectedId(null)
           }}
           show={show}
         />

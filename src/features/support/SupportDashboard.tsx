@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supportStore, type AttachmentMeta, type MessageType, type ReplyRef, type SupportConversation, type SupportMessage, type SupportStatus } from './supportStore'
 import { emailService } from '../email/emailService'
+import { useAdminRecoveryState } from '../recovery/AdminSessionRecoveryProvider'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext'
+import { softDeleteAdminRecord } from '../admin/adminDeletionService'
 
 // ─── Premium emerald palette ──────────────────────────────────────────────────
 const EA = {
@@ -274,10 +278,12 @@ function MessageBubble({
   message,
   onReply,
   onExpand,
+  onDelete,
 }: {
   message: SupportMessage
   onReply: (m: SupportMessage) => void
   onExpand: (url: string, type: 'image' | 'video') => void
+  onDelete?: (m: SupportMessage) => void
 }) {
   const isAdmin = message.from === 'admin'
   const [hovered, setHovered] = useState(false)
@@ -294,16 +300,15 @@ function MessageBubble({
     >
       {/* Reply button on hover */}
       {hovered && (
-        <button
+        <div style={{ position: 'absolute', [isAdmin ? 'left' : 'right']: -62, bottom: 8, display: 'flex', gap: 4 }}><button
           onClick={() => onReply(message)}
           title="Reply"
           style={{
-            position: 'absolute', [isAdmin ? 'left' : 'right']: -30, bottom: 8,
             background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)',
             borderRadius: '50%', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center',
             cursor: 'pointer', color: '#A1A1AA', fontSize: 13,
           }}
-        >↩</button>
+        >↩</button>{onDelete && <button onClick={() => onDelete(message)} title="Delete message" style={{ background: 'rgba(239,68,68,.12)', border: '1px solid rgba(239,68,68,.2)', borderRadius: '50%', width: 26, height: 26, color: '#F87171', cursor: 'pointer' }}>×</button>}</div>
       )}
 
       {/* Bubble */}
@@ -683,11 +688,15 @@ function ConversationPanel({
   onUpdate,
   onBack,
   isMobile,
+  onDelete,
+  onDeleteMessage,
 }: {
   conversation: SupportConversation
   onUpdate: (c: SupportConversation) => void
   onBack?: () => void
   isMobile?: boolean
+  onDelete?: () => void
+  onDeleteMessage?: (message: SupportMessage) => void
 }) {
   const [replyTo, setReplyTo] = useState<ReplyRef | undefined>()
   const [showTyping, setShowTyping] = useState(false)
@@ -761,6 +770,7 @@ function ConversationPanel({
               {s === 'resolved' ? '✓' : '✕'}{!isMobile && ` ${s === 'resolved' ? 'Resolve' : 'Close'}`}
             </button>
           ))}
+          {onDelete && <button onClick={onDelete} aria-label="Delete conversation" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 10, padding: isMobile ? '5px 8px' : '6px 12px', color: '#EF4444', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>🗑{!isMobile && ' Delete'}</button>}
         </div>
       </div>
 
@@ -783,6 +793,7 @@ function ConversationPanel({
                 message={msg}
                 onReply={m => setReplyTo({ messageId: m.id, body: m.body, from: m.from, type: m.type, attachmentUrl: m.attachment?.url })}
                 onExpand={(url, type) => setMediaViewer({ url, type })}
+                onDelete={onDeleteMessage}
               />
             </div>
           )
@@ -811,13 +822,17 @@ function ConversationPanel({
 
 // ─── Main SupportDashboard ────────────────────────────────────────────────────
 export function SupportDashboard() {
+  const { role } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
   const [conversations, setConversations] = useState<SupportConversation[]>(() => supportStore.list())
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [filter, setFilter] = useState<SupportStatus | 'all'>('all')
-  const [search, setSearch] = useState('')
+  const [selectedId, setSelectedId] = useAdminRecoveryState<string | null>('chat.selectedConversationId', null, value => value === null || typeof value === 'string')
+  const [filter, setFilter] = useAdminRecoveryState<SupportStatus | 'all'>('chat.filter', 'all', (value): value is SupportStatus | 'all' => typeof value === 'string' && ['all','open','pending','resolved','closed'].includes(value))
+  const [search, setSearch] = useAdminRecoveryState('chat.search', '', value => typeof value === 'string')
   // Mobile view: 'list' | 'conversation'
-  const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
+  const [mobileView, setMobileView] = useAdminRecoveryState<'list' | 'conversation'>('chat.mobileView', 'list', value => value === 'list' || value === 'conversation')
   const [isMobile, setIsMobile] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768)
@@ -827,6 +842,14 @@ export function SupportDashboard() {
   }, [])
 
   useEffect(() => supportStore.subscribe(() => setConversations(supportStore.list())), [])
+
+  useEffect(() => {
+    const routeId = location.pathname.startsWith('/admin/chat/') ? decodeURIComponent(location.pathname.slice('/admin/chat/'.length)) : null
+    if (routeId && routeId !== selectedId) {
+      setSelectedId(routeId)
+      if (window.innerWidth < 768) setMobileView('conversation')
+    }
+  }, [location.pathname, selectedId, setMobileView, setSelectedId])
 
   useEffect(() => {
     if (selectedId) supportStore.markRead(selectedId)
@@ -843,10 +866,29 @@ export function SupportDashboard() {
     setSelectedId(id)
     supportStore.markRead(id)
     if (isMobile) setMobileView('conversation')
+    navigate(`/admin/chat/${encodeURIComponent(id)}`)
   }
 
   const handleUpdate = (next: SupportConversation) => {
     supportStore.update(next)
+  }
+  const deleteConversation = async () => {
+    if (!selected || deleting || (role !== 'owner' && role !== 'admin')) return
+    setDeleting(true)
+    try {
+      await softDeleteAdminRecord('conversation', selected.id)
+      await supportStore.hydrate()
+      setSelectedId(null); setMobileView('list'); navigate('/admin/chat')
+    } finally { setDeleting(false) }
+  }
+  const deleteMessage = async (message: SupportMessage) => {
+    if ((role !== 'owner' && role !== 'admin') || !window.confirm(`Delete this ${message.from} message?\n\nOnly the selected message will be removed.`)) return
+    try { await softDeleteAdminRecord('message', message.id); await supportStore.hydrate() }
+    catch (error) { window.alert(error instanceof Error ? error.message : 'The message could not be deleted.') }
+  }
+  const requestDelete = () => {
+    if (!selected) return
+    if (window.confirm(`Delete the conversation with ${selected.customer} (${selected.email})?\n\nThe conversation and its messages will be removed from normal dashboards. The customer, event, and booking will remain intact.`)) void deleteConversation()
   }
 
   const filters: Array<SupportStatus | 'all'> = ['all', 'open', 'pending', 'resolved', 'closed']
@@ -935,14 +977,16 @@ export function SupportDashboard() {
             <ConversationPanel
               conversation={selected}
               onUpdate={handleUpdate}
-              onBack={() => setMobileView('list')}
+              onDelete={role === 'owner' || role === 'admin' ? requestDelete : undefined}
+              onDeleteMessage={role === 'owner' || role === 'admin' ? deleteMessage : undefined}
+              onBack={() => { setMobileView('list'); setSelectedId(null); navigate('/admin/chat') }}
               isMobile
             />
           </div>
         ) : (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: '#52525B' }}>
             <div style={{ fontSize: 32 }}>💬</div>
-            <button onClick={() => setMobileView('list')} style={{ background: EA.glow15, border: `1px solid ${EA.border}`, borderRadius: 12, padding: '10px 20px', color: EA.primary, fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>
+            <button onClick={() => { setMobileView('list'); setSelectedId(null); navigate('/admin/chat') }} style={{ background: EA.glow15, border: `1px solid ${EA.border}`, borderRadius: 12, padding: '10px 20px', color: EA.primary, fontWeight: 600, cursor: 'pointer', fontSize: 13 }}>
               View Conversations
             </button>
           </div>
@@ -958,7 +1002,7 @@ export function SupportDashboard() {
 
       {selected ? (
         <>
-          <ConversationPanel conversation={selected} onUpdate={handleUpdate} />
+          <ConversationPanel conversation={selected} onUpdate={handleUpdate} onDelete={role === 'owner' || role === 'admin' ? requestDelete : undefined} onDeleteMessage={role === 'owner' || role === 'admin' ? deleteMessage : undefined} />
           <CustomerInfoPanel conversation={selected} onUpdate={handleUpdate} />
         </>
       ) : (

@@ -4,7 +4,7 @@
 
 import { useLocale } from '../i18n/LocaleContext'
 import { LOCALE_LIST } from '../i18n/localeConfig'
-import type { LocaleCode } from '../i18n/localeConfig'
+import type { LangCode, LocaleCode } from '../i18n/localeConfig'
 
 interface Props {
   isDark: boolean
@@ -16,7 +16,7 @@ interface Props {
 }
 
 export function LanguageSwitcher({ isDark, textColor, mutedColor, borderColor, cardBg, accentColor }: Props) {
-  const { locale, setLocale, translations } = useLocale()
+  const { locale, setLocale, setLanguage, translations } = useLocale()
 
   return (
     <div className="flex flex-col gap-2">
@@ -26,8 +26,8 @@ export function LanguageSwitcher({ isDark, textColor, mutedColor, borderColor, c
       <div className="relative inline-block">
         <select
           id="language-switcher"
-          value={locale.code}
-          onChange={e => setLocale(e.target.value as LocaleCode)}
+          value={locale.language}
+          onChange={e => setLanguage(e.target.value as LangCode)}
           className="appearance-none pl-8 pr-8 py-2 rounded-xl text-xs font-medium cursor-pointer outline-none transition-all"
           style={{
             background: isDark ? 'rgba(255,255,255,0.05)' : cardBg,
@@ -36,11 +36,7 @@ export function LanguageSwitcher({ isDark, textColor, mutedColor, borderColor, c
             boxShadow: isDark ? 'none' : '0 2px 8px rgba(15,23,42,0.04)',
           }}
         >
-          {LOCALE_LIST.map(loc => (
-            <option key={loc.code} value={loc.code} style={{ background: isDark ? '#111113' : '#FFFFFF', color: '#0F172A' }}>
-              {loc.flag} {loc.country} ({loc.currency})
-            </option>
-          ))}
+          <option value="en">English</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="es">Español</option><option value="pt">Português</option><option value="it">Italiano</option>
         </select>
         {/* Flag overlay */}
         <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-sm leading-none">
@@ -55,6 +51,7 @@ export function LanguageSwitcher({ isDark, textColor, mutedColor, borderColor, c
           <path d="M6 9l6 6 6-6" />
         </svg>
       </div>
+      <select aria-label="Country and currency" value={locale.code} onChange={event => setLocale(event.target.value as LocaleCode)} className="rounded-xl px-3 py-2 text-xs" style={{ background: isDark ? 'rgba(255,255,255,0.05)' : cardBg, border: `1px solid ${borderColor}`, color: textColor }}>{LOCALE_LIST.map(loc => <option key={loc.code} value={loc.code}>{loc.country} · {loc.currency}</option>)}</select>
       <div className="text-[10px]" style={{ color: mutedColor }}>
         {locale.flag} {locale.languageName} · {locale.currency}
       </div>

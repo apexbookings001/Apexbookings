@@ -20,7 +20,7 @@ export type BookingPackage = {
 
 export type BookingPageData = {
   hero: { eyebrow: string; title: string; tour: string; date: string; doors: string; show: string; venue: string; address: string; guests: string[]; images: string[]; primaryCta: string; primaryLink: string; secondaryCta: string; secondaryLink: string }
-  about: { image: string; heading: string; accentHeading: string; body: string; detail: string; dateLabel: string; dateDetail: string; highlights: { icon: string; value: string; label: string }[]; inclusions: string[] }
+  about: { image: string; mediaType?: 'image' | 'video'; heading: string; accentHeading: string; body: string; detail: string; dateLabel: string; dateDetail: string; highlights: { icon: string; value: string; label: string }[]; inclusions: string[] }
   venue: { name: string; address: string; image: string; mapLink: string }
   timeline: { id: string; time: string; title: string; desc: string; icon: string; accent: string }[]
   packages: BookingPackage[]
@@ -66,7 +66,7 @@ export const DEFAULT_BOOKING_TEMPLATE: BookingPageData = {
     ],
   },
   about: {
-    image: 'https://images.unsplash.com/photo-1501962679900-bea61483313b?w=900&h=600&fit=crop&auto=format', heading: 'The Biggest Night', accentHeading: 'in New York', dateLabel: 'Sep 20', dateDetail: 'Saturday, 2025 · 8:00 PM',
+    image: 'https://images.unsplash.com/photo-1501962679900-bea61483313b?w=1200&auto=format', mediaType: 'image', heading: 'The Biggest Night', accentHeading: 'in New York', dateLabel: 'Sep 20', dateDetail: 'Saturday, 2025 · 8:00 PM',
     body: "Aubrey Drake Graham — globally known simply as Drake — brings his record-shattering It's All A Blur Tour to the most legendary arena in the world: Madison Square Garden. One night only. An experience you will never forget.",
     detail: 'From his Toronto roots to becoming one of the best-selling music artists of all time with over 170 million records sold worldwide, Drake delivers a performance that blends bars, energy, and pure spectacle. Joined by special guest 21 Savage, this is the hip-hop event of the decade.',
     highlights: [{ icon: '🏆', value: '6', label: 'Grammy Awards' }, { icon: '🎵', value: '50+', label: 'Billboard #1 Hits' }, { icon: '🌍', value: '2.8B+', label: 'Global Streams' }, { icon: '🎤', value: '12', label: 'World Tours' }],
@@ -144,14 +144,29 @@ export const createBookingPageData = (setup: BookingSetupValues = {}, source: Bo
 }
 
 const templateCache = createProtectedMemoryStore<BookingPageData>(() => createBookingPageData())
-const mergeTemplate = (parsed: BookingPageData) => ({
-  ...createBookingPageData(),
-  ...parsed,
-  venueFacts: parsed.venueFacts ?? clone(DEFAULT_BOOKING_TEMPLATE.venueFacts),
-  importantInfo: parsed.importantInfo ?? clone(DEFAULT_BOOKING_TEMPLATE.importantInfo),
-  sectionHeadings: parsed.sectionHeadings ?? clone(DEFAULT_BOOKING_TEMPLATE.sectionHeadings),
-  editorState: parsed.editorState ?? { touchedSections: [], updatedAtBySection: {} },
-})
+export const normalizeBookingPageData = (parsed: BookingPageData) => {
+  const defaults = createBookingPageData()
+  const timelineMissing = !Array.isArray(parsed.timeline) || parsed.timeline.length === 0
+  return {
+    ...defaults,
+    ...parsed,
+    about: {
+      ...defaults.about,
+      ...(parsed.about ?? {}),
+      mediaType: parsed.about?.mediaType ?? 'image',
+    },
+    timeline: timelineMissing ? clone(defaults.timeline) : parsed.timeline,
+    visibility: {
+      ...defaults.visibility,
+      ...(parsed.visibility ?? {}),
+      timeline: timelineMissing ? true : (parsed.visibility?.timeline ?? true),
+    },
+    venueFacts: parsed.venueFacts ?? clone(DEFAULT_BOOKING_TEMPLATE.venueFacts),
+    importantInfo: parsed.importantInfo ?? clone(DEFAULT_BOOKING_TEMPLATE.importantInfo),
+    sectionHeadings: { ...defaults.sectionHeadings, ...(parsed.sectionHeadings ?? {}) },
+    editorState: parsed.editorState ?? { touchedSections: [], updatedAtBySection: {} },
+  }
+}
 
 export const masterBookingTemplateStore = {
   load: () => templateCache.get(),
@@ -161,7 +176,7 @@ export const masterBookingTemplateStore = {
     const { data, error } = await supabase.from('settings').select('ticket_template').eq('organization_id', requireOrganizationId()).single()
     if (error) { templateCache.fail(error); throw error }
     const stored = (data.ticket_template ?? {}) as { bookingPage?: BookingPageData }
-    const template = stored.bookingPage ? mergeTemplate(stored.bookingPage) : createBookingPageData()
+    const template = stored.bookingPage ? normalizeBookingPageData(stored.bookingPage) : createBookingPageData()
     templateCache.set(template)
     return template
   },
@@ -169,7 +184,7 @@ export const masterBookingTemplateStore = {
     if (!supabase) return templateCache.get()
     const { data, error } = await supabase.rpc('public_default_booking_template')
     if (error) throw error
-    if (data && typeof data === 'object') templateCache.set(mergeTemplate(data as BookingPageData))
+    if (data && typeof data === 'object') templateCache.set(normalizeBookingPageData(data as BookingPageData))
     return templateCache.get()
   },
   save: (data: BookingPageData) => {

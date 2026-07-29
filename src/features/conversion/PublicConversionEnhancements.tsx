@@ -6,10 +6,11 @@ import { useTheme } from '../../theme'
 import { MobileSocialProofOverlay } from './MobileSocialProofOverlay'
 import { useSocialProofOverlay } from './SocialProofOverlayContext'
 import { useLocale } from '../../i18n/LocaleContext'
+import type { EventSocialProofOverride } from '../events/adminEventStore'
 
 const positionClass: Record<SocialProofItem['position'], string> = { 'top-left': 'top-20 left-4', 'top-center': 'top-20 left-1/2 -translate-x-1/2', 'top-right': 'top-20 right-4', 'bottom-left': 'bottom-6 left-4', 'bottom-center': 'bottom-6 left-1/2 -translate-x-1/2', 'bottom-right': 'bottom-6 right-4' }
 
-export function PublicConversionEnhancements({ packages, seats, eventId, isPreview = false }: { packages: TicketPackage[]; seats: StudioSeat[]; eventId?: string; isPreview?: boolean }) {
+export function PublicConversionEnhancements({ packages, seats, eventId, isPreview = false, settingsOverride }: { packages: TicketPackage[]; seats: StudioSeat[]; eventId?: string; isPreview?: boolean; settingsOverride?: EventSocialProofOverride }) {
   const { t } = useTheme()
   const { formatPrice, translations } = useLocale()
   const [showBar, setShowBar] = useState(false)
@@ -35,9 +36,21 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
     return () => mq.removeEventListener('change', handler)
   }, [])
 
-  useEffect(() => { const update = () => { const hero = document.getElementById('hero')?.getBoundingClientRect(); const tickets = document.getElementById('tickets')?.getBoundingClientRect(); setShowBar(Boolean(hero && tickets && hero.bottom < 0 && (tickets.top > window.innerHeight || tickets.bottom < 0))) }; update(); window.addEventListener('scroll', update, { passive: true }); return () => window.removeEventListener('scroll', update) }, [])
+  useEffect(() => {
+    const update = () => {
+      const hero = document.getElementById('hero')?.getBoundingClientRect()
+      const tickets = document.getElementById('tickets')?.getBoundingClientRect()
+      const footer = document.getElementById('footer')?.getBoundingClientRect()
+      const footerVisible = Boolean(footer && footer.top < window.innerHeight && footer.bottom > 0)
+      setShowBar(Boolean(hero && tickets && hero.bottom < 0 && !footerVisible && (tickets.top > window.innerHeight || tickets.bottom < 0)))
+    }
+    update()
+    window.addEventListener('scroll', update, { passive: true })
+    window.addEventListener('resize', update, { passive: true })
+    return () => { window.removeEventListener('scroll', update); window.removeEventListener('resize', update) }
+  }, [])
 
-  const { setOverlayActive } = useSocialProofOverlay()
+  const { isChatActive, setOverlayActive } = useSocialProofOverlay()
 
   const handleOverlayTransitionStart = useCallback((phase: 'showing' | 'hiding') => {
     if (phase === 'showing') setOverlayActive(true)
@@ -47,7 +60,38 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
     if (phase === 'hidden') setOverlayActive(false)
   }, [setOverlayActive])
 
-  useEffect(() => { const settings = socialProofStore.settings(); const visibleOnDevice = isMobile ? settings.mobileVisible : settings.desktopVisible; if (!settings.enabled || settings.paused || !visibleOnDevice || !settings.pageTargeting.includes('event') || !notices.length) { setToast(null); return }; let timeout: ReturnType<typeof setTimeout>; const next = () => { if (document.hidden) { timeout = setTimeout(next, settings.delay * 1000); return }; const choices = notices.filter(item => !played.current.has(item.id)); const item = choices[Math.floor(Math.random() * choices.length)] ?? notices[Math.floor(Math.random() * notices.length)]; if (!item) return; played.current.add(item.id); if (played.current.size >= notices.length) played.current.clear(); setToast(item); timeout = setTimeout(() => { setToast(null); timeout = setTimeout(next, settings.delay * 1000) }, item.duration * 1000) }; timeout = setTimeout(next, settings.delay * 1000); return () => clearTimeout(timeout) }, [isMobile, notices, socialProofVersion])
+  useEffect(() => {
+    if (isChatActive) { setToast(null); return }
+    const stored = { ...socialProofStore.settings(), ...settingsOverride }
+    const isDefaultTemplatePreview = isPreview && !eventId
+    const settings = isDefaultTemplatePreview ? {
+      ...stored,
+      enabled: true,
+      paused: false,
+      mobileVisible: true,
+      desktopVisible: true,
+      pageTargeting: ['event'],
+      delay: Math.min(stored.delay || 8, 3),
+    } : stored
+    const visibleOnDevice = isMobile ? settings.mobileVisible : settings.desktopVisible
+    if (!settings.enabled || settings.paused || !visibleOnDevice || !settings.pageTargeting.includes('event') || !notices.length) { setToast(null); return }
+    let timeout: ReturnType<typeof setTimeout>
+    const next = () => {
+      if (document.hidden) { timeout = setTimeout(next, settings.delay * 1000); return }
+      const choices = notices.filter(item => !played.current.has(item.id))
+      const item = choices[Math.floor(Math.random() * choices.length)] ?? notices[Math.floor(Math.random() * notices.length)]
+      if (!item) return
+      played.current.add(item.id)
+      if (played.current.size >= notices.length) played.current.clear()
+      setToast({ ...item, duration: settings.duration ?? item.duration })
+      timeout = setTimeout(() => {
+        setToast(null)
+        timeout = setTimeout(next, settings.delay * 1000)
+      }, (settings.duration ?? item.duration) * 1000)
+    }
+    timeout = setTimeout(next, settings.delay * 1000)
+    return () => clearTimeout(timeout)
+  }, [eventId, isChatActive, isMobile, isPreview, notices, settingsOverride, socialProofVersion])
 
   return (
     <>

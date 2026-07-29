@@ -52,13 +52,14 @@ Deno.serve(async request => {
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
   if (!url || !serviceKey) return json({ error: 'Server configuration is incomplete' }, 500)
   const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
-  if (!await isAdmin(request, admin)) return json({ error: 'Unauthorized' }, 401)
-
   const payload = await request.json().catch(() => null) as { action?: string; emailId?: string } | null
-  if (payload?.action !== 'send-email' || !payload.emailId) return json({ error: 'Invalid request' }, 400)
+  const publicAdminEmail = payload?.action === 'send-public-admin-email'
+  if ((payload?.action !== 'send-email' && !publicAdminEmail) || !payload.emailId) return json({ error: 'Invalid request' }, 400)
+  if (!publicAdminEmail && !await isAdmin(request, admin)) return json({ error: 'Unauthorized' }, 401)
 
   const { data: job, error } = await admin.from('email_queue').select('id,kind,recipient,subject,payload').eq('id', payload.emailId).eq('status', 'queued').single()
   if (error || !job) return json({ error: 'Email job was not found or is no longer queued' }, 404)
+  if (publicAdminEmail && job.payload?.publicAdminNotification !== true) return json({ error: 'Unauthorized' }, 401)
 
   await admin.from('email_queue').update({ status: 'processing' }).eq('id', job.id)
   const smtpUser = Deno.env.get('GMAIL_SMTP_USER')

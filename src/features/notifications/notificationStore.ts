@@ -1,6 +1,7 @@
 import { supabase } from '../../lib/supabase'
 import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
+import { softDeleteAdminRecord } from '../admin/adminDeletionService'
 
 export type AdminNotification = { id: string; type: string; title: string; detail: string; createdAt: string; readAt?: string }
 const cache = createProtectedMemoryStore<AdminNotification[]>(() => [])
@@ -45,6 +46,21 @@ export const notificationStore = {
       const { error } = await supabase.from('notifications').update({ read_at: readAt }).eq('organization_id', requireOrganizationId()).is('read_at', null)
       if (error) throw error
     }).catch(() => undefined)
+  },
+  deleteOne: async (id: string) => {
+    await softDeleteAdminRecord('notification', id)
+    cache.set(cache.get().filter(notification => notification.id !== id))
+  },
+  deleteMany: async (ids: string[]) => {
+    for (const id of ids) await softDeleteAdminRecord('notification', id)
+    const removed = new Set(ids)
+    cache.set(cache.get().filter(notification => !removed.has(notification.id)))
+  },
+  clearRead: async () => {
+    const ids = cache.get().filter(notification => notification.readAt).map(notification => notification.id)
+    for (const id of ids) await softDeleteAdminRecord('notification', id)
+    const removed = new Set(ids)
+    cache.set(cache.get().filter(notification => !removed.has(notification.id)))
   },
   clear: cache.reset,
 }

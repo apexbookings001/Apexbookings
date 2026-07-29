@@ -4,8 +4,10 @@ import { ticketStore, type TicketRecord } from '../features/bookings/ticketStore
 import { ThemeCtx, DARK } from '../theme'
 import movieTicketLogo from '../../icons/movie-ticket.gif'
 import verifiedIcon from '../../icons/verified.png'
+import { useLocale } from '../i18n/LocaleContext'
 
 export function TicketVerificationPage() {
+  const { t: translate, formatDate } = useLocale()
   const { ticketId } = useParams()
   const navigate = useNavigate()
   const [ticket, setTicket] = useState<TicketRecord | null>(null)
@@ -44,7 +46,7 @@ export function TicketVerificationPage() {
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
-          <div className="text-sm font-mono tracking-widest uppercase" style={{ color: t.textSub }}>Verifying Ticket...</div>
+          <div className="text-sm font-mono tracking-widest uppercase" style={{ color: t.textSub }}>{translate('ticket.verifying')}</div>
         </div>
       </div>
     )
@@ -70,15 +72,15 @@ export function TicketVerificationPage() {
               </svg>
             </div>
             
-            <h1 className="text-3xl font-serif font-bold mb-3" style={{ color: t.text }}>Invalid Ticket</h1>
+            <h1 className="text-3xl font-serif font-bold mb-3" style={{ color: t.text }}>{translate('ticket.invalid')}</h1>
             
             <p className="text-base mb-8 px-4" style={{ color: t.textSub }}>
-              We could not verify this ticket. It may be fake, refunded, or not yet approved.
+              {translate('ticket.invalidDescription')}
             </p>
             
             <div className="p-5 rounded-2xl mb-8" style={{ background: t.card, border: `1px solid ${t.border}` }}>
-              <div className="text-xs font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>Scanned Data</div>
-              <div className="font-mono text-sm break-all" style={{ color: '#EF4444' }}>{ticketId || 'Unknown'}</div>
+              <div className="text-xs font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{translate('ticket.scannedData')}</div>
+              <div className="font-mono text-sm break-all" style={{ color: '#EF4444' }}>{ticketId || translate('ticket.unknown')}</div>
             </div>
             
             <button 
@@ -86,7 +88,7 @@ export function TicketVerificationPage() {
               className="px-8 py-3.5 rounded-2xl font-bold transition-all text-sm w-full"
               style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}
             >
-              Return Home
+              {translate('ticket.returnHome')}
             </button>
           </div>
         </div>
@@ -104,11 +106,11 @@ export function TicketVerificationPage() {
             <div className="w-9 h-9 rounded-xl p-0.5 shadow-[0_8px_24px_rgba(0,0,0,0.28)]" style={{ background: 'linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.05))', border: '1px solid rgba(255,255,255,0.14)' }}>
               <img src={movieTicketLogo} alt="Apex" className="w-full h-full rounded-[10px] object-contain" />
             </div>
-            <span className="font-serif font-bold text-lg tracking-wide" style={{ color: t.text }}>Apex Verification</span>
+            <span className="font-serif font-bold text-lg tracking-wide" style={{ color: t.text }}>{translate('ticket.verification')}</span>
           </div>
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-full" style={{ background: 'rgba(0, 255, 136, 0.1)', border: '1px solid rgba(0, 255, 136, 0.3)' }}>
             <div className="w-2 h-2 rounded-full bg-[#00FF88] animate-pulse" />
-            <span className="text-xs font-bold tracking-wide" style={{ color: '#00FF88' }}>SECURE SCAN</span>
+            <span className="text-xs font-bold tracking-wide" style={{ color: '#00FF88' }}>{translate('ticket.secureScan')}</span>
           </div>
         </div>
 
@@ -125,8 +127,8 @@ export function TicketVerificationPage() {
                 className="w-28 h-28 mx-auto object-contain relative z-10 drop-shadow-[0_0_15px_rgba(0,255,136,0.4)]"
                 style={{ animation: 'bounce-subtle 3s infinite ease-in-out' }}
               />
-              <h1 className="text-3xl font-serif font-bold mt-4 mb-1 relative z-10" style={{ color: t.text }}>Verified Attendee</h1>
-              <p className="text-sm font-mono tracking-widest uppercase relative z-10" style={{ color: '#00FF88' }}>Official Ticket Record</p>
+              <h1 className="text-3xl font-serif font-bold mt-4 mb-1 relative z-10" style={{ color: t.text }}>{translate('ticket.verifiedAttendee')}</h1>
+              <p className="text-sm font-mono tracking-widest uppercase relative z-10" style={{ color: '#00FF88' }}>{translate('ticket.officialRecord')}</p>
             </div>
 
             {/* Ticket Card */}
@@ -138,7 +140,7 @@ export function TicketVerificationPage() {
                 <img src={ticket.eventBanner} alt={ticket.eventName} className="w-full h-full object-cover" />
                 <div className="absolute inset-0 bg-gradient-to-t from-[#111113] to-transparent opacity-90" />
                 <div className="absolute bottom-4 left-5 right-5">
-                  <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: ticket.packageAccent }}>{ticket.eventHost} Presents</div>
+                  <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: ticket.packageAccent }}>{translate('ticket.presents', { host: ticket.eventHost })}</div>
                   <div className="font-serif text-2xl font-bold leading-tight" style={{ color: '#FFFFFF' }}>{ticket.eventName}</div>
                 </div>
               </div>
@@ -148,7 +150,7 @@ export function TicketVerificationPage() {
                 
                 {/* Customer */}
                 <div>
-                  <div className="text-xs font-mono uppercase tracking-wider mb-1" style={{ color: t.textMuted }}>Admit One</div>
+                  <div className="text-xs font-mono uppercase tracking-wider mb-1" style={{ color: t.textMuted }}>{translate('ticket.admitOne')}</div>
                   <div className="text-xl font-bold" style={{ color: t.text }}>{ticket.customerName}</div>
                 </div>
 
@@ -157,23 +159,23 @@ export function TicketVerificationPage() {
                 {/* Details Grid */}
                 <div className="grid grid-cols-2 gap-y-5 gap-x-4">
                   <div>
-                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">Date</div>
+                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.eventDate')}</div>
                     <div className="text-sm font-semibold text-white">{ticket.eventDate}</div>
                   </div>
                   <div>
-                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">Time</div>
+                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.time')}</div>
                     <div className="text-sm font-semibold text-white">{ticket.eventTime}</div>
                   </div>
                   <div className="col-span-2">
-                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">Venue</div>
+                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.venue')}</div>
                     <div className="text-sm font-semibold text-white">{ticket.eventVenue}</div>
                   </div>
                   <div>
-                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">Package</div>
+                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.package')}</div>
                     <div className="text-sm font-bold" style={{ color: ticket.packageAccent }}>{ticket.packageName}</div>
                   </div>
                   <div>
-                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">Seat</div>
+                    <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.seat')}</div>
                     <div className="text-sm font-bold text-white">{ticket.seatLabel}</div>
                   </div>
                 </div>
@@ -183,17 +185,17 @@ export function TicketVerificationPage() {
                 {/* Meta */}
                 <div className="bg-black/30 rounded-2xl p-4 border" style={{ borderColor: t.border }}>
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs text-zinc-400">Booking Ref</span>
+                    <span className="text-xs text-zinc-400">{translate('ticket.bookingRef')}</span>
                     <span className="text-xs font-mono font-bold text-zinc-200">{ticket.bookingReference}</span>
                   </div>
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs text-zinc-400">Ticket No.</span>
+                    <span className="text-xs text-zinc-400">{translate('ticket.number')}</span>
                     <span className="text-xs font-mono font-bold text-zinc-200">{ticket.ticketNumber}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-xs text-zinc-400">Approved</span>
+                    <span className="text-xs text-zinc-400">{translate('ticket.approved')}</span>
                     <span className="text-xs font-mono text-zinc-400">
-                      {ticket.approvedAt ? new Date(ticket.approvedAt).toLocaleString() : 'N/A'}
+                      {ticket.approvedAt ? formatDate(ticket.approvedAt, { dateStyle: 'medium', timeStyle: 'short' }) : 'N/A'}
                     </span>
                   </div>
                 </div>
@@ -201,7 +203,7 @@ export function TicketVerificationPage() {
             </div>
             
             <div className="text-center text-xs pb-10" style={{ color: t.textMuted }}>
-              Scanned at {new Date().toLocaleString()}
+              {translate('ticket.scannedAt', { time: formatDate(new Date(), { dateStyle: 'medium', timeStyle: 'short' }) })}
             </div>
             
           </div>

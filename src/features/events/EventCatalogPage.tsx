@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { createBookingPageData, masterBookingTemplateStore } from './bookingTemplate'
 import {
@@ -9,10 +10,12 @@ import {
   type ManagedEvent,
 } from './adminEventStore'
 import { localeService } from '../../i18n/localeService'
+import { useAdminRecoveryState, useAdminSessionRecovery } from '../recovery/AdminSessionRecoveryProvider'
 
 type SetupForm = { name: string; date: string; time: string; venue: string; countryCode: string; currencyCode: string; languageCode: string }
 const inputClass = 'mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-emerald-400'
 const emptyForm = (): SetupForm => ({ name: '', date: '', time: '19:00', venue: '', countryCode: 'US', currencyCode: 'USD', languageCode: 'en-US' })
+const isSetupForm = (value: unknown): value is SetupForm => Boolean(value && typeof value === 'object' && typeof (value as SetupForm).name === 'string' && typeof (value as SetupForm).countryCode === 'string')
 
 function formFromEvent(event?: ManagedEvent | null): SetupForm {
   const locale = localeService.get(event?.locale?.countryCode)
@@ -32,14 +35,18 @@ function publicPath(event: ManagedEvent) { return `/e/${event.publication?.short
 
 export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: string) => void; createSignal?: number }) {
   const { role } = useAuth()
+  const { clearUiState } = useAdminSessionRecovery()
+  const navigate = useNavigate()
   const canManage = role === 'owner' || role === 'admin'
   const [events, setEvents] = useState<ManagedEvent[]>(adminEventStore.list)
-  const [setupMode, setSetupMode] = useState<'create' | 'duplicate' | null>(null)
-  const [duplicateSource, setDuplicateSource] = useState<ManagedEvent | null>(null)
-  const [form, setForm] = useState<SetupForm>(emptyForm)
-  const [deleteTarget, setDeleteTarget] = useState<ManagedEvent | null>(null)
+  const [setupMode, setSetupMode] = useAdminRecoveryState<'create' | 'duplicate' | null>('events.setupMode', null, value => value === null || value === 'create' || value === 'duplicate')
+  const [duplicateSourceId, setDuplicateSourceId] = useAdminRecoveryState<string | null>('events.duplicateSourceId', null, value => value === null || typeof value === 'string')
+  const [form, setForm] = useAdminRecoveryState<SetupForm>('events.setupForm', emptyForm(), isSetupForm)
+  const [deleteTargetId, setDeleteTargetId] = useAdminRecoveryState<string | null>('events.deleteTargetId', null, value => value === null || typeof value === 'string')
   const [busy, setBusy] = useState(false)
   const [readyName, setReadyName] = useState<string | null>(null)
+  const duplicateSource = events.find(event => event.id === duplicateSourceId) ?? null
+  const deleteTarget = events.find(event => event.id === deleteTargetId) ?? null
 
   useEffect(() => {
     if (!setupMode && !deleteTarget && !readyName) return
@@ -65,7 +72,7 @@ export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: s
   }
 
   const openDuplicate = (event: ManagedEvent | null) => {
-    setDuplicateSource(event)
+    setDuplicateSourceId(event?.id ?? null)
     if (event) setForm(formFromEvent(event))
     else {
       const template = masterBookingTemplateStore.load()
@@ -94,8 +101,9 @@ export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: s
       }
       const saved = await adminEventStore.saveAsync(event)
       setSetupMode(null)
+      setDuplicateSourceId(null)
       setReadyName(saved.title)
-      window.setTimeout(() => { window.location.assign(`/admin/events/${saved.id}/edit`) }, 850)
+      window.setTimeout(() => navigate(`/admin/events/${saved.id}/edit`), 850)
     } catch (error) {
       show(error instanceof Error ? error.message : 'The event page could not be created')
     } finally {
@@ -108,7 +116,8 @@ export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: s
     setBusy(true)
     try {
       await adminEventStore.removeAsync(deleteTarget.id)
-      setDeleteTarget(null)
+      clearUiState(`eventStudio:${deleteTarget.id}`)
+      setDeleteTargetId(null)
       show(`“${deleteTarget.title}” was deleted successfully`)
     } catch (error) {
       show(error instanceof Error ? error.message : 'The event page could not be deleted')
@@ -132,10 +141,10 @@ export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: s
             <p className="mt-3 truncate rounded-lg bg-black/25 px-2.5 py-2 font-mono text-[10px] text-cyan-300">{publicPath(event)}</p>
             <div className="mt-4 flex flex-wrap gap-2 text-xs">
               <button onClick={() => void navigator.clipboard.writeText(link).then(() => show('Public link copied'))} className="rounded-lg bg-white/5 px-2.5 py-2 text-cyan-300">Copy Link</button>
-              <a href={previewHref} target="_blank" rel="noreferrer" className="rounded-lg bg-white/5 px-2.5 py-2 text-zinc-200">Preview</a>
-              <a href={`/admin/events/${event.id}/edit`} className="rounded-lg bg-emerald-400 px-2.5 py-2 font-semibold text-zinc-950">Edit</a>
+              <button type="button" onClick={() => navigate(previewHref)} className="rounded-lg bg-white/5 px-2.5 py-2 text-zinc-200">Preview</button>
+              <button type="button" onClick={() => navigate(`/admin/events/${event.id}/edit`)} className="rounded-lg bg-emerald-400 px-2.5 py-2 font-semibold text-zinc-950">Edit</button>
               {canManage && <button onClick={() => openDuplicate(event)} className="rounded-lg bg-white/5 px-2.5 py-2 text-zinc-200">Duplicate</button>}
-              {canManage && <button onClick={() => setDeleteTarget(event)} className="rounded-lg bg-red-500/10 px-2.5 py-2 text-red-300">Delete</button>}
+              {canManage && <button onClick={() => setDeleteTargetId(event.id)} className="rounded-lg bg-red-500/10 px-2.5 py-2 text-red-300">Delete</button>}
             </div>
           </div>
         </article>
@@ -158,7 +167,7 @@ export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: s
       <label className="sm:col-span-2 text-xs text-zinc-400">Default language<select className={inputClass} value={form.languageCode} onChange={event => setForm(current => ({ ...current, languageCode: event.target.value }))}>{localeService.supported.map(item => <option key={item.bcp47} value={item.bcp47}>{item.languageName} ({item.bcp47})</option>)}</select></label>
     </div><div className="mt-6 flex justify-end gap-2"><button disabled={busy} onClick={() => setSetupMode(null)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={busy} onClick={() => void submitSetup()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-50">{busy ? 'Creating page…' : 'Create independent draft'}</button></div></section></div>}
 
-    {deleteTarget && <div className="fixed inset-0 z-[500] grid place-items-center bg-black/75 p-4"><section className="w-full max-w-md rounded-3xl border border-red-400/25 bg-[#111113] p-6 text-white"><p className="font-mono text-xs uppercase tracking-widest text-red-300">Delete event page</p><h2 className="mt-2 font-serif text-2xl font-bold">Delete “{deleteTarget.title}”?</h2><p className="mt-3 text-sm leading-relaxed text-zinc-400">This removes the page from Events and immediately disables its public link. Related records remain safely soft-deleted.</p><div className="mt-6 flex justify-end gap-2"><button disabled={busy} onClick={() => setDeleteTarget(null)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={busy} onClick={() => void confirmDelete()} className="rounded-xl bg-red-500 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busy ? 'Deleting…' : 'Delete event page'}</button></div></section></div>}
+    {deleteTarget && <div className="fixed inset-0 z-[500] grid place-items-center bg-black/75 p-4"><section className="w-full max-w-md rounded-3xl border border-red-400/25 bg-[#111113] p-6 text-white"><p className="font-mono text-xs uppercase tracking-widest text-red-300">Delete event page</p><h2 className="mt-2 font-serif text-2xl font-bold">Delete “{deleteTarget.title}”?</h2><p className="mt-3 text-sm leading-relaxed text-zinc-400">This removes the page from Events and immediately disables its public link. Related records remain safely soft-deleted.</p><div className="mt-6 flex justify-end gap-2"><button disabled={busy} onClick={() => setDeleteTargetId(null)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={busy} onClick={() => void confirmDelete()} className="rounded-xl bg-red-500 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{busy ? 'Deleting…' : 'Delete event page'}</button></div></section></div>}
     {readyName && <div className="fixed inset-0 z-[600] grid place-items-center bg-black/75 p-4"><div className="rounded-3xl border border-emerald-400/30 bg-[#111113] p-8 text-center text-white"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-400 text-xl text-zinc-950">✓</div><h2 className="mt-4 font-serif text-2xl font-bold">Your page is ready.</h2><p className="mt-2 text-sm text-zinc-400">You can now start editing “{readyName}”.</p></div></div>}
   </div>
 }

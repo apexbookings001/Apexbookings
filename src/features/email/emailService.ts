@@ -3,7 +3,7 @@ import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
 
 export type EmailStatus = 'connected' | 'disconnected' | 'configuration_error' | 'invalid_credentials'
-export type EmailKind = 'booking_started' | 'payment_proof_submitted' | 'payment_approved' | 'payment_declined' | 'bank_transfer_requested' | 'bank_details_ready' | 'transfer_expired' | 'support_reply' | 'ticket_ready' | 'welcome' | 'test'
+export type EmailKind = 'booking_started' | 'payment_proof_submitted' | 'payment_approved' | 'payment_declined' | 'bank_transfer_requested' | 'bank_details_ready' | 'transfer_expired' | 'support_contact' | 'support_reply' | 'ticket_ready' | 'welcome' | 'test'
 export type EmailConfiguration = { provider: 'gmail_smtp'; host: string; port: number; senderEmail: string; senderName: string; replyTo: string; testRecipient: string; status: EmailStatus }
 export type EmailEvent = { kind: EmailKind; to: string; subject: string; data: Record<string, string>; deepLink?: string; actionLabel?: string }
 export type EmailLog = EmailEvent & { id: string; createdAt: string; state: 'queued' | 'sent' | 'failed' }
@@ -95,8 +95,15 @@ export const emailService = {
   },
   dispatchAdmin: async (eventId: string, event: Omit<EmailEvent, 'to'>) => {
     if (!supabase) throw new Error('Supabase is not configured.')
-    const { error } = await supabase.rpc('queue_public_admin_email', { target_event_id: eventId, email_payload: event })
+    const client = supabase
+    const { data, error } = await client.rpc('queue_public_admin_email', { target_event_id: eventId, email_payload: event })
     if (error) throw error
+    const emailIds = Array.isArray(data) ? data.map(String) : data ? [String(data)] : []
+    if (!emailIds.length) throw new Error('No administrator email recipients are configured for this event.')
+    await Promise.all(emailIds.map(async emailId => {
+      const delivery = await client.functions.invoke('app-api', { body: { action: 'send-public-admin-email', emailId } })
+      if (delivery.error) throw delivery.error
+    }))
   },
   clear: cache.reset,
 }

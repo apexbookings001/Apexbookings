@@ -24,7 +24,11 @@ import { adminSettingsStore, type OrganizationSettings } from './features/settin
 import { getSettingsReadiness, type SetupSection } from './features/settings/settingsReadiness'
 import { socialProofStore } from './features/conversion/socialProofStore'
 import { NotificationCenter } from './features/notifications/NotificationCenter'
+import { notificationStore } from './features/notifications/notificationStore'
 import { EventCatalogPage as SupabaseEventCatalogPage } from './features/events/EventCatalogPage'
+import { useAdminRecoveryState } from './features/recovery/AdminSessionRecoveryProvider'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { cleanupTestData, softDeleteAdminRecord, type TestCleanupCategory } from './features/admin/adminDeletionService'
 
 const T = {
   bg: '#09090B', bg2: '#111113', bg3: '#18181B', bg4: '#1E1E21',
@@ -360,14 +364,13 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobile
 }
 
 // ─── Top Navigation ───────────────────────────────────────────────────────────
-type AdminNotification = { id: string; title: string; detail: string; createdAt: string }
-// This starts empty by design. Connect the notification service here when the backend is ready.
-const ADMIN_NOTIFICATIONS: AdminNotification[] = []
-
 function TopNav({ page, onExitAdmin, collapsed, show, onHamburger, onCreateEvent, onOpenNotifications }: { page: Page; onExitAdmin: () => void; collapsed: boolean; show: (m: string) => void; onHamburger: () => void; onCreateEvent: () => void; onOpenNotifications: () => void }) {
-  const [search, setSearch] = useState('')
-  const [cmdOpen, setCmdOpen] = useState(false)
-  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [search, setSearch] = useAdminRecoveryState('dashboard.globalSearch', '', value => typeof value === 'string')
+  const [cmdOpen, setCmdOpen] = useAdminRecoveryState('dashboard.commandPaletteOpen', false, value => typeof value === 'boolean')
+  const [notificationsOpen, setNotificationsOpen] = useAdminRecoveryState('dashboard.notificationsOpen', false, value => typeof value === 'boolean')
+  const [notifications, setNotifications] = useState(() => notificationStore.list())
+  useEffect(() => notificationStore.subscribe(() => setNotifications(notificationStore.list())), [])
+  const unreadCount = notifications.filter(notification => !notification.readAt).length
 
   const PAGE_TITLES: Record<Page, string> = {
     dashboard: 'Dashboard Overview', bookings: 'Bookings Management',
@@ -419,8 +422,9 @@ function TopNav({ page, onExitAdmin, collapsed, show, onHamburger, onCreateEvent
         <button onClick={onCreateEvent} className="w-8 h-8 rounded-xl flex items-center justify-center transition-colors" style={{ background: T.emerald, color: '#09090B' }}>
           <Icons.plus/>
         </button>
-        <button onClick={() => setNotificationsOpen(open => !open)} className="relative w-8 h-8 rounded-xl flex items-center justify-center" aria-label="Open notifications" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.textSub }}>
+        <button onClick={() => setNotificationsOpen(open => !open)} className="relative w-8 h-8 rounded-xl flex items-center justify-center" aria-label={`Open notifications${unreadCount ? ` (${unreadCount} unread)` : ''}`} style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.textSub }}>
           <Icons.bell/>
+          {unreadCount > 0 && <span className="absolute -right-1.5 -top-1.5 grid min-w-4 h-4 place-items-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white">{unreadCount > 9 ? '9+' : unreadCount}</span>}
         </button>
 
         {/* Admin avatar */}
@@ -430,7 +434,7 @@ function TopNav({ page, onExitAdmin, collapsed, show, onHamburger, onCreateEvent
 
       {notificationsOpen && <div className="fixed right-5 top-16 z-50 w-[min(23rem,calc(100%_-_2.5rem))] overflow-hidden rounded-2xl shadow-2xl" style={{ background: T.bg2, border: `1px solid ${T.cardBorder}` }}>
         <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}><div className="text-sm font-semibold" style={{ color: T.text }}>Notifications</div><button onClick={() => { setNotificationsOpen(false); onOpenNotifications() }} className="text-xs" style={{ color: T.emerald }}>View all</button></div>
-        {ADMIN_NOTIFICATIONS.length === 0 ? <div className="p-5 text-center"><div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: T.inputBg, color: T.textMuted }}><Icons.bell/></div><div className="text-sm font-medium" style={{ color: T.text }}>You’re all caught up</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>New booking, payment, and support alerts will appear here.</div></div> : ADMIN_NOTIFICATIONS.map(notification => <button key={notification.id} onClick={() => { setNotificationsOpen(false); onOpenNotifications() }} className="w-full px-4 py-3 text-left border-b" style={{ borderColor: T.border }}><div className="text-xs font-semibold" style={{ color: T.text }}>{notification.title}</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>{notification.detail}</div><div className="mt-1 text-[10px]" style={{ color: T.textMuted }}>{notification.createdAt}</div></button>)}
+        {notifications.length === 0 ? <div className="p-5 text-center"><div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: T.inputBg, color: T.textMuted }}><Icons.bell/></div><div className="text-sm font-medium" style={{ color: T.text }}>You’re all caught up</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>New booking, payment, and support alerts will appear here.</div></div> : notifications.slice(0, 5).map(notification => <button key={notification.id} onClick={() => { notificationStore.markRead(notification.id); setNotificationsOpen(false); onOpenNotifications() }} className={`w-full px-4 py-3 text-left border-b ${notification.readAt ? 'opacity-60' : ''}`} style={{ borderColor: T.border }}><div className="flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full" style={{ background: notification.readAt ? T.textMuted : T.emerald }}/><div className="text-xs font-semibold" style={{ color: T.text }}>{notification.title}</div></div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>{notification.detail}</div><div className="mt-1 text-[10px]" style={{ color: T.textMuted }}>{new Date(notification.createdAt).toLocaleString()}</div></button>)}
       </div>}
 
       {/* Command palette */}
@@ -603,7 +607,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // ─── Dashboard Page ───────────────────────────────────────────────────────────
-function DashboardPage({ show }: { show: (m: string) => void }) {
+function DashboardPage({ show, onNavigate }: { show: (m: string) => void; onNavigate: (page: Page) => void }) {
   /* Retired dashboard fixture calculations.
   const rev = useCountUp(156840)
   const tickets = useCountUp(412)
@@ -743,7 +747,7 @@ function DashboardPage({ show }: { show: (m: string) => void }) {
               <StatusBadge status={chat.priority}/>
             </div>
           ))}
-          <button onClick={() => show('Opening chat...')} className="w-full text-xs py-2 rounded-xl mt-1" style={{ background: T.inputBg, color: T.textMuted, border: `1px solid ${T.border}` }}>
+          <button onClick={() => onNavigate('chat')} className="w-full text-xs py-2 rounded-xl mt-1" style={{ background: T.inputBg, color: T.textMuted, border: `1px solid ${T.border}` }}>
             View all conversations →
           </button>
         </div>
@@ -763,10 +767,21 @@ function DashboardPage({ show }: { show: (m: string) => void }) {
 
 // ─── Bookings Page ────────────────────────────────────────────────────────────
 function BookingsPage({ show }: { show: (m: string) => void }) {
-  const [selected, setSelected] = useState<AdminBooking | null>(null)
-  const [filter, setFilter] = useState('all')
-  const [search, setSearch] = useState('')
+  const { role } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [selectedId, setSelectedId] = useAdminRecoveryState<string | null>('bookings.selectedId', null, value => value === null || typeof value === 'string')
+  const [filter, setFilter] = useAdminRecoveryState('bookings.filter', 'all', value => typeof value === 'string')
+  const [search, setSearch] = useAdminRecoveryState('bookings.search', '', value => typeof value === 'string')
   const [bookings, setBookings] = useState<AdminBooking[]>(() => adminBookings())
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const selected = bookings.find(booking => booking.id === selectedId) ?? null
+
+  useEffect(() => {
+    const routeId = location.pathname.startsWith('/admin/bookings/') ? decodeURIComponent(location.pathname.slice('/admin/bookings/'.length)) : null
+    if (routeId && routeId !== selectedId) setSelectedId(routeId)
+  }, [location.pathname, selectedId, setSelectedId])
 
   useEffect(() => {
     const refresh = () => setBookings(adminBookings())
@@ -787,6 +802,17 @@ function BookingsPage({ show }: { show: (m: string) => void }) {
     const url = getPaymentIcon(method === 'crypto' ? 'cryptocurrency' : method);
     if (url) return <img src={url} alt={method} className="w-5 h-5 object-contain inline-block" />;
     return <span className="text-base">{payIcon[method] || '💳'}</span>;
+  }
+  const deleteBooking = async () => {
+    if (!selected || deleting || (role !== 'owner' && role !== 'admin')) return
+    setDeleting(true)
+    try {
+      await softDeleteAdminRecord('booking', selected.id, role === 'owner')
+      await ticketStore.hydrate()
+      setBookings(adminBookings()); setSelectedId(null); setConfirmDelete(false); navigate('/admin/bookings')
+      show('Booking archived and linked payment records reconciled.')
+    } catch (error) { show(error instanceof Error ? error.message : 'The booking could not be deleted.') }
+    finally { setDeleting(false) }
   }
 
   return (
@@ -830,7 +856,7 @@ function BookingsPage({ show }: { show: (m: string) => void }) {
                     style={{ borderColor: T.border }}
                     onMouseEnter={e => (e.currentTarget as HTMLTableRowElement).style.background = 'rgba(255,255,255,0.02)'}
                     onMouseLeave={e => (e.currentTarget as HTMLTableRowElement).style.background = 'transparent'}
-                    onClick={() => setSelected(b)}>
+                    onClick={() => { setSelectedId(b.id); navigate(`/admin/bookings/${encodeURIComponent(b.id)}`) }}>
                     <td className="px-4 py-3.5">
                       <span className="font-mono text-xs" style={{ color: T.emerald }}>{b.id}</span>
                     </td>
@@ -884,7 +910,7 @@ function BookingsPage({ show }: { show: (m: string) => void }) {
         <div className="w-80 shrink-0 rounded-2xl overflow-hidden flex flex-col" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}`, animation: 'panel-in 0.25s ease' }}>
           <div className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: T.border }}>
             <div className="text-xs font-mono uppercase tracking-wider" style={{ color: T.textMuted }}>Booking Details</div>
-            <button onClick={() => setSelected(null)} style={{ color: T.textMuted }}><Icons.x/></button>
+            <button onClick={() => { setSelectedId(null); navigate('/admin/bookings') }} style={{ color: T.textMuted }}><Icons.x/></button>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {/* Customer */}
@@ -953,7 +979,9 @@ function BookingsPage({ show }: { show: (m: string) => void }) {
                 ✕ Cancel Booking
               </button>
             )}
+            {(role === 'owner' || role === 'admin') && <button onClick={() => setConfirmDelete(true)} className="w-full py-2.5 rounded-xl text-xs font-semibold" style={{ background: 'rgba(239,68,68,0.08)', color: T.red, border: '1px solid rgba(239,68,68,0.2)' }}>🗑 Archive / Delete Test Booking</button>}
           </div>
+          {confirmDelete && <div className="fixed inset-0 z-[150] grid place-items-center bg-black/80 p-4"><div role="dialog" aria-modal="true" className="w-full max-w-md rounded-3xl p-6" style={{ background: T.bg2, border: '1px solid rgba(239,68,68,.25)' }}><div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: T.red }}>Archive booking</div><h2 className="mt-2 font-serif text-xl font-bold" style={{ color: T.text }}>{selected.id}</h2><div className="mt-4 space-y-1 text-sm" style={{ color: T.textSub }}><p>{selected.customer} · {selected.email}</p><p>{selected.event} · {selected.tier}</p><p>${selected.total.toLocaleString()} · {selected.status}</p></div><p className="mt-4 text-sm" style={{ color: T.textMuted }}>The booking will leave normal dashboards. Linked payments, tickets, proofs, transfers, email queue entries, and recovery records are handled in one protected transaction. Non-test records require owner confirmation.</p><div className="mt-6 flex justify-end gap-2"><button disabled={deleting} onClick={() => setConfirmDelete(false)} className="rounded-xl px-4 py-2 text-xs" style={{ background: T.inputBg, color: T.text }}>Cancel</button><button disabled={deleting || role !== 'owner'} onClick={deleteBooking} className="rounded-xl px-4 py-2 text-xs font-bold disabled:opacity-40" style={{ background: T.red, color: '#fff' }}>{deleting ? 'Deleting…' : 'Confirm archive'}</button></div></div></div>}
         </div>
       )}
     </div>
@@ -1214,8 +1242,19 @@ function MediaCenterPage({ show }: { show: (m: string) => void }) {
   return <div className="space-y-5"><div className="rounded-2xl p-4 flex flex-wrap gap-3 items-center" style={{background:'linear-gradient(135deg,rgba(245,158,11,.13),rgba(139,92,246,.08))',border:'1px solid rgba(245,158,11,.25)'}}><div className="text-lg">✓</div><div className="flex-1"><div className="font-semibold text-sm" style={{color:T.text}}>Verification Queue</div><div className="text-xs" style={{color:T.textMuted}}>A single visual workflow for payment proof reviews</div></div>{['Pending Proofs (18)','Gift Cards (9)','Bank Transfers (6)','Bitcoin (2)','PayPal (1)'].map(q=><button key={q} onClick={()=>setFilter('pending')} className="px-3 py-2 rounded-xl text-xs" style={{background:T.inputBg,color:T.gold}}>{q}</button>)}</div><div className="grid grid-cols-2 lg:grid-cols-4 gap-3">{[['Storage Used','2.3 GB / 10 GB'],['Images','1,284'],['PDFs','96'],['Payment Proofs','18']].map(([l,v])=><div key={l} className="rounded-2xl p-4" style={{background:T.cardSolid,border:`1px solid ${T.cardBorder}`}}><div className="text-xl font-serif font-bold" style={{color:T.text}}>{v}</div><div className="text-[10px] font-mono uppercase" style={{color:T.textMuted}}>{l}</div></div>)}</div><div className="flex flex-wrap gap-2">{['Payment Proofs','Event Images','Ticket Assets','All'].map(x=><button key={x} onClick={()=>setTab(x)} className="px-3 py-2 rounded-xl text-xs" style={{background:tab===x?'rgba(0,255,136,.12)':'transparent',color:tab===x?T.emerald:T.textMuted}}>{x}</button>)}<div className="flex-1"/><button onClick={()=>show('Upload panel opened')} className="px-4 py-2 rounded-xl text-xs font-bold" style={{background:T.emerald,color:T.bg}}>+ Upload media</button></div><div className="flex gap-2"><input placeholder="Search customer, event, booking ID…" className="px-3 py-2 rounded-xl text-xs outline-none" style={{background:T.inputBg,border:`1px solid ${T.border}`,color:T.text}}/>{['All','pending','approved','rejected'].map(x=><button key={x} onClick={()=>setFilter(x)} className="text-xs capitalize" style={{color:filter===x?T.emerald:T.textMuted}}>{x}</button>)}<button onClick={()=>show('Bulk selection enabled')} className="ml-auto text-xs" style={{color:T.cyan}}>Bulk actions</button></div><div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">{visible.map(a=><button key={a.id} onClick={()=>setSelected(a.id)} className="text-left overflow-hidden rounded-2xl" style={{background:T.cardSolid,border:`1px solid ${T.cardBorder}`}}><img src={a.image} className="w-full h-36 object-cover"/><div className="p-3"><div className="flex justify-between"><span className="text-xs font-semibold" style={{color:T.text}}>{a.customer}</span><StatusBadge status={a.status}/></div><div className="text-[11px] mt-2" style={{color:T.textSub}}>{a.event}</div><div className="text-[10px] mt-1" style={{color:T.textMuted}}>{a.method} · {a.booking}</div></div></button>)}</div>{current&&<div className="fixed inset-0 z-[100] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.75)'}} onClick={()=>setSelected(null)}><div className="w-full max-w-xl rounded-3xl overflow-hidden" style={{background:T.bg2,border:`1px solid ${T.cardBorder}`}} onClick={e=>e.stopPropagation()}><img src={current.image} className="w-full h-64 object-cover"/><div className="p-5"><div className="flex justify-between"><div><div className="font-serif text-xl font-bold" style={{color:T.text}}>{current.customer}</div><div className="text-xs" style={{color:T.textMuted}}>{current.booking} · linked booking → payment → media</div></div><button onClick={()=>setSelected(null)}><Icons.x/></button></div><textarea placeholder="Leave internal note…" className="w-full mt-4 p-3 rounded-xl text-xs" style={{background:T.inputBg,border:`1px solid ${T.border}`,color:T.text}}/><div className="grid grid-cols-2 gap-2 mt-3"><button onClick={()=>show('Payment approved')} className="py-2.5 rounded-xl text-xs font-bold" style={{background:T.emerald,color:T.bg}}>Approve payment</button><button onClick={()=>show('Payment rejected')} className="py-2.5 rounded-xl text-xs" style={{background:'rgba(239,68,68,.12)',color:T.red}}>Reject payment</button><button onClick={()=>show('Download started')} className="py-2.5 rounded-xl text-xs" style={{background:T.inputBg,color:T.textSub}}>Download</button><button onClick={()=>show('Booking opened')} className="py-2.5 rounded-xl text-xs" style={{background:T.inputBg,color:T.textSub}}>View booking</button></div></div></div></div>}</div>
 }
 function CustomersPage({ show }: { show: (m: string) => void }) {
+  const { role } = useAuth()
   const [selected, setSelected] = useState<AdminCustomer | null>(null)
   const [search, setSearch] = useState('')
+  const [deleting, setDeleting] = useState(false)
+
+  const deleteCustomer = async () => {
+    if (!selected || deleting || (role !== 'owner' && role !== 'admin')) return
+    if (!window.confirm(`Delete customer ${selected.name} (${selected.email})?\n\nDeletion is blocked when a retained booking, payment, ticket, or conversation depends on this customer.`)) return
+    setDeleting(true)
+    try { await softDeleteAdminRecord('customer', selected.id, role === 'owner'); setSelected(null); show('Customer deleted.') }
+    catch (error) { show(error instanceof Error ? error.message : 'The customer could not be deleted.') }
+    finally { setDeleting(false) }
+  }
 
   const filtered = adminCustomers().filter(c => !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.email.toLowerCase().includes(search.toLowerCase()))
 
@@ -1318,6 +1357,7 @@ function CustomersPage({ show }: { show: (m: string) => void }) {
               <button onClick={() => show('User banned!')} className="w-full py-2 rounded-xl text-xs font-semibold" style={{ background: 'rgba(239,68,68,0.08)', color: T.red, border: '1px solid rgba(239,68,68,0.15)' }}>
                 🚫 Blacklist User
               </button>
+              {(role === 'owner' || role === 'admin') && <button disabled={deleting} onClick={() => void deleteCustomer()} className="w-full py-2 rounded-xl text-xs font-semibold disabled:opacity-40" style={{ background: 'rgba(239,68,68,0.08)', color: T.red, border: '1px solid rgba(239,68,68,0.2)' }}>🗑 {deleting ? 'Deleting…' : 'Delete Customer'}</button>}
             </div>
           </div>
         </div>
@@ -2155,7 +2195,7 @@ function NotificationsPage() {
 
 // ─── Settings Page ────────────────────────────────────────────────────────────
 function PaymentSettingsPanel({ show }: { show: (m: string) => void }) {
-  const [tab, setTab] = useState<'methods' | 'crypto'>('methods')
+  const [tab, setTab] = useAdminRecoveryState<'methods' | 'crypto'>('settings.paymentTab', 'methods', value => value === 'methods' || value === 'crypto')
   const [settings, setSettings] = useState<PlatformPaymentSettings>(() => platformPaymentStore.get())
   const cryptoCoins = getSupportedCryptocurrencies()
 
@@ -2468,7 +2508,7 @@ function LocalizationSettingsPanel() {
 }
 
 function EmailConfigurationPanel({ show }: { show: (message: string) => void }) {
-  const [settings, setSettings] = useState<EmailConfiguration>(() => emailService.configuration())
+  const [settings, setSettings] = useAdminRecoveryState<EmailConfiguration>('settings.emailDraft', emailService.configuration(), (value): value is EmailConfiguration => Boolean(value && typeof value === 'object' && typeof (value as EmailConfiguration).senderEmail === 'string'))
   const [testState, setTestState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle')
   const [testError, setTestError] = useState<string | null>(null)
   const set = (key: keyof EmailConfiguration, value: string | number) => setSettings(current => ({ ...current, [key]: value }))
@@ -2482,8 +2522,8 @@ function EmailConfigurationPanel({ show }: { show: (message: string) => void }) 
 
 function TeamManagementPanel({ show }: { show: (message: string) => void }) {
   const [members, setMembers] = useState<TeamMember[]>([])
-  const [email, setEmail] = useState('')
-  const [role, setRole] = useState<OrganizationRole>('admin')
+  const [email, setEmail] = useAdminRecoveryState('settings.teamInviteEmail', '', value => typeof value === 'string')
+  const [role, setRole] = useAdminRecoveryState<OrganizationRole>('settings.teamInviteRole', 'admin', value => value === 'owner' || value === 'admin' || value === 'support')
   const [loading, setLoading] = useState(true)
   const load = useCallback(async () => {
     setLoading(true)
@@ -2498,14 +2538,28 @@ function TeamManagementPanel({ show }: { show: (message: string) => void }) {
   return <div className="space-y-5"><div><p className="font-mono text-[10px] uppercase tracking-widest" style={{ color: T.emerald }}>Owner access</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Team Management</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Invite approved admins and support users into this organization.</p></div><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}><div className="grid gap-3 md:grid-cols-[1fr_150px_auto]"><input value={email} onChange={event => setEmail(event.target.value)} type="email" placeholder="team@example.com" className="rounded-xl px-4 py-3 text-sm outline-none" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}/><select value={role} onChange={event => setRole(event.target.value as OrganizationRole)} className="rounded-xl px-3 py-3 text-sm" style={{ background: T.bg3, border: `1px solid ${T.border}`, color: T.text }}><option value="admin">Admin</option><option value="support">Support</option><option value="owner">Owner</option></select><button disabled={loading} onClick={() => void invite()} className="rounded-xl px-5 py-3 text-sm font-bold disabled:opacity-50" style={{ background: T.emerald, color: T.bg }}>Invite member</button></div></div><div className="overflow-hidden rounded-2xl" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>{members.map(member => <div key={member.userId} className="flex items-center justify-between gap-4 border-b p-4 last:border-0" style={{ borderColor: T.border }}><div className="min-w-0"><div className="truncate text-sm font-semibold" style={{ color: T.text }}>{member.email}</div><div className="mt-1 text-xs" style={{ color: T.textMuted }}>Joined {new Date(member.createdAt).toLocaleDateString()}</div></div><span className="rounded-full px-3 py-1 text-xs capitalize" style={{ background: member.role === 'owner' ? T.emeraldGlow : T.inputBg, color: member.role === 'owner' ? T.emerald : T.textSub }}>{member.role}</span></div>)}{!loading && !members.length && <div className="p-8 text-center text-sm" style={{ color: T.textMuted }}>No team members were returned.</div>}{loading && <div className="p-8 text-center text-sm" style={{ color: T.textMuted }}>Loading team…</div>}</div></div>
 }
 
+function TestDataCleanupPanel({ show }: { show: (message: string) => void }) {
+  const categories: TestCleanupCategory[] = ['notifications', 'conversations', 'payments', 'bookings', 'analytics']
+  const [selected, setSelected] = useState<TestCleanupCategory[]>(categories)
+  const [preview, setPreview] = useState<Record<string, number> | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const loadPreview = async () => { setBusy(true); try { setPreview(await cleanupTestData(selected, true)) } catch (error) { show(error instanceof Error ? error.message : 'Could not load test-data preview.') } finally { setBusy(false) } }
+  const execute = async () => { setBusy(true); try { const result = await cleanupTestData(selected, false); setPreview(result); setConfirming(false); show('Selected test data removed transactionally.') } catch (error) { show(error instanceof Error ? error.message : 'Test data cleanup failed.') } finally { setBusy(false) } }
+  return <div className="space-y-5"><div><p className="font-mono text-[10px] uppercase tracking-widest" style={{ color: T.red }}>Owner only</p><h2 className="font-serif text-2xl font-bold" style={{ color: T.text }}>Test Data Cleanup</h2><p className="mt-1 text-sm" style={{ color: T.textMuted }}>Only records explicitly marked as test data are eligible. Names and email addresses are never guessed.</p></div><div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}><div className="grid gap-3 sm:grid-cols-2">{categories.map(category => <label key={category} className="flex items-center justify-between rounded-xl p-3 capitalize" style={{ background: T.inputBg, color: T.textSub }}><span>{category}{preview && <small className="ml-2" style={{ color: T.textMuted }}>({preview[category] ?? 0})</small>}</span><input type="checkbox" checked={selected.includes(category)} onChange={event => setSelected(current => event.target.checked ? [...current, category] : current.filter(item => item !== category))} className="accent-emerald-400"/></label>)}</div><div className="mt-5 flex flex-wrap gap-2"><button disabled={busy || !selected.length} onClick={() => void loadPreview()} className="rounded-xl px-4 py-2.5 text-xs font-bold disabled:opacity-40" style={{ background: T.inputBg, color: T.text }}>Preview affected records</button><button disabled={busy || !selected.length || !preview} onClick={() => setConfirming(true)} className="rounded-xl px-4 py-2.5 text-xs font-bold disabled:opacity-40" style={{ background: T.red, color: '#fff' }}>Permanently clean selected test data</button></div></div>{confirming && <div className="fixed inset-0 z-[160] grid place-items-center bg-black/85 p-4"><div role="dialog" aria-modal="true" className="w-full max-w-md rounded-3xl p-6" style={{ background: T.bg2, border: '1px solid rgba(239,68,68,.3)' }}><h3 className="font-serif text-xl font-bold" style={{ color: T.text }}>Confirm permanent cleanup</h3><p className="mt-3 text-sm" style={{ color: T.textSub }}>This owner-only action removes the selected records marked <code>is_test = true</code>. It cannot be undone.</p><div className="mt-6 flex justify-end gap-2"><button onClick={() => setConfirming(false)} className="rounded-xl px-4 py-2 text-xs" style={{ background: T.inputBg, color: T.text }}>Cancel</button><button disabled={busy} onClick={() => void execute()} className="rounded-xl px-4 py-2 text-xs font-bold" style={{ background: T.red, color: '#fff' }}>{busy ? 'Cleaning…' : 'Delete test data'}</button></div></div></div>}</div>
+}
+
 function SettingsPage({ show }: { show: (m: string) => void }) {
   const { role } = useAuth()
-  const [activeSection, setActiveSection] = useState('organization')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const routeSection = location.pathname.startsWith('/admin/settings/') ? decodeURIComponent(location.pathname.slice('/admin/settings/'.length)).replaceAll('-', ' ') : null
+  const [activeSection, setActiveSection] = useAdminRecoveryState('settings.activeSection', routeSection || 'organization', value => typeof value === 'string')
   const [, setReadinessVersion] = useState(0)
-  const SECTIONS = ['organization', ...(role === 'owner' ? ['team'] : []), 'email','branding','payments','media','notifications','social proof','localization','backup']
-  const [organization, setOrganization] = useState<OrganizationSettings>(() => adminSettingsStore.get().organization)
-  const [brand, setBrand] = useState(() => adminSettingsStore.get().branding)
-  const [notificationPrefs, setNotificationPrefs] = useState(() => adminSettingsStore.get().notifications)
+  const SECTIONS = ['organization', ...(role === 'owner' ? ['team', 'test data cleanup'] : []), 'email','branding','payments','media','notifications','social proof','localization','backup']
+  const [organization, setOrganization] = useAdminRecoveryState<OrganizationSettings>('settings.organizationDraft', adminSettingsStore.get().organization, (value): value is OrganizationSettings => Boolean(value && typeof value === 'object' && typeof (value as OrganizationSettings).name === 'string'))
+  const [brand, setBrand] = useAdminRecoveryState('settings.brandingDraft', adminSettingsStore.get().branding, (value): value is ReturnType<typeof adminSettingsStore.get>['branding'] => Boolean(value && typeof value === 'object' && typeof (value as { name?: unknown }).name === 'string'))
+  const [notificationPrefs, setNotificationPrefs] = useAdminRecoveryState('settings.notificationDraft', adminSettingsStore.get().notifications, (value): value is ReturnType<typeof adminSettingsStore.get>['notifications'] => Boolean(value && typeof value === 'object' && typeof (value as { bookings?: unknown }).bookings === 'boolean'))
   const togglePref = (key: keyof typeof notificationPrefs) => setNotificationPrefs(current => ({ ...current, [key]: !current[key] }))
   useEffect(() => {
     const refresh = () => setReadinessVersion(version => version + 1)
@@ -2523,6 +2577,9 @@ function SettingsPage({ show }: { show: (m: string) => void }) {
   const incompleteSections = setupSections.filter(section => !readiness[section].complete)
   const completedCount = setupSections.length - incompleteSections.length
   const activeReadiness = activeSection in readiness ? readiness[activeSection as SetupSection] : null
+  const selectSection = (section: string) => { setActiveSection(section); navigate(`/admin/settings/${section.replaceAll(' ', '-')}`) }
+
+  useEffect(() => { if (routeSection && SECTIONS.includes(routeSection) && routeSection !== activeSection) setActiveSection(routeSection) }, [activeSection, routeSection, SECTIONS, setActiveSection])
 
   return (
     <div className="flex flex-col gap-5 lg:flex-row" style={{ animation: 'fade-in-up 0.3s ease' }}>
@@ -2531,11 +2588,11 @@ function SettingsPage({ show }: { show: (m: string) => void }) {
           <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: incompleteSections.length ? T.gold : T.emerald }}>{incompleteSections.length ? 'Setup in progress' : 'Setup complete'}</div>
           <div className="mt-1 text-xl font-bold" style={{ color: T.text }}>{completedCount}/{setupSections.length}</div>
           <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: T.inputBg }}><div className="h-full rounded-full transition-[width]" style={{ width: `${setupSections.length ? (completedCount / setupSections.length) * 100 : 100}%`, background: incompleteSections.length ? T.gold : T.emerald }} /></div>
-          {incompleteSections.length > 0 && <button onClick={() => setActiveSection(incompleteSections[0])} className="mt-3 text-left text-[10px] font-semibold" style={{ color: T.gold }}>Continue setup →</button>}
+          {incompleteSections.length > 0 && <button onClick={() => selectSection(incompleteSections[0])} className="mt-3 text-left text-[10px] font-semibold" style={{ color: T.gold }}>Continue setup →</button>}
         </div>
         <div className="flex overflow-x-auto rounded-2xl lg:block" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
           {SECTIONS.map(s => (
-            <button key={s} onClick={() => setActiveSection(s)}
+            <button key={s} onClick={() => selectSection(s)}
               className="shrink-0 whitespace-nowrap border-r px-4 py-3 text-left text-xs capitalize transition-colors last:border-0 lg:block lg:w-full lg:border-b lg:border-r-0"
               style={{ borderColor: T.border, background: activeSection === s ? 'rgba(0,255,136,0.07)' : 'transparent', color: activeSection === s ? T.emerald : T.textSub }}>
               <span className="flex items-center justify-between gap-2"><span>{s}</span>{s in readiness && !readiness[s as SetupSection].complete && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-amber-400 px-1 text-[9px] font-black text-zinc-950">{readiness[s as SetupSection].issues.length}</span>}{s in readiness && readiness[s as SetupSection].complete && <span className="text-[10px]" style={{ color: T.emerald }}>✓</span>}</span>
@@ -2547,6 +2604,7 @@ function SettingsPage({ show }: { show: (m: string) => void }) {
       <div className="min-w-0 flex-1 space-y-5">
         {activeReadiness && !activeReadiness.complete && <div className="rounded-2xl border border-amber-400/25 bg-amber-400/[.07] p-4"><div className="flex items-start gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-amber-400 text-sm font-black text-zinc-950">!</span><div><div className="text-sm font-bold" style={{ color: T.gold }}>Setup required</div><p className="mt-1 text-xs" style={{ color: T.textSub }}>Complete these items before relying on this configuration in a live event.</p><div className="mt-3 flex flex-wrap gap-2">{activeReadiness.issues.map(issue => <span key={issue} className="rounded-full border border-amber-400/20 bg-black/10 px-2.5 py-1 text-[10px] text-amber-200">{issue}</span>)}</div></div></div></div>}
         {activeSection === 'team' && role === 'owner' && <TeamManagementPanel show={show} />}
+        {activeSection === 'test data cleanup' && role === 'owner' && <TestDataCleanupPanel show={show} />}
         {activeSection === 'organization' && (
           <div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
             <div className="text-xs font-mono uppercase tracking-wider mb-5" style={{ color: T.textMuted }}>Organization Details</div>
@@ -2752,7 +2810,7 @@ function TemplateLaunchPage() {
 
 export default function AdminDashboard({ onExitAdmin, initialPage = 'dashboard', onNavigate }: { onExitAdmin: () => void; initialPage?: Page; onNavigate?: (page: Page) => void }) {
   const [page, setPage] = useState<Page>(initialPage)
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useAdminRecoveryState('dashboard.sidebarCollapsed', false, value => typeof value === 'boolean')
   const [mobileOpen, setMobileOpen] = useState(false)
   const [isLg, setIsLg] = useState(typeof window !== 'undefined' ? window.innerWidth >= 1024 : true)
   const { msg, show } = useToast()
@@ -2776,7 +2834,7 @@ export default function AdminDashboard({ onExitAdmin, initialPage = 'dashboard',
   const contentLeft = collapsed ? 64 : 240
 
   const PAGES: Record<Page, React.ReactNode> = {
-    dashboard: <DashboardPage show={show} />,
+    dashboard: <DashboardPage show={show} onNavigate={navigatePage} />,
     bookings: <BookingsPage show={show} />,
     events: <SupabaseEventCatalogPage show={show} createSignal={eventCreateRequest}/>,
     payments: <PaymentDashboard show={show} />,
