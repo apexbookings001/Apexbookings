@@ -72,6 +72,14 @@ export type LibraryAsset = {
   from?: 'customer' | 'admin' // for chat attachments — sender role
 }
 
+type MediaUrlRecord = {
+  bucket?: unknown
+  path?: unknown
+  secure_url?: unknown
+  public_url?: unknown
+  metadata?: unknown
+}
+
 import { supabase } from '../../lib/supabase'
 import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { getWorkspaceMembership, requireOrganizationId } from '../../services/supabase/workspace'
@@ -100,10 +108,47 @@ function normalizedMimeType(file: File) {
 
 async function storedAssetUrl(bucket: string, path: string) {
   if (!supabase) throw new Error('Supabase is not configured.')
+  if (!bucket || !path) return ''
   if (bucket === 'event-images') return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl
   const signed = await supabase.storage.from(bucket).createSignedUrl(path, 24 * 60 * 60)
   if (signed.error) throw signed.error
   return signed.data.signedUrl
+}
+
+function usableUrl(value: unknown) {
+  if (typeof value !== 'string') return ''
+  const url = value.trim()
+  return /^(https?:|blob:|data:image\/)/i.test(url) ? url : ''
+}
+
+/**
+ * Resolve media stored by either the legacy URL model or the current
+ * bucket/path model. A missing object is represented by an empty URL so one
+ * broken record never prevents the rest of the media library from loading.
+ */
+export async function resolveMediaDisplayUrl(record: MediaUrlRecord): Promise<string> {
+  const metadata = record.metadata && typeof record.metadata === 'object'
+    ? record.metadata as Record<string, unknown>
+    : {}
+  const directUrl = usableUrl(record.secure_url)
+    || usableUrl(record.public_url)
+    || usableUrl(metadata.secure_url)
+    || usableUrl(metadata.secureUrl)
+    || usableUrl(metadata.public_url)
+    || usableUrl(metadata.publicUrl)
+    || usableUrl(metadata.url)
+  if (directUrl) return directUrl
+
+  try {
+    return await storedAssetUrl(String(record.bucket ?? ''), String(record.path ?? ''))
+  } catch {
+    return ''
+  }
+}
+
+function safeErrorMessage(error: unknown) {
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') return error.message
+  return error instanceof Error ? error.message : 'Unable to load the media library.'
 }
 
 function imageDimensions(url: string): Promise<{ width?: number; height?: number }> {
@@ -133,18 +178,21 @@ export const mediaLibraryStore = {
   hydrate: async () => {
     if (!supabase) throw new Error('Supabase is not configured.')
     const client = supabase
+    cache.loading()
     try {
       const organizationId = requireOrganizationId()
+      if (import.meta.env.DEV) console.debug('[media-library] loading records', { organizationId })
       const { data, error } = await client.from('media').select('*').eq('organization_id', organizationId).is('deleted_at', null).eq('is_chat_media', false).order('created_at', { ascending: false })
       if (error) throw error
       const assets = await Promise.all((data ?? []).map(async row => {
-        const metadata = (row.metadata ?? {}) as Partial<LibraryAsset>
+        const metadata = (row.metadata ?? {}) as Partial<LibraryAsset> & Record<string, unknown>
+        const url = await resolveMediaDisplayUrl(row)
         return {
           id: row.id,
-          name: row.original_name ?? metadata.name ?? row.path.split('/').at(-1) ?? 'file',
-          url: await storedAssetUrl(row.bucket, row.path),
-          bucket: row.bucket,
-          path: row.path,
+          name: row.original_name ?? metadata.name ?? String(row.path ?? '').split('/').at(-1) ?? 'file',
+          url,
+          bucket: String(row.bucket ?? ''),
+          path: String(row.path ?? ''),
           category: row.category ?? metadata.category ?? 'Other',
           mimeType: row.mime_type ?? 'application/octet-stream',
           size: Number(row.size_bytes ?? 0),
@@ -156,9 +204,17 @@ export const mediaLibraryStore = {
           eventIds: metadata.eventIds ?? [],
         } as LibraryAsset
       }))
+      if (import.meta.env.DEV) {
+        const missingUrlCount = assets.filter(asset => !asset.url).length
+        console.debug('[media-library] records loaded', { organizationId, recordCount: assets.length, missingUrlCount })
+      }
       cache.set(assets)
       return assets
     } catch (error) {
+      if (import.meta.env.DEV) {
+        const details = error && typeof error === 'object' ? error as { code?: unknown; message?: unknown } : {}
+        console.warn('[media-library] query failed', { code: details.code, message: safeErrorMessage(error) })
+      }
       cache.fail(error)
       throw error
     }

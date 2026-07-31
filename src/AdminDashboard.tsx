@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { PackageAllocationEditor } from './features/events/PackageAllocationEditor'
 import { CapacitySummary } from './features/events/CapacitySummary'
-import { adminEventStore, generateSeats, type ManagedEvent } from './features/events/adminEventStore'
+import { adminEventStore, duplicateManagedEvent, type ManagedEvent } from './features/events/adminEventStore'
 import { createBookingPageData, masterBookingTemplateStore } from './features/events/bookingTemplate'
 import { MediaLibraryPage } from './features/media/MediaLibraryPage'
 import { mediaLibraryStore } from './features/media/mediaLibraryStore'
@@ -245,6 +245,17 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobile
   mobileOpen: boolean; setMobileOpen: (v: boolean) => void
   setupIssueCount: number
 }) {
+  const [activity, setActivity] = useState(() => ({ bookings: 0, payments: 0, chat: 0, notifications: notificationStore.unreadCount() }))
+  useEffect(() => {
+    const refresh = () => setActivity({
+      bookings: ticketStore.list().filter(ticket => ticket.status === 'pending').length,
+      payments: paymentReviewStore.list().filter(payment => payment.status === 'pending' || payment.status === 'needs_more_information').length,
+      chat: supportStore.list().reduce((total, conversation) => total + conversation.unread, 0),
+      notifications: notificationStore.unreadCount(),
+    })
+    refresh()
+    return () => { const subscriptions = [ticketStore.subscribe(refresh), paymentReviewStore.subscribe(refresh), supportStore.subscribe(refresh), notificationStore.subscribe(refresh)]; subscriptions.forEach(unsubscribe => unsubscribe()) }
+  }, [])
   const nav = (
     <aside
       className="flex flex-col h-full transition-all duration-300"
@@ -287,8 +298,8 @@ function Sidebar({ page, setPage, collapsed, setCollapsed, mobileOpen, setMobile
       <nav className="flex-1 overflow-y-auto py-3 px-2">
         {NAV_ITEMS.map(item => {
           const active = page === item.id
-          const badge = item.id === 'settings' ? setupIssueCount : item.badge
-          const badgeColor = item.id === 'settings' ? T.gold : item.badgeColor
+          const badge = item.id === 'settings' ? setupIssueCount : item.id === 'bookings' ? activity.bookings : item.id === 'payments' ? activity.payments : item.id === 'chat' ? activity.chat : item.id === 'notifications' ? activity.notifications : item.badge
+          const badgeColor = item.id === 'settings' ? T.gold : item.id === 'bookings' || item.id === 'payments' || item.id === 'chat' || item.id === 'notifications' ? T.emerald : item.badgeColor
           return (
             <button
               key={item.id}
@@ -2757,7 +2768,7 @@ function EventBuilder({ event, onSave, onExit, show }: { event: ManagedEvent; on
   const [draft, setDraft] = useState('')
   const [paymentMethods, setPaymentMethods] = useState(event.setup?.paymentMethods ?? ['Card'])
   const save = (status: 'draft' | 'live') => { const next: ManagedEvent = { ...event, status, setup: { hostName: event.setup?.hostName ?? '', showType: event.setup?.showType ?? '', startTime: event.setup?.startTime ?? '', endTime: event.setup?.endTime ?? '', mapLink: event.setup?.mapLink ?? '', banners: event.setup?.banners ?? [], paymentMethods, sectionContent: content } }; onSave(next); return next }
-  const eventLink = `${window.location.origin}/e/${event.id.slice(0, 8)}`
+  const eventLink = `${window.location.origin}/events/${event.publication?.slug ?? ''}`
   const edit = (section: string) => { setSelected(section); setDraft(content[section]); }
   return <div className="min-h-[calc(100vh-8rem)]" style={{ animation: 'fade-in-up .25s ease' }}>
     <div className="sticky top-14 z-20 -mx-4 mb-5 flex flex-wrap items-center gap-2 border-b px-4 py-3 lg:-mx-6 lg:px-6" style={{ background: 'rgba(9,9,11,.94)', borderColor: T.border, backdropFilter: 'blur(16px)' }}>
@@ -2812,7 +2823,7 @@ function EventManagementPanel({ show }: { show: (message: string) => void }) {
   const [selected, setSelected] = useState<string[]>([])
   const refresh = () => { setEvents(adminEventStore.list()); setSelected([]) }
   const save = (event: ManagedEvent, message: string) => { adminEventStore.save(event); refresh(); show(message) }
-  const duplicate = (event: ManagedEvent) => { const copy = structuredClone(event); copy.id = crypto.randomUUID(); copy.title = `${event.title} (Copy)`; copy.status = 'draft'; copy.publication = { slug: `${event.publication?.slug ?? 'event'}-copy`, shortCode: `ABX${Math.random().toString(36).slice(2, 7).toUpperCase()}` }; copy.packages = copy.packages?.map(item => ({ ...item, id: crypto.randomUUID() })); copy.seats = generateSeats(copy.id, copy.packages ?? []); adminEventStore.save(copy); refresh(); show('Event duplicated as a draft') }
+  const duplicate = (event: ManagedEvent) => { const copy = duplicateManagedEvent(event, { title: `${event.title} Copy`, date: event.date, venue: event.venue, locale: event.locale ?? { countryCode: 'US', languageCode: 'en-US', currencyCode: 'USD' } }); adminEventStore.save(copy); refresh(); show('Event duplicated as a draft') }
   const remove = (event: ManagedEvent) => { if (!window.confirm(`Delete “${event.title}”? This immediately removes public access and cannot be undone.`)) return; adminEventStore.remove(event.id); refresh(); show('Event deleted') }
   const bulk = (action: 'publish' | 'archive' | 'delete' | 'duplicate' | 'export') => { const chosen = events.filter(event => selected.includes(event.id)); if (!chosen.length) return show('Select one or more events first'); if ((action === 'archive' || action === 'delete') && !window.confirm(`Apply this action to ${chosen.length} event(s)?`)) return; if (action === 'export') { const data = new Blob([JSON.stringify(chosen, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(data); link.download = 'apex-event-export.json'; link.click(); URL.revokeObjectURL(link.href); return show('Event data exported') } chosen.forEach(event => { if (action === 'publish') adminEventStore.save({ ...event, status: 'published', publication: { ...event.publication!, publishedAt: new Date().toISOString() } }); if (action === 'archive') adminEventStore.save({ ...event, status: 'archived', publication: { ...event.publication!, archivedAt: new Date().toISOString() } }); if (action === 'delete' && event.status === 'draft') adminEventStore.remove(event.id); if (action === 'duplicate') duplicate(event) }); refresh(); show(`${chosen.length} event${chosen.length > 1 ? 's' : ''} updated`) }
   if (!events.length) return null

@@ -8,6 +8,10 @@ export type BookingPackage = {
   id: string
   name: string
   price: number
+  originalPrice?: number
+  discountedPrice?: number | null
+  discountEnabled?: boolean
+  discountEndsAt?: string | null
   desc: string
   badge: string | null
   accent: string

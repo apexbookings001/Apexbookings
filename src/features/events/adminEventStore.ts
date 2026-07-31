@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase'
 import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
 import { seatLabelForPackage } from './seatLabels'
+import { defaultDiscountEndsAt, validatePackageDiscount } from './packagePricing'
 
 export type TimelineItem = { id: string; time: string; title: string; description: string }
 export type Testimonial = { id: string; name: string; photo: string; review: string; rating: number }
@@ -12,6 +13,10 @@ export type TicketPackage = {
   id: string
   name: string
   price: number
+  originalPrice?: number
+  discountedPrice?: number | null
+  discountEnabled?: boolean
+  discountEndsAt?: string | null
   description: string
   benefits: string[]
   color?: string
@@ -23,8 +28,7 @@ export type TicketPackage = {
 }
 export type StudioSeat = { id: string; eventId: string; number: number; label: string; packageId: string; status: SeatStatus }
 export type EventPaymentMethod = { enabled: boolean; hidden?: boolean; order?: number; instructions: string; destination?: string; qrCode?: string }
-export type EventPricingSettings = { serviceFee: number; taxPercentage: number }
-export type EventPaymentSettings = { usePlatformDefaults: boolean; defaultMethod: PaymentMethod; methods: Record<PaymentMethod, EventPaymentMethod>; cryptocurrencies: Record<string, CryptoCoinConfig>; pricing: EventPricingSettings }
+export type EventPaymentSettings = { usePlatformDefaults: boolean; defaultMethod: PaymentMethod; methods: Record<PaymentMethod, EventPaymentMethod>; cryptocurrencies: Record<string, CryptoCoinConfig> }
 export type EventPublication = { slug: string; shortCode: string; publishedAt?: string; scheduledFor?: string; archivedAt?: string }
 export type EventLocaleSettings = { countryCode: string; languageCode: string; currencyCode: string }
 export type EventSocialProofOverride = {
@@ -82,7 +86,6 @@ export const createDefaultPackages = (capacity: number): TicketPackage[] => {
 export const PLATFORM_PAYMENT_DEFAULTS: EventPaymentSettings = {
   usePlatformDefaults: true,
   defaultMethod: 'apple_gift_card',
-  pricing: { serviceFee: 5, taxPercentage: 10 },
   methods: {
     apple_gift_card: { enabled: true, instructions: 'Upload clear images of the front and back of your Apple Gift Card. Verification usually takes 10–20 minutes.' },
     paypal: { enabled: true, instructions: 'Send payment to the PayPal address below, then upload your payment confirmation.', destination: 'payments@apexbookings.com' },
@@ -113,17 +116,17 @@ export const PLATFORM_PAYMENT_DEFAULTS: EventPaymentSettings = {
 const paymentSettings = (settings?: EventPaymentSettings): EventPaymentSettings => {
   const defaults = JSON.parse(JSON.stringify(PLATFORM_PAYMENT_DEFAULTS)) as EventPaymentSettings
   if (!settings) return defaults
-  return { ...defaults, ...settings, pricing: { ...defaults.pricing, ...settings.pricing }, methods: { ...defaults.methods, ...settings.methods }, cryptocurrencies: { ...defaults.cryptocurrencies, ...settings.cryptocurrencies } }
+  return { ...defaults, ...settings, methods: { ...defaults.methods, ...settings.methods }, cryptocurrencies: { ...defaults.cryptocurrencies, ...settings.cryptocurrencies } }
 }
 
-export const slugifyEventName = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'event'
+export const slugifyEventName = (value: string) => value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’'`]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/(^-|-$)/g, '') || 'event'
 export const generateEventShortCode = () => {
   const bytes = crypto.getRandomValues(new Uint8Array(9))
   return `APX${Array.from(bytes, value => value.toString(36).padStart(2, '0')).join('').slice(0, 14).toUpperCase()}`
 }
 export const createEventPublication = (name: string): EventPublication => {
   const code = generateEventShortCode()
-  return { slug: `${slugifyEventName(name)}-${code.toLowerCase()}`, shortCode: code }
+  return { slug: slugifyEventName(name), shortCode: code }
 }
 
 export const createStudioContent = (input: { title: string; venue: string; date: string; hostName: string; mapLink: string; banners?: string[] }): EventContent => ({
@@ -187,7 +190,14 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
     .map((item, idx) => {
       const nextId = crypto.randomUUID()
       packageIds.set(item.id, nextId)
-      return { ...item, id: nextId, enabled: true, deletedAt: null, displayOrder: idx }
+      return {
+        ...item,
+        id: nextId,
+        enabled: true,
+        deletedAt: null,
+        displayOrder: idx,
+        discountEndsAt: item.discountEnabled && (!item.discountEndsAt || Date.parse(item.discountEndsAt) <= Date.now()) ? defaultDiscountEndsAt() : item.discountEndsAt,
+      }
     })
 
   // A duplicate gets independent seats for its new event and package IDs. It
@@ -201,7 +211,11 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
   }
   if (duplicate.bookingPage) {
     duplicate.bookingPage.timeline = duplicate.bookingPage.timeline.map(item => ({ ...item, id: crypto.randomUUID() }))
-    duplicate.bookingPage.packages = duplicate.bookingPage.packages.map(item => ({ ...item, id: crypto.randomUUID() }))
+    duplicate.bookingPage.packages = duplicate.bookingPage.packages.map(item => {
+      const nextId = packageIds.get(item.id) ?? crypto.randomUUID()
+      const expired = item.discountEnabled && (!item.discountEndsAt || Date.parse(item.discountEndsAt) <= Date.now())
+      return { ...item, id: nextId, discountEndsAt: expired ? defaultDiscountEndsAt() : item.discountEndsAt }
+    })
     duplicate.bookingPage.testimonials = duplicate.bookingPage.testimonials.map(item => ({ ...item, id: crypto.randomUUID() }))
     duplicate.bookingPage.faq = duplicate.bookingPage.faq.map(item => ({ ...item, id: crypto.randomUUID() }))
     duplicate.bookingPage.venueFacts = duplicate.bookingPage.venueFacts.map(item => ({ ...item, id: crypto.randomUUID() }))
@@ -275,9 +289,13 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
   if (!supabase) throw new Error('Supabase is not configured.')
   const orgId = requireOrganizationId()
   const prepared = ensureStudioEvent(event)
+  if (prepared.status === 'published') {
+    const invalid = (prepared.packages ?? []).find(pkg => pkg.enabled !== false && !pkg.deletedAt && validatePackageDiscount(pkg))
+    if (invalid) throw new Error(`${invalid.name}: ${validatePackageDiscount(invalid)}`)
+  }
 
   // ── Upsert the event row ────────────────────────────────────────────────────
-  const { error } = await supabase.from('events').upsert({
+  const { data: savedEvent, error } = await supabase.from('events').upsert({
     id: prepared.id,
     organization_id: orgId,
     slug: prepared.publication?.slug ?? slugifyEventName(prepared.title),
@@ -298,8 +316,9 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
     currency_code: prepared.locale?.currencyCode ?? 'USD',
     social_proof_override: prepared.socialProofOverride ?? {},
     studio: prepared,
-  }, { onConflict: 'id' })
+  }, { onConflict: 'id' }).select('slug,short_code').single()
   if (error) throw error
+  if (savedEvent?.slug && prepared.publication) prepared.publication.slug = String(savedEvent.slug)
 
   // ── Upsert surviving packages ───────────────────────────────────────────────
   const packages = (prepared.packages ?? []).filter(pkg => pkg.enabled !== false && !pkg.deletedAt)
@@ -309,6 +328,10 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
       event_id: prepared.id,
       name: pkg.name,
       price: pkg.price,
+      original_price: pkg.originalPrice ?? pkg.price,
+      discount_price: pkg.discountedPrice ?? null,
+      discount_enabled: Boolean(pkg.discountEnabled),
+      discount_ends_at: pkg.discountEndsAt ?? null,
       capacity: pkg.capacity,
       display_order: pkg.displayOrder ?? idx,
       seat_selection_enabled: pkg.seatSelectionEnabled !== false,

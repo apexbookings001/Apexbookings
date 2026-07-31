@@ -17,6 +17,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
   const [toast, setToast] = useState<SocialProofItem | null>(null)
   const [isMobile, setIsMobile] = useState(false)
   const [socialProofVersion, setSocialProofVersion] = useState(0)
+  const [socialProofReady, setSocialProofReady] = useState(isPreview || !eventId)
   const played = useRef(new Set<string>())
   const startingPrice = Math.min(...packages.map(item => item.price || Infinity))
   const available = seats.length > 0 
@@ -25,7 +26,15 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
   const notices = useMemo(() => { const settings = socialProofStore.settings(); if (settings.mode === 'live') return paymentReviewStore.list().filter(item => item.status === 'approved').map(item => ({ id: item.id, name: item.customer, city: settings.city, state: settings.state, ticketPackage: item.packageName, message: settings.message, duration: settings.duration, animation: settings.animation, position: settings.position, visible: true, createdAt: item.createdAt })); const configured = socialProofStore.list().filter(item => item.visible); return configured.length ? configured : isPreview ? socialProofStore.previewItems() : [socialProofStore.defaultItem()] }, [isPreview, socialProofVersion])
 
   useEffect(() => socialProofStore.subscribe(() => setSocialProofVersion(version => version + 1)), [])
-  useEffect(() => { if (eventId && !isPreview) void socialProofStore.hydratePublic(eventId).catch(() => undefined) }, [eventId, isPreview])
+  useEffect(() => {
+    if (!eventId || isPreview) return
+    let active = true
+    setSocialProofReady(false)
+    void socialProofStore.hydratePublic(eventId)
+      .catch(error => { if (import.meta.env.DEV) console.warn('[social-proof] settings not loaded', { eventId, error }) })
+      .finally(() => { if (active) setSocialProofReady(true) })
+    return () => { active = false }
+  }, [eventId, isPreview])
 
   // Detect mobile (md breakpoint = 768px)
   useEffect(() => {
@@ -37,7 +46,9 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
   }, [])
 
   useEffect(() => {
+    let frame = 0
     const update = () => {
+      frame = 0
       const hero = document.getElementById('hero')?.getBoundingClientRect()
       const tickets = document.getElementById('tickets')?.getBoundingClientRect()
       const footer = document.getElementById('footer')?.getBoundingClientRect()
@@ -45,9 +56,10 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
       setShowBar(Boolean(hero && tickets && hero.bottom < 0 && !footerVisible && (tickets.top > window.innerHeight || tickets.bottom < 0)))
     }
     update()
-    window.addEventListener('scroll', update, { passive: true })
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
+    window.addEventListener('scroll', schedule, { passive: true })
     window.addEventListener('resize', update, { passive: true })
-    return () => { window.removeEventListener('scroll', update); window.removeEventListener('resize', update) }
+    return () => { window.removeEventListener('scroll', schedule); window.removeEventListener('resize', update); if (frame) cancelAnimationFrame(frame) }
   }, [])
 
   const { isChatActive, setOverlayActive } = useSocialProofOverlay()
@@ -62,7 +74,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
 
   useEffect(() => {
     if (isChatActive) { setToast(null); return }
-    const stored = { ...socialProofStore.settings(), ...settingsOverride }
+    const stored = Object.fromEntries(Object.entries({ ...socialProofStore.settings(), ...(settingsOverride ?? {}) }).filter(([, value]) => value !== undefined && value !== null)) as typeof socialProofStore extends never ? never : ReturnType<typeof socialProofStore.settings>
     const isDefaultTemplatePreview = isPreview && !eventId
     const settings = isDefaultTemplatePreview ? {
       ...stored,
@@ -74,7 +86,12 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
       delay: Math.min(stored.delay || 8, 3),
     } : stored
     const visibleOnDevice = isMobile ? settings.mobileVisible : settings.desktopVisible
-    if (!settings.enabled || settings.paused || !visibleOnDevice || !settings.pageTargeting.includes('event') || !notices.length) { setToast(null); return }
+    const blocked = !settings.enabled ? 'disabled' : settings.paused ? 'paused' : !socialProofReady ? 'settings not loaded' : !visibleOnDevice ? 'mobile/desktop visibility disabled' : !settings.pageTargeting?.includes('event') ? 'page target mismatch' : !notices.length ? 'no active records' : null
+    if (blocked) {
+      if (import.meta.env.DEV) console.info('[social-proof] popup not displayed', { eventId, reason: blocked, settings, notices: notices.length, override: settingsOverride })
+      setToast(null)
+      return
+    }
     let timeout: ReturnType<typeof setTimeout>
     const next = () => {
       if (document.hidden) { timeout = setTimeout(next, settings.delay * 1000); return }
@@ -91,7 +108,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
     }
     timeout = setTimeout(next, settings.delay * 1000)
     return () => clearTimeout(timeout)
-  }, [eventId, isChatActive, isMobile, isPreview, notices, settingsOverride, socialProofVersion])
+  }, [eventId, isChatActive, isMobile, isPreview, notices, settingsOverride, socialProofReady, socialProofVersion])
 
   return (
     <>

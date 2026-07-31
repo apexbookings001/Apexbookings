@@ -195,19 +195,21 @@ export const supportStore = {
   clear: cache.reset,
   startAdminRealtime: (organizationId: string) => {
     if (!supabase) return () => undefined
-    if (adminRealtimeChannel) void supabase.removeChannel(adminRealtimeChannel)
-    adminRealtimeChannel = supabase.channel(`support-admin:${organizationId}`)
+    const client = supabase
+    if (adminRealtimeChannel) void client.removeChannel(adminRealtimeChannel)
+    adminRealtimeChannel = client.channel(`support-admin:${organizationId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'support_conversations', filter: `organization_id=eq.${organizationId}` }, () => { void supportStore.hydrate().catch(() => undefined) })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => { void supportStore.hydrate().catch(() => undefined) })
       .subscribe()
-    return () => { if (adminRealtimeChannel) { void supabase.removeChannel(adminRealtimeChannel); adminRealtimeChannel = null } }
+    return () => { if (adminRealtimeChannel) { void client.removeChannel(adminRealtimeChannel); adminRealtimeChannel = null } }
   },
   startPublicRealtime: (conversation: SupportConversation) => {
     if (!supabase || !conversation.accessToken) return () => undefined
-    if (publicRealtimeChannel) void supabase.removeChannel(publicRealtimeChannel)
-    publicRealtimeChannel = supabase.channel(`support-public:${conversation.id}`)
+    const client = supabase
+    if (publicRealtimeChannel) void client.removeChannel(publicRealtimeChannel)
+    publicRealtimeChannel = client.channel(`support-public:${conversation.id}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages', filter: `conversation_id=eq.${conversation.id}` }, () => { void supportStore.refreshPublic(conversation).catch(() => undefined) })
       .subscribe()
-    return () => { if (publicRealtimeChannel) { void supabase.removeChannel(publicRealtimeChannel); publicRealtimeChannel = null } }
+    return () => { if (publicRealtimeChannel) { void client.removeChannel(publicRealtimeChannel); publicRealtimeChannel = null } }
   },
 }

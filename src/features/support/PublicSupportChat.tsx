@@ -1067,7 +1067,8 @@ function ChatWindow({
           style={{
             display: 'flex', flexDirection: 'column',
             width: isDesktop ? 'min(980px, 100%)' : '100%',
-            height: isDesktop ? 'min(88vh, 720px)' : '100svh',
+            height: isDesktop ? 'min(88vh, 720px)' : '100dvh',
+            minHeight: 0,
             background: isDark ? '#111113' : '#F8FAFC',
             borderRadius: isDesktop ? 24 : 0,
             border: isDesktop ? `1px solid ${isDark ? 'rgba(255,255,255,0.07)' : '#E2E8F0'}` : 'none',
@@ -1134,7 +1135,7 @@ function ChatWindow({
           <div
             ref={containerRef}
             className={`chat-messages-scroll${isDark ? '' : ' chat-messages-scroll-light'}`}
-            style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 0, scrollBehavior: 'smooth', background: isDark ? 'transparent' : '#F8FAFC' }}
+            style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 0, background: isDark ? 'transparent' : '#F8FAFC' }}
           >
             {/* Welcome state */}
             {visibleMessages.length === 0 && !showTyping && (
@@ -1178,7 +1179,7 @@ function ChatWindow({
           </div>
 
           {/* Composer */}
-          <div style={{ background: isDark ? 'transparent' : '#FFFFFF', borderTop: `1px solid ${isDark ? 'rgba(255,255,255,0.07)' : '#E2E8F0'}` }}>
+          <div style={{ flexShrink: 0, paddingBottom: 'env(safe-area-inset-bottom, 0px)', background: isDark ? 'transparent' : '#FFFFFF', borderTop: `1px solid ${isDark ? 'rgba(255,255,255,0.07)' : '#E2E8F0'}` }}>
           <Composer
             conversationId={conversation.id}
             replyTo={replyTo}
@@ -1213,6 +1214,21 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
   const [dockOffset, setDockOffset] = useState(0)
   const btnRef = useRef<HTMLButtonElement>(null)
   const { setChatActive } = useSocialProofOverlay()
+
+  // A mobile chat is an isolated viewport, never a second page scroll area.
+  useEffect(() => {
+    if (!open) return
+    const scrollY = window.scrollY
+    const body = document.body
+    const html = document.documentElement
+    const previous = { bodyOverflow: body.style.overflow, bodyPosition: body.style.position, bodyTop: body.style.top, bodyWidth: body.style.width, htmlOverflow: html.style.overflow }
+    body.style.overflow = 'hidden'; html.style.overflow = 'hidden'
+    if (window.innerWidth < 640) { body.style.position = 'fixed'; body.style.top = `-${scrollY}px`; body.style.width = '100%' }
+    return () => {
+      body.style.overflow = previous.bodyOverflow; body.style.position = previous.bodyPosition; body.style.top = previous.bodyTop; body.style.width = previous.bodyWidth; html.style.overflow = previous.htmlOverflow
+      if (window.innerWidth < 640) window.scrollTo(0, scrollY)
+    }
+  }, [open])
 
   useEffect(() => {
     setChatActive(open)

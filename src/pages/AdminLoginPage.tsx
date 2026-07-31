@@ -49,8 +49,8 @@ export function AdminLoginPage() {
   }
 
   return (
-    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-[#09090B] p-5 text-zinc-50 sm:p-6">
-      <video autoPlay muted loop playsInline aria-hidden="true" className="absolute inset-0 h-full w-full object-cover">
+    <main className="admin-login-screen relative grid min-h-screen min-h-[100svh] min-h-[100dvh] place-items-center overflow-x-clip overflow-y-auto bg-[#09090B] p-5 text-zinc-50 sm:p-6">
+      <video autoPlay muted loop playsInline preload="metadata" aria-hidden="true" className="admin-login-video absolute inset-0 h-full w-full object-cover">
         <source src="/admin-login-background.mp4" type="video/mp4" />
       </video>
       <div className="absolute inset-0 bg-[linear-gradient(120deg,rgba(5,8,12,.84),rgba(5,8,12,.52)_48%,rgba(5,8,12,.78))]" />

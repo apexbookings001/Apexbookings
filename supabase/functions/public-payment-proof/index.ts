@@ -21,7 +21,7 @@ Deno.serve(async request => {
 
   const { data: payment, error: paymentError } = await admin
     .from('payments')
-    .select('id,booking_id,metadata,bookings!inner(events!inner(organization_id))')
+    .select('id,booking_id,metadata,bookings!inner(events!inner(organization_id,name),customers(full_name,email))')
     .eq('id', payload.paymentId)
     .is('deleted_at', null)
     .single()
@@ -77,6 +77,17 @@ Deno.serve(async request => {
   await admin.from('bookings').update({ payment_state: 'payment_submitted' }).eq('id', payment.booking_id)
   if (payload.bankRequestId) await admin.from('bank_transfer_requests').update({ status: 'payment_proof_submitted' }).eq('id', payload.bankRequestId).eq('booking_id', payment.booking_id)
   await admin.from('notifications').insert({ organization_id: organizationId, type: 'payment_proof', payload: { paymentId: payment.id, bookingId: payment.booking_id } })
+  const eventName = String(rawEvent?.name ?? 'Apex event')
+  const customer = Array.isArray(rawBooking?.customers) ? rawBooking.customers[0] : rawBooking?.customers
+  const { data: owners } = await admin.from('organization_members').select('user_id').eq('organization_id', organizationId).in('role', ['owner', 'admin']).is('disabled_at', null).is('deleted_at', null)
+  if (owners?.length) {
+    const { data: users } = await admin.auth.admin.listUsers({ perPage: 1000 })
+    const recipients = owners.map(owner => users?.users.find(user => user.id === owner.user_id)?.email).filter((email): email is string => Boolean(email))
+    for (const recipient of recipients) {
+      const { data: emailJob } = await admin.from('email_queue').insert({ organization_id: organizationId, booking_id: payment.booking_id, kind: 'payment_proof_submitted', recipient, subject: 'New payment proof submitted', payload: { publicAdminNotification: true, Customer: String(customer?.full_name ?? 'Event guest'), Email: String(customer?.email ?? ''), Event: eventName, 'Payment ID': payment.id, 'Booking ID': payment.booking_id, actionUrl: `${Deno.env.get('APP_ORIGIN') ?? ''}/admin/payments`, actionLabel: 'Review payment proof' } }).select('id').single()
+      if (emailJob?.id) void fetch(`${url}/functions/v1/app-api`, { method: 'POST', headers: { Authorization: `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'send-public-admin-email', emailId: emailJob.id }) })
+    }
+  }
   return json(request, { ok: true })
   } catch (error) {
     console.error('[public-payment-proof] Unexpected request failure', error)

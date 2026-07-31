@@ -60,21 +60,6 @@ export function PaymentWorkspace({ settings, onChange, close }: { settings: Even
           </label>
         </div>
 
-        <div className="mt-5 rounded-2xl border border-white/10 bg-white/[.03] p-4">
-          <p className="text-xs font-mono uppercase tracking-widest text-zinc-500">Ticket charges</p>
-          <p className="mt-1 text-xs text-zinc-400">Applied automatically to every package and shown before payment.</p>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <label className="text-xs text-zinc-400">
-              Service fee (USD)
-              <input type="number" min="0" step="0.01" value={settings.pricing.serviceFee} onChange={event => update({ pricing: { ...settings.pricing, serviceFee: Math.max(0, Number(event.target.value) || 0) } })} className={field}/>
-            </label>
-            <label className="text-xs text-zinc-400">
-              Tax percentage
-              <input type="number" min="0" max="100" step="0.1" value={settings.pricing.taxPercentage} onChange={event => update({ pricing: { ...settings.pricing, taxPercentage: Math.min(100, Math.max(0, Number(event.target.value) || 0)) } })} className={field}/>
-            </label>
-          </div>
-        </div>
-
         <div className="mt-5 grid gap-4 md:grid-cols-2">
           {[...methods].sort((a, b) => (settings.methods[a.id]?.order ?? methods.indexOf(a)) - (settings.methods[b.id]?.order ?? methods.indexOf(b))).map((method, index) => {
             const config = settings.methods[method.id] || { enabled: false, instructions: '' };

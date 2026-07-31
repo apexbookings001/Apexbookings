@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { type BookingPackage } from './bookingTemplate'
 import { createPackageFromType, PACKAGE_TYPE_LIBRARY, type PackageTypeDefinition } from './packageTypeLibrary'
 import { PackageTypeLibraryPicker } from './PackageTypeLibraryPicker'
+import { defaultDiscountEndsAt, packagePricing, validatePackageDiscount } from './packagePricing'
 
 export function VisualPackageEditor({
   packages,
@@ -48,6 +49,9 @@ export function VisualPackageEditor({
   if (targetIndex !== undefined) {
     const item = packages[targetIndex]
     if (!item) { setTargetIndex(undefined); return null }
+    const pricing = packagePricing(item)
+    const discountError = validatePackageDiscount(item)
+    const localEnd = item.discountEndsAt ? new Date(item.discountEndsAt).toISOString().slice(0, 16) : ''
 
     const applyPackageType = (type: PackageTypeDefinition) => {
       mutate(next => {
@@ -99,8 +103,12 @@ export function VisualPackageEditor({
         {input('Package name', item.name, v => mutate(next => { next[targetIndex].name = v }))}
         {input('Description', item.desc, v => mutate(next => { next[targetIndex].desc = v }), true)}
         <div className="grid grid-cols-2 gap-3">
-          {input('Price', String(item.price), v => mutate(next => { next[targetIndex].price = Math.max(0, Number(v) || 0) }))}
+          {input('Original Price', String(item.originalPrice ?? item.price), v => mutate(next => { const price = Math.max(0, Number(v) || 0); next[targetIndex].price = price; next[targetIndex].originalPrice = price }))}
           {input('Available seats (visual)', String(item.seats), v => mutate(next => { next[targetIndex].seats = Math.max(0, Number(v) || 0) }))}
+        </div>
+        <div className="rounded-xl border border-white/10 bg-white/[.025] p-3 space-y-3">
+          <div className="flex items-center justify-between gap-3"><div><div className="text-xs font-bold text-white">Enable Discount</div><div className="text-[10px] text-zinc-500">Show an expiring package offer.</div></div><button type="button" onClick={() => mutate(next => { const current = next[targetIndex]; current.discountEnabled = !current.discountEnabled; if (!current.discountEndsAt) current.discountEndsAt = defaultDiscountEndsAt() })} className={`h-6 w-11 rounded-full p-0.5 transition ${item.discountEnabled ? 'bg-emerald-400' : 'bg-white/10'}`}><span className={`block h-5 w-5 rounded-full bg-white transition ${item.discountEnabled ? 'translate-x-5' : ''}`} /></button></div>
+          {item.discountEnabled && <><div className="grid grid-cols-2 gap-3"><label className="block"><span className="text-[11px] text-zinc-400">Discounted Price</span><input type="number" min="0" step="0.01" value={item.discountedPrice ?? ''} onChange={e => mutate(next => { next[targetIndex].discountedPrice = Math.max(0, Number(e.target.value) || 0) })} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" /></label><label className="block"><span className="text-[11px] text-zinc-400">Discount End Date & Time</span><input type="datetime-local" value={localEnd} onChange={e => mutate(next => { next[targetIndex].discountEndsAt = e.target.value ? new Date(e.target.value).toISOString() : null })} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" /></label></div><div className="text-xs text-zinc-300">Original: {pricing.originalUnitPrice.toFixed(2)} · Customer pays: {pricing.chargedUnitPrice.toFixed(2)} · Savings: {pricing.discountAmount.toFixed(2)} ({pricing.discountPercentage}%){item.discountEndsAt ? ` · Ends: ${new Date(item.discountEndsAt).toLocaleString()}` : ''}</div>{discountError && <div className="text-xs text-red-300">{discountError}</div>}</>}
         </div>
 
         {/* Badge picker */}

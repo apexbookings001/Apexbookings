@@ -33,6 +33,10 @@ function syncTicketPackagesToBookingPage(
         ...existing,
         name: tp.name,
         price: tp.price,
+        originalPrice: tp.originalPrice ?? tp.price,
+        discountedPrice: tp.discountedPrice,
+        discountEnabled: tp.discountEnabled,
+        discountEndsAt: tp.discountEndsAt,
         seats: tp.capacity,
         desc: tp.description || existing.desc,
         benefits: tp.benefits?.length ? tp.benefits : existing.benefits,
@@ -43,6 +47,10 @@ function syncTicketPackagesToBookingPage(
       id: tp.id,
       name: tp.name,
       price: tp.price,
+      originalPrice: tp.originalPrice ?? tp.price,
+      discountedPrice: tp.discountedPrice,
+      discountEnabled: tp.discountEnabled,
+      discountEndsAt: tp.discountEndsAt,
       seats: tp.capacity,
       desc: tp.description || '',
       badge: null,
@@ -188,7 +196,12 @@ export function PackageAndSeatModal({
                     // published page picks them up immediately
                     const current = eventRef.current
                     if (current) {
-                      void adminEventStore.saveAsync({ ...current, bookingPage: updated })
+                      const packagePricing = new Map(next.map(item => [item.id, item]))
+                      const packages = current.packages?.map(item => {
+                        const visual = packagePricing.get(item.id)
+                        return visual ? { ...item, price: visual.originalPrice ?? visual.price, originalPrice: visual.originalPrice ?? visual.price, discountedPrice: visual.discountedPrice, discountEnabled: visual.discountEnabled, discountEndsAt: visual.discountEndsAt } : item
+                      })
+                      void adminEventStore.saveAsync({ ...current, packages, bookingPage: updated })
                     }
                   }}
                 />

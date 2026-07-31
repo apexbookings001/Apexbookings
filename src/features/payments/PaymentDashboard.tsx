@@ -94,7 +94,7 @@ export function PaymentDashboard({ show }: { show: (message: string) => void }) 
           kind: 'ticket_ready',
           to: selected.email,
           subject: 'Your approved Apex ticket is ready',
-          data: { 'Full Name': selected.customer, Event: selected.eventName, Package: selected.packageName, Seat: selected.seatLabel, Amount: selected.amount.toLocaleString(), 'Booking Reference': selected.reference, 'Ticket Number': result.ticketNumber },
+          data: { 'Full Name': selected.customer, Event: selected.eventName, Package: selected.packageName, Seat: selected.seatLabel, 'Original ticket price': String(selected.pricing?.originalUnitPrice ?? selected.amount), Discount: `${selected.pricing?.discountPercentage ?? 0}%`, 'Amount saved': String(selected.pricing?.discountAmount ?? 0), 'Final amount paid': selected.amount.toLocaleString(), Currency: String(selected.pricing?.currency ?? ''), 'Booking Reference': selected.reference, 'Ticket Number': result.ticketNumber },
           deepLink: `${window.location.origin}/ticket/${result.qrToken}`,
           actionLabel: 'View Verified Ticket',
         })

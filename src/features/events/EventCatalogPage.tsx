@@ -31,7 +31,7 @@ function formFromEvent(event?: ManagedEvent | null): SetupForm {
   }
 }
 
-function publicPath(event: ManagedEvent) { return `/e/${event.publication?.shortCode}` }
+function publicPath(event: ManagedEvent) { return `/events/${event.publication?.slug}` }
 
 export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: string) => void; createSignal?: number }) {
   const { role } = useAuth()

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useRef, useCallback, createContext, useContext, useSyncExternalStore } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, useCallback, createContext, useContext } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ProtectedRoute } from './components/routing/ProtectedRoute'
 import { AdminLoginPage } from './pages/AdminLoginPage'
@@ -12,6 +12,8 @@ import { analyticsStore } from './features/analytics/analyticsStore'
 import { DEFAULT_BOOKING_TEMPLATE, createBookingPageData, masterBookingTemplateStore, normalizeBookingPageData, type BookingPageData, type BookingSectionId, type BookingPackage } from './features/events/bookingTemplate'
 import { PACKAGE_TYPE_LIBRARY, createPackageFromType, type PackageTypeDefinition } from './features/events/packageTypeLibrary'
 import { mediaLibraryStore } from './features/media/mediaLibraryStore'
+import { MediaLibraryPicker } from './features/media/MediaLibraryPicker'
+import type { LibraryAsset } from './features/media/mediaLibraryStore'
 import { PublicConversionEnhancements } from './features/conversion/PublicConversionEnhancements'
 import { SocialProofOverlayProvider, useSocialProofOverlay } from './features/conversion/SocialProofOverlayContext'
 import { PublicOnboardingGuide } from './components/OnboardingGuide'
@@ -45,6 +47,8 @@ import { EventHero } from './components/EventHero'
 import { useAdminSessionRecovery } from './features/recovery/AdminSessionRecoveryProvider'
 import { PackageAndSeatModal } from './features/events/PackageAndSeatModal'
 import { PackageTypeLibraryPicker } from './features/events/PackageTypeLibraryPicker'
+import { DiscountCountdown } from './features/events/DiscountCountdown'
+import { packagePricing } from './features/events/packagePricing'
 import { useBookingSessionRecovery } from './features/recovery/BookingSessionRecoveryProvider'
 import { getAdminResumeRoute } from './features/recovery/recoveryStorage'
 const AdminDashboard = lazy(() => import('./AdminDashboard'))
@@ -846,9 +850,8 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const fileInputRef = useRef<HTMLInputElement>(null)
   const submitInFlightRef = useRef(false)
 
-  const serviceFee = payments.pricing.serviceFee || 0
-  const tax = tier.price * ((payments.pricing.taxPercentage || 0) / 100)
-  const total = tier.price + serviceFee + tax
+  const pricing = packagePricing(tier)
+  const total = pricing.totalDue
   const selectedSeat = loadedSeats.find(seat => seat.id === selectedSeatId) ?? null
   const selectedSeatLabel = selectedSeat?.label ?? (previewSeatNumber ? `R${String(previewSeatNumber).padStart(3, '0')}` : null)
   const selectedSeatIsValid = Boolean(
@@ -899,6 +902,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       bankTransferRequestId: bankRequestId,
       declineReason,
       scrollPosition: contentRef.current?.scrollTop ?? 0,
+      savedAt: Date.now(),
     })
   }, [bankRequestId, bookingId, checkoutIdempotencyKey, data.hero?.title, declineReason, eventId, info, locale.bcp47, locale.country, locale.currency, location.hash, location.pathname, location.search, payMethod, previewOnly, processing, proofFiles, recoveredState?.selectedCoinId, reviewRecordId, selectedCoin, selectedSeatId, serverBookingId, step, ticketId, tier.id, tier.name, tier.packageKey])
 
@@ -1067,6 +1071,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         seatLabel: selectedSeat.label,
         benefits: tier.benefits || [],
         amount: total,
+        pricing,
         paymentMethod: payMethod!,
         proofUrls: [],
       })
@@ -1121,6 +1126,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         seatLabel: selectedSeat.label,
         benefits: tier.benefits || [],
         amount: total,
+        pricing,
         paymentMethod: 'bank_transfer',
         proofUrls: [],
       })
@@ -1159,9 +1165,8 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       <div className="space-y-1.5 text-base md:text-sm">
         <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.package}</span><span className="font-semibold" style={{ color: t.text }}>{tier.name}</span></div>
         {selectedSeatLabel && <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.seat}</span><span className="font-mono text-sm md:text-xs" style={{ color: checkoutAccent }}>{selectedSeatLabel}</span></div>}
-        <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.subtotal}</span><span style={{ color: t.text }}>{formatPrice(tier.price)}</span></div>
-        {serviceFee > 0 && <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.serviceFee}</span><span style={{ color: t.text }}>{formatPrice(serviceFee)}</span></div>}
-        {tax > 0 && <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.taxes}</span><span style={{ color: t.text }}>{formatPrice(tax)}</span></div>}
+        <div className="flex justify-between"><span style={{ color: t.textSub }}>Original ticket total</span><span style={{ color: t.text }}>{formatPrice(pricing.originalTicketTotal)}</span></div>
+        {pricing.savings > 0 && <div className="flex justify-between"><span style={{ color: t.textSub }}>Discount savings</span><span style={{ color: '#00FF88' }}>-{formatPrice(pricing.savings)}</span></div>}
         <div className="flex justify-between pt-2 border-t font-bold" style={{ borderColor: t.border }}>
           <span style={{ color: t.text }}>{tr.booking.total}</span>
           <span style={{ color: checkoutAccent }}>{formatPrice(total)}</span>
@@ -1810,8 +1815,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   const canContinue = previewOnly
     ? Boolean(previewSeatNumber) && !processing
-    : Boolean(selectedSeat?.id)
-      && selectedSeat.status === 'available'
+    : selectedSeat?.status === 'available'
       && selectedSeat.eventId === eventId
       && selectedSeat.packageId === tier.packageKey
       && !seatsLoading
@@ -1942,7 +1946,7 @@ function TicketSection() {
   const [expiredState, setExpiredState] = useState<PersistedBookingState | null>(null)
   const [sessionExpired, setSessionExpired] = useState(false)
   const tiers = data.packages.map((tier, id) => ({ ...tier, packageKey: tier.id, id }))
-  const prices = tiers.map(tier => tier.price)
+  const prices = tiers.map(tier => packagePricing(tier).chargedUnitPrice)
   const lowestPrice = Math.min(...prices)
   const highestPrice = Math.max(...prices)
 
@@ -2003,9 +2007,10 @@ function TicketSection() {
         <LocalizedTicketHeading />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 reveal">
           {tiers.map((tier, index) => {
+            const tierPricing = packagePricing(tier)
             const visualAccent = t.isDark ? tier.accent : t.accent
             const visualGlow = t.isDark ? tier.glow : t.accentGlow
-            const valueLevel = highestPrice === lowestPrice ? 0 : (tier.price - lowestPrice) / (highestPrice - lowestPrice)
+            const valueLevel = highestPrice === lowestPrice ? 0 : (tierPricing.chargedUnitPrice - lowestPrice) / (highestPrice - lowestPrice)
             const isPremium = !t.isDark && valueLevel >= 0.75
             const isElevated = !t.isDark && valueLevel >= 0.35
             return (
@@ -2027,9 +2032,10 @@ function TicketSection() {
                 </div>
               </div>
               <div className="mb-2 inline-flex items-center justify-center rounded-2xl px-4 py-2.5 shadow-[0_8px_20px_rgba(15,23,42,0.08),inset_0_1px_0_rgba(255,255,255,0.65)]" style={{ background: t.isDark ? 'rgba(255,255,255,0.06)' : t.inputBg, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.12)' : t.border}` }}>
-                <span className="font-serif font-bold" style={{ color: visualAccent, fontSize: isPremium ? '2.9rem' : isElevated ? '2.65rem' : '2.4rem', textShadow: t.isDark ? 'none' : '0 1px 0 rgba(255,255,255,0.7)' }}>{formatPrice(tier.price)}</span>
+                <div><>{tierPricing.discountIsActive && <div className="text-sm line-through" style={{ color: t.textMuted }}>{formatPrice(tierPricing.originalUnitPrice)}</div>}</><span className="font-serif font-bold" style={{ color: visualAccent, fontSize: isPremium ? '2.9rem' : isElevated ? '2.65rem' : '2.4rem', textShadow: t.isDark ? 'none' : '0 1px 0 rgba(255,255,255,0.7)' }}>{formatPrice(tierPricing.chargedUnitPrice)}</span></div>
                 <span className="text-sm ml-1" style={{ color: t.textMuted }}>{tr.tickets.perTicket}</span>
               </div>
+              {tierPricing.discountIsActive && <div className="mb-4 min-h-10 text-center text-xs" style={{ color: '#00FF88' }}><div className="font-bold">Save {formatPrice(tierPricing.discountAmount)} — {tierPricing.discountPercentage}% OFF</div>{tierPricing.discountEndsAt && <DiscountCountdown endsAt={tierPricing.discountEndsAt} className="mt-1" />}</div>}
               <div className="text-xs font-mono mb-4 text-center" style={{ color: tier.seats < 20 ? '#EF4444' : t.textMuted }}><AnimatedMetric value={tier.seats} /> {tr.tickets.seatsRemaining}</div>
               <div className="w-full h-1.5 rounded-full mb-6 overflow-hidden" style={{ background: t.isDark ? t.border : '#F3F4F6' }}>
                 <div className="h-full rounded-full" style={{ width: `${100 - (tier.seats / 400) * 100}%`, background: visualAccent }} />
@@ -2256,13 +2262,12 @@ function FloatingChatButton({ eventId = 'default', isPreview = false, mode = 'pr
 
 function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, close }: { data: BookingPageData; target: EditorTarget | null; eventId?: string; onApply: (data: BookingPageData) => void; onDraftChange?: (data: BookingPageData) => void; close: () => void }) {
   const [draft, setDraft] = useState<BookingPageData>(() => structuredClone(data))
-  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [libraryTarget, setLibraryTarget] = useState<'image' | 'hero' | 'about' | null>(null)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [packageNotice, setPackageNotice] = useState<string | null>(null)
-  const mediaSnapshot = useSyncExternalStore(mediaLibraryStore.subscribe, mediaLibraryStore.snapshot, mediaLibraryStore.snapshot)
   const draftReady = useRef(false)
-  useEffect(() => { setDraft(structuredClone(data)); setLibraryOpen(false); setUploadProgress(0); setUploadError(null); setPackageNotice(null) }, [data, target])
+  useEffect(() => { setDraft(structuredClone(data)); setLibraryTarget(null); setUploadProgress(0); setUploadError(null); setPackageNotice(null) }, [data, target])
   useEffect(() => {
     if (!draftReady.current) { draftReady.current = true; return }
     const timer = window.setTimeout(() => onDraftChange?.(structuredClone(draft)), 120)
@@ -2354,32 +2359,21 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
     if (target.section === 'footer') next.footer = structuredClone(original.footer)
   })
   const visibleHeroImages = draft.hero.images.filter(Boolean)
-  type EditorMediaAsset = { id: string; libraryId?: string; name: string; url: string; mimeType: string }
-  const currentPageMedia: EditorMediaAsset[] = [
-    ...visibleHeroImages.map((url, index) => ({ id: `page-hero-${index}`, name: `Current hero image ${index + 1}`, url, mimeType: 'image/*' })),
-    ...(draft.about.image ? [{ id: 'page-about', name: 'Current show card media', url: draft.about.image, mimeType: draft.about.mediaType === 'video' ? 'video/*' : 'image/*' }] : []),
-    ...(draft.venue.image ? [{ id: 'page-venue', name: 'Current venue image', url: draft.venue.image, mimeType: 'image/*' }] : []),
-    ...(draft.cta.image ? [{ id: 'page-cta', name: 'Current call-to-action image', url: draft.cta.image, mimeType: 'image/*' }] : []),
-    ...draft.testimonials.flatMap((review, index) => review.avatar ? [{ id: `page-review-${index}`, name: `${review.name} review image`, url: review.avatar, mimeType: 'image/*' }] : []),
-    ...DEFAULT_BOOKING_TEMPLATE.hero.images.filter(Boolean).map((url, index) => ({ id: `default-hero-${index}`, name: `Default hero image ${index + 1}`, url, mimeType: 'image/*' })),
-    ...(DEFAULT_BOOKING_TEMPLATE.about.image ? [{ id: 'default-about', name: 'Default show card image', url: DEFAULT_BOOKING_TEMPLATE.about.image, mimeType: DEFAULT_BOOKING_TEMPLATE.about.mediaType === 'video' ? 'video/*' : 'image/*' }] : []),
-    ...(DEFAULT_BOOKING_TEMPLATE.venue.image ? [{ id: 'default-venue', name: 'Default venue image', url: DEFAULT_BOOKING_TEMPLATE.venue.image, mimeType: 'image/*' }] : []),
-    ...(DEFAULT_BOOKING_TEMPLATE.cta.image ? [{ id: 'default-cta', name: 'Default call-to-action image', url: DEFAULT_BOOKING_TEMPLATE.cta.image, mimeType: 'image/*' }] : []),
-    ...DEFAULT_BOOKING_TEMPLATE.testimonials.flatMap((review, index) => review.avatar ? [{ id: `default-review-${index}`, name: `Default ${review.name} review image`, url: review.avatar, mimeType: 'image/*' }] : []),
-  ]
-  const editorMediaAssets: EditorMediaAsset[] = [...mediaLibraryStore.listEventAssets().map(asset => ({ id: asset.id, libraryId: asset.id, name: asset.name, url: asset.url, mimeType: asset.mimeType })), ...currentPageMedia]
-    .filter((asset, index, assets) => Boolean(asset.url) && assets.findIndex(candidate => candidate.url === asset.url) === index)
-  const editorImageAssets = editorMediaAssets.filter(asset => asset.mimeType.startsWith('image/'))
-  const editorVisualAssets = editorMediaAssets.filter(asset => asset.mimeType.startsWith('image/') || asset.mimeType.startsWith('video/'))
-  const markAssetUsed = (asset: EditorMediaAsset) => { if (asset.libraryId) mediaLibraryStore.use(asset.libraryId, eventId) }
-  const imageControls = <><label className="mt-4 block rounded-xl border border-dashed border-white/20 p-3 text-center text-xs text-zinc-300">Upload from device<input hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }} /></label><button type="button" onClick={() => setLibraryOpen(value => !value)} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2 text-xs text-emerald-300">Choose from media library</button>{libraryOpen && <div className="mt-2 grid max-h-40 grid-cols-3 gap-2 overflow-y-auto">{editorImageAssets.map(asset => <button key={asset.id} type="button" onClick={() => { applyImage(asset.url); markAssetUsed(asset) }} aria-label={`Use image ${asset.name}`} className="overflow-hidden rounded-lg border border-white/10"><img src={asset.url} alt={asset.name} className="aspect-square w-full object-cover" /></button>)}</div>}{libraryOpen && mediaSnapshot.error && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">Media library could not load: {mediaSnapshot.error}</div>}<button type="button" onClick={() => applyImage('')} className="mt-2 text-xs text-red-300">Delete image</button></>
+  const selectLibraryAsset = (asset: LibraryAsset) => {
+    if (!asset.url) return
+    if (libraryTarget === 'hero') addHeroImage(asset.url)
+    else if (libraryTarget === 'about') applyAboutMedia(asset.url, asset.mimeType.startsWith('video/') ? 'video' : 'image')
+    else applyImage(asset.url)
+    mediaLibraryStore.use(asset.id, eventId)
+  }
+  const libraryPicker = <MediaLibraryPicker open={libraryTarget !== null} target={libraryTarget === 'hero' ? 'hero background' : libraryTarget === 'about' ? 'event card media' : target.section === 'testimonials' ? 'review avatar' : `${BOOKING_SECTION_LABELS[target.section]} image`} accept={libraryTarget === 'about' ? 'visual' : 'image'} onClose={() => setLibraryTarget(null)} onSelect={selectLibraryAsset} />
+  const imageControls = <><label className="mt-4 block rounded-xl border border-dashed border-white/20 p-3 text-center text-xs text-zinc-300">Upload from device<input hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }} /></label><button type="button" onClick={() => setLibraryTarget('image')} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2 text-xs text-emerald-300">Select from Library</button><button type="button" onClick={() => applyImage('')} className="mt-2 text-xs text-red-300">Delete image</button>{libraryPicker}</>
   const heroImageControls = target.section === 'hero' ? <div className="mt-4 rounded-2xl border border-white/10 bg-white/[.03] p-4">
     <div className="flex items-start justify-between gap-3"><div><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Hero images</div><div className="mt-1 text-[10px] leading-relaxed text-zinc-500">Every current banner is shown below. The first image is the opening background.</div></div><span className="shrink-0 rounded-full bg-emerald-400/10 px-2 py-1 text-[9px] font-bold text-emerald-300">{visibleHeroImages.length} images</span></div>
     {visibleHeroImages.length ? <div className="mt-3 grid grid-cols-2 gap-2">{visibleHeroImages.map((src, index) => <div key={`${src}-${index}`} className="group relative overflow-hidden rounded-xl border border-white/10 bg-black/40"><img src={src} alt={`Hero image ${index + 1}`} className="aspect-video w-full object-cover"/><div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/90 to-transparent px-2 pb-2 pt-6"><span className="rounded bg-black/60 px-1.5 py-0.5 text-[8px] font-bold uppercase text-white">{index === 0 ? 'Opening image' : `Slide ${index + 1}`}</span></div><button type="button" onClick={() => removeHeroImage(src)} aria-label={`Remove hero image ${index + 1}`} className="absolute right-1.5 top-1.5 rounded-lg bg-black/75 px-2 py-1 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove</button></div>)}</div> : <div className="mt-3 grid aspect-video place-items-center rounded-xl border border-dashed border-white/10 text-xs text-zinc-500">No hero images selected</div>}
     <label className="mt-3 block cursor-pointer rounded-xl bg-emerald-400 px-3 py-2.5 text-center text-xs font-bold text-zinc-950">Add images from device<input hidden multiple type="file" accept="image/*" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void uploadHeroImages(files) }} /></label>
-    <button type="button" onClick={() => setLibraryOpen(value => !value)} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Add from media library</button>
-    {libraryOpen && <div className="mt-2 grid max-h-48 grid-cols-2 gap-2 overflow-y-auto">{editorImageAssets.map(asset => <button key={asset.id} type="button" onClick={() => { addHeroImage(asset.url); markAssetUsed(asset) }} aria-label={`Add hero image ${asset.name}`} className="relative overflow-hidden rounded-lg border border-white/10"><img src={asset.url} alt={asset.name} className="aspect-video w-full object-cover"/><span className="absolute inset-x-1 bottom-1 truncate rounded bg-black/70 px-1.5 py-0.5 text-[8px] text-white">{asset.name}</span></button>)}</div>}
-    {libraryOpen && mediaSnapshot.error && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">Media library could not load: {mediaSnapshot.error}</div>}
+    <button type="button" onClick={() => setLibraryTarget('hero')} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Select from Library</button>
+    {libraryPicker}
     {uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3 text-xs text-zinc-400">Uploading hero images…</div>}
     {uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Hero media saved to Media Center.</div>}
     {uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}
@@ -2388,17 +2382,13 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
     <div className="flex items-center justify-between gap-3"><div><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Event card media</div><div className="mt-1 text-[10px] text-zinc-500">Images display in full. Videos play inline on the event page.</div></div><span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-emerald-300">{draft.about.mediaType === 'video' ? 'Video' : 'Image'}</span></div>
     {draft.about.image ? <div className="relative mt-3 overflow-hidden rounded-xl border border-white/10 bg-black/40">{draft.about.mediaType === 'video' ? <video src={draft.about.image} controls playsInline preload="metadata" className="aspect-video w-full object-contain" /> : <img src={draft.about.image} alt="Current event card media" className="aspect-video w-full object-contain" />}<button type="button" onClick={() => applyAboutMedia('', 'image')} className="absolute right-2 top-2 rounded-lg bg-black/80 px-2.5 py-1.5 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove media</button></div> : <div className="mt-3 grid aspect-video place-items-center rounded-xl border border-dashed border-white/10 text-xs text-zinc-500">No media selected</div>}
     <label className="mt-3 block cursor-pointer rounded-xl bg-emerald-400 px-3 py-2.5 text-center text-xs font-bold text-zinc-950">Upload image or video<input hidden type="file" accept="image/*,video/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }} /></label>
-    <button type="button" onClick={() => setLibraryOpen(value => !value)} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Choose from media library</button>
-    {libraryOpen && <div className="mt-2 grid max-h-48 grid-cols-2 gap-2 overflow-y-auto">{editorVisualAssets.map(asset => {
-      const isVideo = asset.mimeType.startsWith('video/')
-      return <button key={asset.id} type="button" onClick={() => { applyAboutMedia(asset.url, isVideo ? 'video' : 'image'); markAssetUsed(asset) }} aria-label={`Use ${isVideo ? 'video' : 'image'} ${asset.name}`} className="relative overflow-hidden rounded-lg border border-white/10 bg-black/30">{isVideo ? <video src={asset.url} muted playsInline preload="metadata" className="aspect-video w-full object-contain" /> : <img src={asset.url} alt="" className="aspect-video w-full object-contain" />}<span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 py-0.5 text-[8px] font-bold uppercase text-white">{isVideo ? 'Video' : 'Image'}</span></button>
-    })}</div>}
-    {libraryOpen && mediaSnapshot.error && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">Media library could not load: {mediaSnapshot.error}</div>}
+    <button type="button" onClick={() => setLibraryTarget('about')} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Select from Library</button>
+    {libraryPicker}
     {uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }} /></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}
     {uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Media uploaded successfully.</div>}
     {uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}
   </div> : null
-  const reviewImageControls = target.section === 'testimonials' && target.index !== undefined ? <div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Customer review image</div>{draft.testimonials[target.index].avatar ? <div className="relative mt-3 w-full overflow-hidden rounded-2xl border border-white/10 bg-black/40"><img src={draft.testimonials[target.index].avatar} alt={draft.testimonials[target.index].name} className="aspect-[16/9] w-full object-contain"/><button type="button" onClick={() => applyImage('')} className="absolute right-2 top-2 rounded-lg bg-black/80 px-2.5 py-1.5 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove image</button></div> : <div className="mt-3 grid aspect-video w-full place-items-center rounded-2xl border border-dashed border-white/10 bg-white/5 text-xs text-zinc-500">No customer image selected</div>}<div className="mt-3 grid gap-2 sm:grid-cols-2"><label className="cursor-pointer rounded-lg bg-emerald-400 px-3 py-2 text-center text-xs font-bold text-zinc-950">{draft.testimonials[target.index].avatar ? 'Replace image' : 'Upload image'}<input hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }}/></label><button type="button" onClick={() => setLibraryOpen(value => !value)} className="rounded-lg bg-white/5 px-3 py-2 text-xs text-emerald-300">Choose from library</button></div>{libraryOpen && <div className="mt-2 grid max-h-40 grid-cols-3 gap-2 overflow-y-auto">{editorImageAssets.map(asset => <button key={asset.id} type="button" onClick={() => { applyImage(asset.url); markAssetUsed(asset) }} aria-label={`Use customer image ${asset.name}`} className="overflow-hidden rounded-lg border border-white/10"><img src={asset.url} alt={asset.name} className="aspect-square w-full object-cover"/></button>)}</div>}{libraryOpen && mediaSnapshot.error && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">Media library could not load: {mediaSnapshot.error}</div>}{uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }}/></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}{uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Image uploaded successfully.</div>}{uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}</div> : null
+  const reviewImageControls = target.section === 'testimonials' && target.index !== undefined ? <><div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Customer review image</div>{draft.testimonials[target.index].avatar ? <div className="relative mt-3 w-full overflow-hidden rounded-2xl border border-white/10 bg-black/40"><img src={draft.testimonials[target.index].avatar} alt={draft.testimonials[target.index].name} className="aspect-[16/9] w-full object-contain"/><button type="button" onClick={() => applyImage('')} className="absolute right-2 top-2 rounded-lg bg-black/80 px-2.5 py-1.5 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove image</button></div> : <div className="mt-3 grid aspect-video w-full place-items-center rounded-2xl border border-dashed border-white/10 bg-white/5 text-xs text-zinc-500">No customer image selected</div>}<div className="mt-3 grid gap-2 sm:grid-cols-2"><label className="cursor-pointer rounded-lg bg-emerald-400 px-3 py-2 text-center text-xs font-bold text-zinc-950">{draft.testimonials[target.index].avatar ? 'Replace image' : 'Upload image'}<input hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }}/></label><button type="button" onClick={() => setLibraryTarget('image')} className="rounded-lg bg-white/5 px-3 py-2 text-xs text-emerald-300">Select from Library</button></div>{uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }}/></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}{uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Image uploaded successfully.</div>}{uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}</div>{libraryPicker}</> : null
   const reviewGalleryControls = target.section === 'testimonials' && target.index === undefined ? <div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Review card images</div><div className="mt-1 text-[10px] text-zinc-500">All current and default customer images are visible here.</div><div className="mt-3 grid grid-cols-2 gap-2">{draft.testimonials.map((review, index) => <div key={review.id} className="relative overflow-hidden rounded-xl border border-white/10 bg-black/40">{review.avatar ? <img src={review.avatar} alt={review.name} className="aspect-video w-full object-cover"/> : <div className="grid aspect-video place-items-center text-[10px] text-zinc-500">No image</div>}<div className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/90 to-transparent px-2 pb-2 pt-5 text-[9px] font-bold text-white">{review.name}</div>{review.avatar && <button type="button" onClick={() => removeReviewImage(index)} aria-label={`Remove image for ${review.name}`} className="absolute right-1.5 top-1.5 rounded-lg bg-black/75 px-2 py-1 text-[9px] font-bold text-red-200 hover:bg-red-500 hover:text-white">Remove</button>}</div>)}</div></div> : null
   const sectionLabel = BOOKING_SECTION_LABELS
   const headingInput = (key: string, defaultVal: string) => input('Section Heading', draft.sectionHeadings?.[key] ?? defaultVal, value => mutate(next => { if (!next.sectionHeadings) next.sectionHeadings = {}; next.sectionHeadings[key] = value }))
@@ -2809,7 +2799,7 @@ function BookingEditorRoute() {
       publication: { ...event.publication, publishedAt: event.publication.publishedAt ?? new Date().toISOString() },
     })
     setEvent(saved)
-    return `${window.location.origin}/e/${saved.publication!.shortCode}`
+    return `${window.location.origin}/events/${saved.publication!.slug}`
   }
   return <BookingSite
     mode="editor"
@@ -2827,7 +2817,7 @@ function BookingEditorRoute() {
       venue: event.venue,
       currency: event.locale?.currencyCode ?? 'USD',
       language: event.locale?.languageCode ?? 'en-US',
-      publicUrl: `${window.location.origin}/e/${event.publication?.shortCode ?? ''}`,
+      publicUrl: `${window.location.origin}/events/${event.publication?.slug ?? ''}`,
     } : undefined}
     onAdminClick={() => navigate(ROUTES.admin.events)}
     onSave={save}
@@ -2860,7 +2850,7 @@ function PublicEventRoute({ short = false }: { short?: boolean }) {
   if (loading && !event) return <main className="grid min-h-screen place-items-center bg-[#09090B] text-zinc-400">Loading event…</main>
   if (!event || event.status !== 'published') return <Navigate to="/" replace />
   const data = event.bookingPage ? normalizeBookingPageData(event.bookingPage) : createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
-  return <BookingSite mode="published" data={data} payments={event.payments} eventId={event.id} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} />
+  return <BookingSite mode="published" data={data} payments={event.payments} eventId={event.id} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} socialProofOverride={event.socialProofOverride} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} />
 }
 function DefaultPreviewRoute() { const [data, setData] = useState(() => masterBookingTemplateStore.load()); useEffect(() => { let active = true; void masterBookingTemplateStore.hydratePublic().then(next => { if (active) setData(next) }).catch(() => undefined); const unsubscribe = masterBookingTemplateStore.subscribe(() => setData(masterBookingTemplateStore.load())); return () => { active = false; unsubscribe() } }, []); return <BookingSite mode="preview" data={data} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} /> }
 function RootRoute() { const { session, loading } = useAuth(); if (loading) return <main className="grid min-h-screen place-items-center bg-[#09090B] text-zinc-400">Restoring session…</main>; return <Navigate to={session ? (getAdminResumeRoute(session.user.id) ?? ROUTES.admin.dashboard) : ROUTES.adminLogin} replace /> }

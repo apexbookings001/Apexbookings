@@ -975,7 +975,7 @@ export function SupportDashboard() {
   // ── Mobile layout ──────────────────────────────────────────────────────────
   if (isMobile) {
     return (
-      <div style={{ display: 'flex', height: 'calc(100vh - 9rem)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 20, overflow: 'hidden', background: '#0D0D0F' }}>
+      <div className="admin-mobile-chat-shell" style={{ display: 'flex', height: 'calc(100dvh - 9rem)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 20, overflow: 'hidden', background: '#0D0D0F' }}>
         {mobileView === 'list' ? (
           Sidebar
         ) : selected ? (

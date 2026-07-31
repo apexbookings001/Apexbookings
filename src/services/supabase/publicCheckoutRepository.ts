@@ -25,6 +25,7 @@ export type PublicCheckoutInput = {
   seatLabel: string
   benefits: string[]
   amount: number
+  pricing?: Record<string, unknown>
   paymentMethod: PaymentMethod
   proofUrls: string[]
 }
@@ -49,6 +50,7 @@ export async function createPublicCheckout(input: PublicCheckoutInput): Promise<
       seatLabel: input.seatLabel,
       packageName: input.packageName,
       amount: input.amount,
+      pricing: input.pricing,
       status: 'pending',
       createdAt,
       proofUrls: input.proofUrls,

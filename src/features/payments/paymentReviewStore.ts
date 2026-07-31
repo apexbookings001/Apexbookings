@@ -3,7 +3,7 @@ import { supabase } from '../../lib/supabase'
 import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
 
-export type PaymentReviewRecord = { id: string; reference: string; eventId: string; eventName: string; customer: string; email: string; method: PaymentMethod; seatLabel: string; packageName: string; amount: number; status: PaymentStatus; createdAt: string; expiresAt?: string; proofUrls: string[]; notes: string }
+export type PaymentReviewRecord = { id: string; reference: string; eventId: string; eventName: string; customer: string; email: string; method: PaymentMethod; seatLabel: string; packageName: string; amount: number; pricing?: Record<string, unknown>; status: PaymentStatus; createdAt: string; expiresAt?: string; proofUrls: string[]; notes: string }
 export type PaymentReviewUpdateResult = { ticketId?: string; ticketNumber?: string; qrToken?: string }
 
 const cache = createProtectedMemoryStore<PaymentReviewRecord[]>(() => [])
@@ -25,6 +25,7 @@ function fromRow(row: Record<string, unknown>): PaymentReviewRecord {
     seatLabel: String(metadata.seatLabel ?? ''),
     packageName: String(metadata.packageName ?? ''),
     amount: Number(row.amount ?? 0),
+    pricing: metadata.pricing as Record<string, unknown> | undefined,
     status: String(row.status) as PaymentStatus,
     createdAt: String(row.created_at),
     expiresAt: row.expires_at ? String(row.expires_at) : undefined,
@@ -45,6 +46,7 @@ async function persist(record: PaymentReviewRecord): Promise<PaymentReviewUpdate
       packageName: record.packageName,
       proofUrls: record.proofUrls,
       notes: record.notes,
+      pricing: record.pricing,
     },
   }).eq('id', record.id).select('booking_id').single()
   if (error) throw error
