@@ -840,9 +840,11 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const [declineReason, setDeclineReason] = useState(() => recoveredState?.declineReason ?? (previewOnly && initialStep === 'declined' ? 'The uploaded proof could not be verified.' : ''))
   const { msg: seatMsg, show: showSeatMsg } = useToast()
   const [bookingId] = useState(() => recoveredState?.bookingReference || `APEX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`)
+  const [checkoutIdempotencyKey] = useState(() => recoveredState?.checkoutIdempotencyKey || crypto.randomUUID())
   const contentRef = useRef<HTMLDivElement>(null)
   const ticketDownloadRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const submitInFlightRef = useRef(false)
 
   const serviceFee = payments.pricing.serviceFee || 0
   const tax = tier.price * ((payments.pricing.taxPercentage || 0) / 100)
@@ -892,12 +894,13 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       reviewRecordId,
       bookingId: serverBookingId,
       bookingReference: bookingId,
+      checkoutIdempotencyKey,
       ticketId,
       bankTransferRequestId: bankRequestId,
       declineReason,
       scrollPosition: contentRef.current?.scrollTop ?? 0,
     })
-  }, [bankRequestId, bookingId, data.hero?.title, declineReason, eventId, info, locale.bcp47, locale.country, locale.currency, location.hash, location.pathname, location.search, payMethod, previewOnly, processing, proofFiles, recoveredState?.selectedCoinId, reviewRecordId, selectedCoin, selectedSeatId, serverBookingId, step, ticketId, tier.id, tier.name, tier.packageKey])
+  }, [bankRequestId, bookingId, checkoutIdempotencyKey, data.hero?.title, declineReason, eventId, info, locale.bcp47, locale.country, locale.currency, location.hash, location.pathname, location.search, payMethod, previewOnly, processing, proofFiles, recoveredState?.selectedCoinId, reviewRecordId, selectedCoin, selectedSeatId, serverBookingId, step, ticketId, tier.id, tier.name, tier.packageKey])
 
   useEffect(() => {
     if (previewOnly) return
@@ -1015,13 +1018,29 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   const handleConfirm = async () => {
     if (previewOnly) { go('waiting'); return }
-    if (reviewRecordId || serverBookingId) { go('waiting'); return }
+    if (processing || submitInFlightRef.current) return
+    submitInFlightRef.current = true
+    if (reviewRecordId && serverBookingId && ticketId) {
+      setProcessing(true)
+      try {
+        await uploadPaymentProofs(reviewRecordId, proofFiles)
+        go('waiting')
+      } catch (error) {
+        showSeatMsg(error instanceof Error ? error.message : 'Payment proof upload failed. Please retry.')
+      } finally {
+        setProcessing(false)
+        submitInFlightRef.current = false
+      }
+      return
+    }
     if (!eventId) {
       showSeatMsg('Publish this event before testing a live payment.')
+      submitInFlightRef.current = false
       return
     }
     if (!selectedSeat || !tier.packageKey || !selectedSeatIsValid) {
       showSeatMsg('Choose an available seat before submitting your booking.')
+      submitInFlightRef.current = false
       return
     }
     setProcessing(true)
@@ -1032,6 +1051,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         package_id: tier.packageKey,
         event_id: eventId,
         bookingReference: bookingId,
+        idempotencyKey: checkoutIdempotencyKey,
         eventName: data.hero?.title || 'Event',
         eventBanner: data.hero?.images?.[0] || '',
         eventDate: data.hero?.date || '',
@@ -1050,17 +1070,18 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         paymentMethod: payMethod!,
         proofUrls: [],
       })
-      await uploadPaymentProofs(checkout.payment.id, proofFiles)
       paymentReviewStore.acceptRemote(checkout.payment)
       ticketStore.acceptRemote(checkout.ticket)
       setReviewRecordId(checkout.payment.id)
       setServerBookingId(checkout.bookingId)
       setTicketId(checkout.ticket.id)
+      await uploadPaymentProofs(checkout.payment.id, proofFiles)
       go('waiting')
     } catch (error) {
       showSeatMsg(error instanceof Error ? error.message : 'Payment submission failed. Please retry.')
     } finally {
       setProcessing(false)
+      submitInFlightRef.current = false
     }
   }
 
@@ -1084,6 +1105,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         package_id: tier.packageKey,
         event_id: eventId,
         bookingReference: bookingId,
+        idempotencyKey: checkoutIdempotencyKey,
         eventName: data.hero?.title || 'Event',
         eventBanner: data.hero?.images?.[0] || '',
         eventDate: data.hero?.date || '',

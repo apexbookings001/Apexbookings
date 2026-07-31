@@ -1,15 +1,11 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import nodemailer from 'npm:nodemailer@6.10.1'
 import QRCode from 'npm:qrcode@1.5.4'
+import { corsJson, corsPreflight } from '../_shared/cors.ts'
 
 type EmailJob = { id: string; kind: string; recipient: string; subject: string; payload: Record<string, unknown> }
 
-const cors = {
-  'Access-Control-Allow-Origin': Deno.env.get('APP_ORIGIN') ?? '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
-
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...cors, 'Content-Type': 'application/json' } })
+const json = (request: Request, body: unknown, status = 200) => corsJson(request, body, status)
 
 function escape(value: unknown) {
   return String(value ?? '').replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char] ?? char))
@@ -45,28 +41,29 @@ async function isAdmin(request: Request, admin: ReturnType<typeof createClient>)
 }
 
 Deno.serve(async request => {
-  if (request.method === 'OPTIONS') return new Response('ok', { headers: cors })
-  if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
+  if (request.method === 'OPTIONS') return corsPreflight(request)
+  try {
+  if (request.method !== 'POST') return json(request, { error: 'Method not allowed' }, 405)
 
   const url = Deno.env.get('SUPABASE_URL')
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-  if (!url || !serviceKey) return json({ error: 'Server configuration is incomplete' }, 500)
+  if (!url || !serviceKey) return json(request, { error: 'Server configuration is incomplete' }, 500)
   const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
   const payload = await request.json().catch(() => null) as { action?: string; emailId?: string } | null
   const publicAdminEmail = payload?.action === 'send-public-admin-email'
-  if ((payload?.action !== 'send-email' && !publicAdminEmail) || !payload.emailId) return json({ error: 'Invalid request' }, 400)
-  if (!publicAdminEmail && !await isAdmin(request, admin)) return json({ error: 'Unauthorized' }, 401)
+  if ((payload?.action !== 'send-email' && !publicAdminEmail) || !payload.emailId) return json(request, { error: 'Invalid request' }, 400)
+  if (!publicAdminEmail && !await isAdmin(request, admin)) return json(request, { error: 'Unauthorized' }, 401)
 
   const { data: job, error } = await admin.from('email_queue').select('id,kind,recipient,subject,payload').eq('id', payload.emailId).eq('status', 'queued').single()
-  if (error || !job) return json({ error: 'Email job was not found or is no longer queued' }, 404)
-  if (publicAdminEmail && job.payload?.publicAdminNotification !== true) return json({ error: 'Unauthorized' }, 401)
+  if (error || !job) return json(request, { error: 'Email job was not found or is no longer queued' }, 404)
+  if (publicAdminEmail && job.payload?.publicAdminNotification !== true) return json(request, { error: 'Unauthorized' }, 401)
 
   await admin.from('email_queue').update({ status: 'processing' }).eq('id', job.id)
   const smtpUser = Deno.env.get('GMAIL_SMTP_USER')
   const smtpPassword = Deno.env.get('GMAIL_SMTP_APP_PASSWORD')
   if (!smtpUser || !smtpPassword) {
     await admin.from('email_queue').update({ status: 'failed', error: 'Gmail SMTP secrets are not configured' }).eq('id', job.id)
-    return json({ error: 'Gmail SMTP secrets are not configured' }, 503)
+    return json(request, { error: 'Gmail SMTP secrets are not configured' }, 503)
   }
 
   try {
@@ -76,9 +73,13 @@ Deno.serve(async request => {
     const attachments = email.kind === 'ticket_ready' && actionUrl ? [{ filename: 'apex-ticket-qr.png', content: await QRCode.toBuffer(actionUrl, { type: 'png', width: 420, margin: 2, errorCorrectionLevel: 'H' }), cid: 'apex-ticket-qr' }] : []
     await transport.sendMail({ from: `Apex Bookings <${smtpUser}>`, to: email.recipient, subject: email.subject, html: renderEmail(email), attachments })
     await admin.from('email_queue').update({ status: 'sent', sent_at: new Date().toISOString(), error: null }).eq('id', job.id)
-    return json({ ok: true })
+    return json(request, { ok: true })
   } catch (mailError) {
     await admin.from('email_queue').update({ status: 'failed', error: mailError instanceof Error ? mailError.message : 'SMTP delivery failed' }).eq('id', job.id)
-    return json({ error: 'SMTP delivery failed' }, 502)
+    return json(request, { error: 'SMTP delivery failed' }, 502)
+  }
+  } catch (error) {
+    console.error('[app-api] Unexpected request failure', error)
+    return json(request, { error: 'Unable to deliver the email right now' }, 500)
   }
 })

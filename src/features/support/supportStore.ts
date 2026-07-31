@@ -17,6 +17,9 @@ export type SupportConversation = {
 const DRAFT_KEY = 'apex.support-drafts'
 const AVATAR_COLORS = ['#00FF88', '#8B5CF6', '#F59E0B', '#22D3EE', '#F472B6', '#EF4444', '#3B82F6']
 const cache = createProtectedMemoryStore<SupportConversation[]>(() => [])
+const openingConversations = new Map<string, Promise<SupportConversation>>()
+let adminRealtimeChannel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null
+let publicRealtimeChannel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null
 
 function readDrafts(): Record<string, ConversationDraft> {
   try { return JSON.parse(localStorage.getItem(DRAFT_KEY) ?? '{}') as Record<string, ConversationDraft> } catch { return {} }
@@ -107,14 +110,26 @@ export const supportStore = {
     }
   },
   getOrCreate: async (eventId: string, email: string, customer = 'Event Guest') => {
-    const existing = cache.get().find(conversation => conversation.eventId === eventId && conversation.email === email)
+    const normalizedEmail = email.trim().toLowerCase()
+    const existing = cache.get().find(conversation => conversation.eventId === eventId && conversation.email === normalizedEmail)
     if (existing) return existing
     if (!supabase) throw new Error('Supabase is not configured.')
-    const { data, error } = await supabase.rpc('open_public_support_conversation', { target_event_id: eventId, customer_email: email, customer_name: customer })
-    if (error) throw error
-    const conversation = conversationFromSnapshot(data as Record<string, unknown>)
-    cache.set([conversation, ...cache.get().filter(item => item.id !== conversation.id)])
-    return conversation
+    const key = `${eventId}:${normalizedEmail}`
+    const inFlight = openingConversations.get(key)
+    if (inFlight) return inFlight
+    const request = (async () => {
+      const args = { target_event_id: eventId, customer_email: normalizedEmail, customer_name: customer }
+      const { data, error } = await supabase.rpc('open_public_support_conversation', args)
+      if (error) {
+        if (import.meta.env.DEV) console.warn('[support] open_public_support_conversation failed', { code: error.code, message: error.message, details: error.details, hint: error.hint, args: { eventId, hasEmail: Boolean(normalizedEmail), hasCustomer: Boolean(customer) } })
+        throw error
+      }
+      const conversation = conversationFromSnapshot(data as Record<string, unknown>)
+      cache.set([conversation, ...cache.get().filter(item => item.id !== conversation.id)])
+      return conversation
+    })()
+    openingConversations.set(key, request)
+    try { return await request } finally { openingConversations.delete(key) }
   },
   refreshPublic: async (conversation: SupportConversation) => {
     if (!supabase || !conversation.accessToken) return conversation
@@ -140,17 +155,22 @@ export const supportStore = {
       if (!supabase) throw new Error('Supabase is not configured.')
       const attachment = payload.attachment ? await uploadChatAttachment(conversation, payload.attachment) : undefined
       const remotePayload = { ...payload, attachment }
+      let saved: Record<string, unknown> | null = null
       if (payload.from === 'customer') {
         if (!conversation.accessToken) throw new Error('This support conversation is not authorized.')
-        const { error } = await supabase.rpc('send_public_support_message', { conversation_access_token: conversation.accessToken, message_payload: remotePayload })
+        const { data, error } = await supabase.rpc('send_public_support_message', { conversation_access_token: conversation.accessToken, message_payload: remotePayload })
         if (error) throw error
+        saved = data as Record<string, unknown>
       } else {
-        const { error } = await supabase.from('chat_messages').insert({ conversation_id: id, sender_type: 'admin', sender_user_id: getWorkspaceMembership()?.userId, body: payload.body, message_type: payload.type ?? 'text', delivered_at: new Date().toISOString(), metadata: { attachment, replyTo: payload.replyTo } })
+        const { data, error } = await supabase.from('chat_messages').insert({ conversation_id: id, sender_type: 'admin', sender_user_id: getWorkspaceMembership()?.userId, body: payload.body, message_type: payload.type ?? 'text', delivered_at: new Date().toISOString(), metadata: { attachment, replyTo: payload.replyTo } }).select().single()
         if (error) throw error
+        saved = data as Record<string, unknown>
         await supabase.from('support_conversations').update({ last_activity_at: new Date().toISOString() }).eq('id', id)
       }
       const current = cache.get().find(item => item.id === id)
-      if (current) cache.set(cache.get().map(item => item.id === id ? { ...current, messages: current.messages.map(item => item.id === message.id ? { ...item, attachment, status: 'sent' } : item) } : item))
+      if (!saved?.id || !saved.conversation_id || !saved.sender_type) throw new Error('The saved support message was incomplete.')
+      const confirmed = messageFromSnapshot({ ...saved, ...((saved.metadata as Record<string, unknown> | null) ?? {}) })
+      if (current) cache.set(cache.get().map(item => item.id === id ? { ...current, lastActivity: confirmed.createdAt, messages: current.messages.map(item => item.id === message.id ? { ...confirmed, attachment, status: 'sent' } : item) } : item))
     })().catch(error => {
       const current = cache.get().find(item => item.id === id)
       if (current) cache.set(cache.get().map(item => item.id === id ? { ...current, messages: current.messages.map(item => item.id === message.id ? { ...item, status: 'failed' } : item) } : item))
@@ -173,4 +193,21 @@ export const supportStore = {
   clearDraft: (id: string) => { const drafts = readDrafts(); delete drafts[id]; writeDrafts(drafts) },
   colorForEmail,
   clear: cache.reset,
+  startAdminRealtime: (organizationId: string) => {
+    if (!supabase) return () => undefined
+    if (adminRealtimeChannel) void supabase.removeChannel(adminRealtimeChannel)
+    adminRealtimeChannel = supabase.channel(`support-admin:${organizationId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'support_conversations', filter: `organization_id=eq.${organizationId}` }, () => { void supportStore.hydrate().catch(() => undefined) })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages' }, () => { void supportStore.hydrate().catch(() => undefined) })
+      .subscribe()
+    return () => { if (adminRealtimeChannel) { void supabase.removeChannel(adminRealtimeChannel); adminRealtimeChannel = null } }
+  },
+  startPublicRealtime: (conversation: SupportConversation) => {
+    if (!supabase || !conversation.accessToken) return () => undefined
+    if (publicRealtimeChannel) void supabase.removeChannel(publicRealtimeChannel)
+    publicRealtimeChannel = supabase.channel(`support-public:${conversation.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_messages', filter: `conversation_id=eq.${conversation.id}` }, () => { void supportStore.refreshPublic(conversation).catch(() => undefined) })
+      .subscribe()
+    return () => { if (publicRealtimeChannel) { void supabase.removeChannel(publicRealtimeChannel); publicRealtimeChannel = null } }
+  },
 }

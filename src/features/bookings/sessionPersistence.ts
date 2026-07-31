@@ -20,6 +20,7 @@ export type PersistedBookingState = {
   reviewRecordId: string | null
   bookingId: string | null
   bookingReference: string
+  checkoutIdempotencyKey?: string
   ticketId: string | null
   bankTransferRequestId?: string | null
   declineReason?: string

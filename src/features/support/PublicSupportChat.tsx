@@ -1244,6 +1244,11 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
       setConversation(DEMO_CONVERSATION)
       return
     }
+    if (!customerEmail) {
+      setConversation(null)
+      setUnreadCount(0)
+      return
+    }
     let active = true
     const sync = () => {
       if (!customerEmail) { setConversation(null); setUnreadCount(0); return }
@@ -1261,8 +1266,7 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
 
   useEffect(() => {
     if (isPreview || !conversation?.accessToken) return
-    const timer = setInterval(() => void supportStore.refreshPublic(conversation).catch(() => undefined), 3000)
-    return () => clearInterval(timer)
+    return supportStore.startPublicRealtime(conversation)
   }, [conversation?.id, conversation?.accessToken, isPreview])
 
   // Listen for programmatic open events

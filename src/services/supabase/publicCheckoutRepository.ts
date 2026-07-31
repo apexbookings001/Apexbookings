@@ -9,6 +9,7 @@ export type PublicCheckoutInput = {
   package_id: string
   event_id: string
   bookingReference: string
+  idempotencyKey: string
   eventName: string
   eventBanner: string
   eventDate: string
@@ -28,14 +29,15 @@ export type PublicCheckoutInput = {
   proofUrls: string[]
 }
 
-export async function createPublicCheckout(input: PublicCheckoutInput): Promise<{ ticket: TicketRecord; payment: PaymentReviewRecord; bookingId: string }> {
+export async function createPublicCheckout(input: PublicCheckoutInput): Promise<{ ticket: TicketRecord; payment: PaymentReviewRecord; bookingId: string; restored: boolean }> {
   if (!supabase) throw new Error('Supabase is not configured.')
   const { data, error } = await supabase.rpc('create_public_checkout', { target_event_id: input.eventId, checkout: input })
   if (error) throw error
-  const result = data as { bookingId: string; paymentId: string; ticketId: string; bookingReference: string; ticketNumber: string }
+  const result = data as { bookingId: string; paymentId: string; ticketId: string; bookingReference: string; ticketNumber: string; restored?: boolean }
   const createdAt = new Date().toISOString()
   return {
     bookingId: result.bookingId,
+    restored: Boolean(result.restored),
     payment: {
       id: result.paymentId,
       reference: result.bookingReference,

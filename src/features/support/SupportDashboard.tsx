@@ -822,7 +822,7 @@ function ConversationPanel({
 
 // ─── Main SupportDashboard ────────────────────────────────────────────────────
 export function SupportDashboard() {
-  const { role } = useAuth()
+  const { role, organizationId } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [conversations, setConversations] = useState<SupportConversation[]>(() => supportStore.list())
@@ -842,6 +842,12 @@ export function SupportDashboard() {
   }, [])
 
   useEffect(() => supportStore.subscribe(() => setConversations(supportStore.list())), [])
+
+  useEffect(() => {
+    if (!organizationId) return
+    void supportStore.hydrate().catch(() => undefined)
+    return supportStore.startAdminRealtime(organizationId)
+  }, [organizationId])
 
   useEffect(() => {
     const routeId = location.pathname.startsWith('/admin/chat/') ? decodeURIComponent(location.pathname.slice('/admin/chat/'.length)) : null
