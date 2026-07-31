@@ -3,12 +3,25 @@ import type { BookingPageData } from './bookingTemplate'
 import { supabase } from '../../lib/supabase'
 import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
+import { seatLabelForPackage } from './seatLabels'
 
 export type TimelineItem = { id: string; time: string; title: string; description: string }
 export type Testimonial = { id: string; name: string; photo: string; review: string; rating: number }
 export type FaqItem = { id: string; question: string; answer: string }
-export type TicketPackage = { id: string; name: string; price: number; description: string; benefits: string[]; color?: string; capacity: number }
-export type StudioSeat = { id: string; number: number; packageId: string; status: SeatStatus }
+export type TicketPackage = {
+  id: string
+  name: string
+  price: number
+  description: string
+  benefits: string[]
+  color?: string
+  capacity: number
+  displayOrder?: number
+  seatSelectionEnabled?: boolean
+  enabled?: boolean
+  deletedAt?: string | null
+}
+export type StudioSeat = { id: string; eventId: string; number: number; label: string; packageId: string; status: SeatStatus }
 export type EventPaymentMethod = { enabled: boolean; hidden?: boolean; order?: number; instructions: string; destination?: string; qrCode?: string }
 export type EventPricingSettings = { serviceFee: number; taxPercentage: number }
 export type EventPaymentSettings = { usePlatformDefaults: boolean; defaultMethod: PaymentMethod; methods: Record<PaymentMethod, EventPaymentMethod>; cryptocurrencies: Record<string, CryptoCoinConfig>; pricing: EventPricingSettings }
@@ -53,26 +66,16 @@ export type ManagedEvent = {
 
 const id = () => crypto.randomUUID()
 const image = 'https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?w=1600&h=900&fit=crop&auto=format'
-const capacitySplit = (capacity: number) => [Math.floor(capacity / 2), Math.floor(capacity / 4), capacity - Math.floor(capacity / 2) - Math.floor(capacity / 4)]
-
-export const createStudioContent = (input: { title: string; venue: string; date: string; hostName: string; mapLink: string; banners?: string[] }): EventContent => ({
-  hero: { title: input.title, subtitle: `Join ${input.hostName} for an unforgettable live experience.`, date: input.date, venue: input.venue, hostName: input.hostName, ctaText: 'Book tickets', ctaLink: '#tickets', images: input.banners?.length ? input.banners : [image] },
-  about: { title: 'An unforgettable night awaits', description: `Experience ${input.title} live at ${input.venue}. Every detail has been curated for a memorable evening.`, image: 'https://images.unsplash.com/photo-1501962679900-bea61483313b?w=900&h=600&fit=crop&auto=format' },
-  venue: { name: input.venue, address: '', mapLink: input.mapLink },
-  timeline: [{ id: id(), time: '6:00 PM', title: 'Doors open', description: 'Welcome, security check, and guest arrival.' }, { id: id(), time: '8:00 PM', title: 'Main event', description: `${input.title} begins.` }],
-  testimonials: [{ id: id(), name: 'Apex Guest', photo: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=160&h=160&fit=crop&auto=format', review: 'A brilliantly produced event from start to finish.', rating: 5 }],
-  faq: [{ id: id(), question: 'How do I receive my ticket?', answer: 'Your ticket is delivered after your booking is confirmed.' }, { id: id(), question: 'Can I transfer my ticket?', answer: 'Contact the event organizer for transfer requests.' }],
-  cta: { heading: 'Ready for the experience?', description: `Secure your place at ${input.title}.`, buttonText: 'Book tickets now', buttonLink: '#tickets', background: image },
-  footer: { logo: 'Apex', contact: 'support@apexbookings.com', socialLinks: ['Instagram', 'X', 'Facebook'], copyright: `© ${new Date().getFullYear()} Apex Bookings. All rights reserved.`, text: 'Premium event experiences, beautifully booked.' },
-  sectionVisibility: { hero: true, about: true, venue: true, timeline: true, tickets: true, testimonials: true, faq: true, cta: true, footer: true },
-})
 
 export const createDefaultPackages = (capacity: number): TicketPackage[] => {
-  const [regular, vip, vvip] = capacitySplit(Math.max(0, capacity))
+  const total = Math.max(0, capacity)
+  const vvip = Math.floor(total * 0.1)
+  const vip = Math.floor(total * 0.3)
+  const regular = total - vip - vvip
   return [
-    { id: id(), name: 'Regular', price: 0, description: 'General event admission.', benefits: ['Event entry'], capacity: regular, color: '#71717A' },
-    { id: id(), name: 'VIP', price: 0, description: 'Enhanced event experience.', benefits: ['Priority entry', 'VIP access'], capacity: vip, color: '#00FF88' },
-    { id: id(), name: 'VVIP', price: 0, description: 'The complete premium experience.', benefits: ['Priority entry', 'Premium access'], capacity: vvip, color: '#F59E0B' },
+    { id: id(), name: 'Regular', price: 0, description: 'General event admission.', benefits: ['Event entry'], capacity: regular, color: '#71717A', displayOrder: 0, seatSelectionEnabled: true, enabled: true },
+    { id: id(), name: 'VIP', price: 0, description: 'Enhanced event experience.', benefits: ['Priority entry', 'VIP access'], capacity: vip, color: '#00FF88', displayOrder: 1, seatSelectionEnabled: true, enabled: true },
+    { id: id(), name: 'VVIP', price: 0, description: 'The complete premium experience.', benefits: ['Priority entry', 'Premium access'], capacity: vvip, color: '#F59E0B', displayOrder: 2, seatSelectionEnabled: true, enabled: true },
   ]
 }
 
@@ -112,6 +115,7 @@ const paymentSettings = (settings?: EventPaymentSettings): EventPaymentSettings 
   if (!settings) return defaults
   return { ...defaults, ...settings, pricing: { ...defaults.pricing, ...settings.pricing }, methods: { ...defaults.methods, ...settings.methods }, cryptocurrencies: { ...defaults.cryptocurrencies, ...settings.cryptocurrencies } }
 }
+
 export const slugifyEventName = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'event'
 export const generateEventShortCode = () => {
   const bytes = crypto.getRandomValues(new Uint8Array(9))
@@ -122,15 +126,31 @@ export const createEventPublication = (name: string): EventPublication => {
   return { slug: `${slugifyEventName(name)}-${code.toLowerCase()}`, shortCode: code }
 }
 
-export const generateSeats = (_eventId: string, packages: TicketPackage[], existing: StudioSeat[] = []): StudioSeat[] => {
-  const byNumber = new Map(existing.map(seat => [seat.number, seat]))
+export const createStudioContent = (input: { title: string; venue: string; date: string; hostName: string; mapLink: string; banners?: string[] }): EventContent => ({
+  hero: { title: input.title, subtitle: `Join ${input.hostName} for an unforgettable live experience.`, date: input.date, venue: input.venue, hostName: input.hostName, ctaText: 'Book tickets', ctaLink: '#tickets', images: input.banners?.length ? input.banners : [image] },
+  about: { title: 'An unforgettable night awaits', description: `Experience ${input.title} live at ${input.venue}. Every detail has been curated for a memorable evening.`, image: 'https://images.unsplash.com/photo-1501962679900-bea61483313b?w=900&h=600&fit=crop&auto=format' },
+  venue: { name: input.venue, address: '', mapLink: input.mapLink },
+  timeline: [{ id: id(), time: '6:00 PM', title: 'Doors open', description: 'Welcome, security check, and guest arrival.' }, { id: id(), time: '8:00 PM', title: 'Main event', description: `${input.title} begins.` }],
+  testimonials: [{ id: id(), name: 'Apex Guest', photo: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=160&h=160&fit=crop&auto=format', review: 'A brilliantly produced event from start to finish.', rating: 5 }],
+  faq: [{ id: id(), question: 'How do I receive my ticket?', answer: 'Your ticket is delivered after your booking is confirmed.' }, { id: id(), question: 'Can I transfer my ticket?', answer: 'Contact the event organizer for transfer requests.' }],
+  cta: { heading: 'Ready for the experience?', description: `Secure your place at ${input.title}.`, buttonText: 'Book tickets now', buttonLink: '#tickets', background: image },
+  footer: { logo: 'Apex', contact: 'support@apexbookings.com', socialLinks: ['Instagram', 'X', 'Facebook'], copyright: `© ${new Date().getFullYear()} Apex Bookings. All rights reserved.`, text: 'Premium event experiences, beautifully booked.' },
+  sectionVisibility: { hero: true, about: true, venue: true, timeline: true, tickets: true, testimonials: true, faq: true, cta: true, footer: true },
+})
+
+export const generateSeats = (eventId: string, packages: TicketPackage[], existing: StudioSeat[] = []): StudioSeat[] => {
   let number = 1
-  return packages.flatMap(pkg => Array.from({ length: Math.max(0, pkg.capacity) }, () => {
-    const previous = byNumber.get(number)
-    const seat = { id: previous?.id ?? id(), number, packageId: pkg.id, status: previous?.status ?? 'available' as SeatStatus }
-    number += 1
-    return seat
-  }))
+  return packages
+    .filter(pkg => pkg.enabled !== false && pkg.deletedAt == null)
+    .flatMap(pkg => {
+      const previousSeats = existing.filter(seat => seat.packageId === pkg.id).sort((a, b) => a.number - b.number)
+      return Array.from({ length: Math.max(0, pkg.capacity) }, (_, index) => {
+      const previous = previousSeats[index]
+      const seat = { id: previous?.id ?? id(), eventId, number, label: seatLabelForPackage(pkg.name, index + 1), packageId: pkg.id, status: previous?.status ?? 'available' as SeatStatus }
+      number += 1
+      return seat
+      })
+    })
 }
 
 export const ensureStudioEvent = (event: ManagedEvent): ManagedEvent => {
@@ -160,12 +180,20 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
   const duplicate = structuredClone(ensureStudioEvent(source))
   const eventId = crypto.randomUUID()
   const packageIds = new Map<string, string>()
-  duplicate.packages = duplicate.packages?.map(item => {
-    const nextId = crypto.randomUUID()
-    packageIds.set(item.id, nextId)
-    return { ...item, id: nextId }
-  })
-  duplicate.seats = duplicate.seats?.map(item => ({ ...item, id: crypto.randomUUID(), packageId: packageIds.get(item.packageId) ?? item.packageId, status: 'available' }))
+
+  // Only copy active (non-deleted, enabled) packages
+  duplicate.packages = duplicate.packages
+    ?.filter(pkg => pkg.enabled !== false && !pkg.deletedAt)
+    .map((item, idx) => {
+      const nextId = crypto.randomUUID()
+      packageIds.set(item.id, nextId)
+      return { ...item, id: nextId, enabled: true, deletedAt: null, displayOrder: idx }
+    })
+
+  // A duplicate gets independent seats for its new event and package IDs. It
+  // never copies sold/reserved states, bookings, or temporary reservations.
+  duplicate.seats = generateSeats(eventId, duplicate.packages ?? [])
+
   if (duplicate.content) {
     duplicate.content.timeline = duplicate.content.timeline.map(item => ({ ...item, id: crypto.randomUUID() }))
     duplicate.content.testimonials = duplicate.content.testimonials.map(item => ({ ...item, id: crypto.randomUUID() }))
@@ -195,6 +223,8 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
     status: 'draft',
     locale: change.locale,
     publication: createEventPublication(change.title),
+    // Copy capacity as an editable starting point
+    capacity: source.capacity ?? 0,
   }
 }
 
@@ -218,7 +248,7 @@ const fromDatabase = (row: EventRow): ManagedEvent => {
     date: String(row.starts_at ?? stored.date ?? ''),
     banner: row.banner_path ? String(row.banner_path) : stored.banner,
     sold: Number(stored.sold ?? 0),
-    capacity: Number(stored.capacity ?? 0),
+    capacity: row.capacity != null ? Number(row.capacity) : Number(stored.capacity ?? 0),
     revenue: Number(stored.revenue ?? 0),
     status: row.status as EventStatus,
     schedule: stored.schedule ?? [],
@@ -245,6 +275,8 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
   if (!supabase) throw new Error('Supabase is not configured.')
   const orgId = requireOrganizationId()
   const prepared = ensureStudioEvent(event)
+
+  // ── Upsert the event row ────────────────────────────────────────────────────
   const { error } = await supabase.from('events').upsert({
     id: prepared.id,
     organization_id: orgId,
@@ -255,6 +287,7 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
     starts_at: dateForDatabase(prepared.date),
     status: prepared.status,
     banner_path: prepared.banner,
+    capacity: prepared.capacity > 0 ? prepared.capacity : null,
     content: prepared.content ?? {},
     payment_settings: prepared.payments ?? {},
     scheduled_for: prepared.publication?.scheduledFor,
@@ -268,20 +301,47 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
   }, { onConflict: 'id' })
   if (error) throw error
 
-  const packages = prepared.packages ?? []
+  // ── Upsert surviving packages ───────────────────────────────────────────────
+  const packages = (prepared.packages ?? []).filter(pkg => pkg.enabled !== false && !pkg.deletedAt)
   if (packages.length) {
-    const { error: packageError } = await supabase.from('packages').upsert(packages.map(pkg => ({
+    const { error: packageError } = await supabase.from('packages').upsert(packages.map((pkg, idx) => ({
       id: pkg.id,
       event_id: prepared.id,
       name: pkg.name,
       price: pkg.price,
       capacity: pkg.capacity,
-      offer: JSON.stringify({ description: pkg.description, benefits: pkg.benefits, color: pkg.color }),
+      display_order: pkg.displayOrder ?? idx,
+      seat_selection_enabled: pkg.seatSelectionEnabled !== false,
+      enabled: true,
       deleted_at: null,
+      offer: JSON.stringify({ description: pkg.description, benefits: pkg.benefits, color: pkg.color }),
     })), { onConflict: 'id' })
     if (packageError) throw packageError
   }
 
+  // ── Soft-delete packages that are no longer in the active list ─────────────
+  // This is the core fix for the "Remove Package" bug.
+  // Any package row in Supabase for this event that is NOT in the current active
+  // list gets its deleted_at set, making the removal permanent.
+  const activePackageIds = packages.map(pkg => pkg.id)
+  if (activePackageIds.length > 0) {
+    // Soft-delete packages not in the active list
+    await supabase
+      .from('packages')
+      .update({ deleted_at: new Date().toISOString(), enabled: false, updated_at: new Date().toISOString() })
+      .eq('event_id', prepared.id)
+      .is('deleted_at', null)
+      .not('id', 'in', `(${activePackageIds.join(',')})`)
+  } else if (prepared.packages !== undefined) {
+    // All packages were removed — soft-delete everything
+    await supabase
+      .from('packages')
+      .update({ deleted_at: new Date().toISOString(), enabled: false, updated_at: new Date().toISOString() })
+      .eq('event_id', prepared.id)
+      .is('deleted_at', null)
+  }
+
+  // ── Upsert seats ────────────────────────────────────────────────────────────
   const seats = prepared.seats ?? []
   if (seats.length) {
     const { error: seatError } = await supabase.from('seats').upsert(seats.map(seat => ({
@@ -312,7 +372,7 @@ export const adminEventStore = {
       if (!supabase) throw new Error('Supabase is not configured.')
       cache.loading()
       const orgId = requireOrganizationId()
-      const { data, error } = await supabase.from('events').select('id,slug,name,venue,starts_at,banner_path,status,content,payment_settings,short_code,published_at,scheduled_for,archived_at,country_code,language_code,currency_code,social_proof_override,studio').eq('organization_id', orgId).is('deleted_at', null).order('created_at', { ascending: false })
+      const { data, error } = await supabase.from('events').select('id,slug,name,venue,starts_at,banner_path,status,content,payment_settings,short_code,published_at,scheduled_for,archived_at,country_code,language_code,currency_code,social_proof_override,studio,capacity').eq('organization_id', orgId).is('deleted_at', null).order('created_at', { ascending: false })
       if (error) throw error
       const events = (data ?? []).map(row => fromDatabase(row as EventRow))
       cache.set(events)

@@ -1,5 +1,5 @@
 import { supabase } from '../../lib/supabase'
-import { BOOKING_RESUME_WINDOW_MS, RECOVERY_VERSION } from '../recovery/recoveryStorage'
+import { BOOKING_RESUME_WINDOW_MS } from '../recovery/recoveryStorage'
 
 export type PersistedBookingState = {
   recoveryVersion: 1
@@ -10,7 +10,7 @@ export type PersistedBookingState = {
   packageId: string
   quantity: number
   step: string
-  selectedSeat: number | null
+  selectedSeatId: string | null
   info: { name: string; email: string }
   locale?: { country: string; language: string; currency: string }
   payMethod: string | null
@@ -27,7 +27,13 @@ export type PersistedBookingState = {
   lastActiveAt: number
   expiresAt: number
   updatedAt: string
+  savedAt: number
 }
+
+// Keep the persisted wire version accepted by the deployed recovery RPC. Old
+// label-only payloads are still discarded by the required selectedSeatId and
+// savedAt fields below.
+const BOOKING_RECOVERY_VERSION = 1
 
 export type BookingRecoveryResult = { status: 'active'; state: PersistedBookingState } | { status: 'expired'; state: PersistedBookingState } | { status: 'missing'; state: null }
 
@@ -52,13 +58,15 @@ function readToken(eventId: string) { return readStorage(tokenKey(eventId)) }
 function validState(value: unknown, eventId: string): value is PersistedBookingState {
   if (!value || typeof value !== 'object') return false
   const state = value as Partial<PersistedBookingState>
-  return state.recoveryVersion === RECOVERY_VERSION
+  return state.recoveryVersion === BOOKING_RECOVERY_VERSION
     && state.eventId === eventId
     && typeof state.route === 'string'
     && typeof state.step === 'string'
     && typeof state.packageIndex === 'number'
     && typeof state.bookingReference === 'string'
     && typeof state.expiresAt === 'number'
+    && typeof state.savedAt === 'number'
+    && (state.selectedSeatId === null || typeof state.selectedSeatId === 'string')
     && Boolean(state.info && typeof state.info.name === 'string' && typeof state.info.email === 'string')
 }
 
@@ -102,7 +110,7 @@ async function syncRemote(eventId: string) {
 export const sessionPersistence = {
   save(state: Omit<PersistedBookingState, 'recoveryVersion' | 'updatedAt' | 'lastActiveAt' | 'expiresAt'>) {
     const now = Date.now()
-    const payload: PersistedBookingState = { ...state, recoveryVersion: RECOVERY_VERSION, lastActiveAt: now, expiresAt: now + BOOKING_RESUME_WINDOW_MS, updatedAt: new Date(now).toISOString() }
+    const payload: PersistedBookingState = { ...state, recoveryVersion: BOOKING_RECOVERY_VERSION, lastActiveAt: now, expiresAt: now + BOOKING_RESUME_WINDOW_MS, updatedAt: new Date(now).toISOString(), savedAt: now }
     memory.set(state.eventId, payload)
     writeStorage(stateKey(state.eventId), JSON.stringify(payload))
     const current = timers.get(state.eventId)

@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { adminEventStore, type ManagedEvent } from './features/events/adminEventStore'
+import { PackageAllocationEditor } from './features/events/PackageAllocationEditor'
+import { CapacitySummary } from './features/events/CapacitySummary'
+import { adminEventStore, generateSeats, type ManagedEvent } from './features/events/adminEventStore'
 import { createBookingPageData, masterBookingTemplateStore } from './features/events/bookingTemplate'
 import { MediaLibraryPage } from './features/media/MediaLibraryPage'
 import { mediaLibraryStore } from './features/media/mediaLibraryStore'
@@ -1096,32 +1098,65 @@ function LegacyEventsPage({ show, createSignal = 0 }: { show: (m: string) => voi
         </div>
       )}
 
-      {/* Step: Seat Arrangement */}
-      {wizStep === 'seats' && (
-        <div className="rounded-2xl p-6 space-y-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
-          <div className="text-xs font-mono uppercase tracking-wider" style={{ color: T.textMuted }}>Total Seat Count</div>
-          <p className="text-sm" style={{ color: T.textSub }}>Enter the total number of seats. The system will generate seat numbers (001, 002, …) automatically.</p>
-          <div className="flex items-center gap-4">
-            <input type="number" min={1} max={10000} className="w-40 px-4 py-3 rounded-xl text-sm font-mono outline-none" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}
-              value={form.totalSeats} onChange={e => setForm(p => ({ ...p, totalSeats: Math.max(1, parseInt(e.target.value)||1) }))}/>
-            <span className="text-sm" style={{ color: T.textMuted }}>seats → Seat 001 to Seat {String(form.totalSeats).padStart(3,'0')}</span>
-          </div>
-          {/* Preview first few */}
-          <div>
-            <div className="text-xs font-mono uppercase tracking-wider mb-2" style={{ color: T.textMuted }}>Preview</div>
-            <div className="flex flex-wrap gap-1.5">
-              {Array.from({ length: Math.min(20, form.totalSeats) }, (_, i) => (
-                <div key={i} className="w-12 h-10 rounded-lg flex items-center justify-center text-[10px] font-mono" style={{ background: T.bg3, border: `1px solid ${T.border}`, color: T.textMuted }}>
-                  {String(i+1).padStart(3,'0')}
-                </div>
-              ))}
-              {form.totalSeats > 20 && <div className="w-12 h-10 rounded-lg flex items-center justify-center text-[10px]" style={{ background: T.bg3, border: `1px dashed ${T.border}`, color: T.textMuted }}>+{form.totalSeats-20}</div>}
+      {/* Step: Seat Arrangement — now uses CapacitySummary + PackageAllocationEditor */}
+      {wizStep === 'seats' && editingId && (
+        <div className="space-y-5" style={{ animation: 'fade-in-up 0.25s ease' }}>
+          <div className="rounded-2xl p-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
+            <div className="text-xs font-mono uppercase tracking-wider mb-1" style={{ color: T.textMuted }}>Show Capacity</div>
+            <p className="text-sm mb-4" style={{ color: T.textSub }}>Set the total venue capacity. Package seat allocations must not exceed this number.</p>
+            <div className="flex items-center gap-4">
+              <input type="number" min={0} max={100000}
+                className="w-40 px-4 py-3 rounded-xl text-sm font-mono outline-none"
+                style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}
+                value={form.totalSeats}
+                onChange={e => setForm(p => ({ ...p, totalSeats: Math.max(0, parseInt(e.target.value) || 0) }))}
+              />
+              <span className="text-sm" style={{ color: T.textMuted }}>total seats</span>
             </div>
           </div>
+          {form.totalSeats > 0 && (
+            <CapacitySummary eventId={editingId} capacity={form.totalSeats} />
+          )}
+          {(() => {
+            const ev = events.find(e => e.id === editingId)
+            if (!ev) return null
+            return (
+              <PackageAllocationEditor
+                eventId={editingId}
+                packages={ev.packages ?? []}
+                capacity={form.totalSeats}
+                onChange={pkgs => {
+                  adminEventStore.save({ ...ev, packages: pkgs, capacity: form.totalSeats })
+                  setEvents(adminEventStore.list())
+                }}
+                onSave={async pkgs => {
+                  await adminEventStore.saveAsync({ ...ev, packages: pkgs, capacity: form.totalSeats })
+                  setEvents(adminEventStore.list())
+                }}
+              />
+            )
+          })()}
           <div className="flex gap-3">
-            <button onClick={() => setWizStep('info')} className="px-6 py-3 rounded-2xl text-sm" style={{ background: T.inputBg, color: T.textSub }}>← Back</button>
-            <button onClick={() => setWizStep('packages')} className="px-8 py-3 rounded-2xl font-bold text-sm" style={{ background: 'linear-gradient(135deg,#00FF88,#00C866)', color: '#09090B' }}>
-              Continue to Packages →
+            <button onClick={() => setWizStep('packages')} className="px-6 py-3 rounded-2xl text-sm" style={{ background: T.inputBg, color: T.textSub }}>← Back</button>
+            <button onClick={() => setWizStep('payments')} className="px-8 py-3 rounded-2xl font-bold text-sm" style={{ background: 'linear-gradient(135deg,#00FF88,#00C866)', color: '#09090B' }}>
+              Continue to Payments →
+            </button>
+          </div>
+        </div>
+      )}
+      {wizStep === 'seats' && !editingId && (
+        <div className="rounded-2xl p-6 space-y-5" style={{ background: T.cardSolid, border: `1px solid ${T.cardBorder}` }}>
+          <div className="text-xs font-mono uppercase tracking-wider" style={{ color: T.textMuted }}>Total Seat Count</div>
+          <p className="text-sm" style={{ color: T.textSub }}>Enter the total venue capacity. After saving the event you can configure package allocations and seat management in this same step.</p>
+          <div className="flex items-center gap-4">
+            <input type="number" min={1} max={100000} className="w-40 px-4 py-3 rounded-xl text-sm font-mono outline-none" style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}
+              value={form.totalSeats} onChange={e => setForm(p => ({ ...p, totalSeats: Math.max(1, parseInt(e.target.value)||1) }))}/>
+            <span className="text-sm" style={{ color: T.textMuted }}>total seats</span>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={() => setWizStep('packages')} className="px-6 py-3 rounded-2xl text-sm" style={{ background: T.inputBg, color: T.textSub }}>← Back</button>
+            <button onClick={() => setWizStep('payments')} className="px-8 py-3 rounded-2xl font-bold text-sm" style={{ background: 'linear-gradient(135deg,#00FF88,#00C866)', color: '#09090B' }}>
+              Continue to Payments →
             </button>
           </div>
         </div>
@@ -2777,7 +2812,7 @@ function EventManagementPanel({ show }: { show: (message: string) => void }) {
   const [selected, setSelected] = useState<string[]>([])
   const refresh = () => { setEvents(adminEventStore.list()); setSelected([]) }
   const save = (event: ManagedEvent, message: string) => { adminEventStore.save(event); refresh(); show(message) }
-  const duplicate = (event: ManagedEvent) => { const copy = structuredClone(event); copy.id = crypto.randomUUID(); copy.title = `${event.title} (Copy)`; copy.status = 'draft'; copy.publication = { slug: `${event.publication?.slug ?? 'event'}-copy`, shortCode: `ABX${Math.random().toString(36).slice(2, 7).toUpperCase()}` }; copy.packages = copy.packages?.map(item => ({ ...item, id: crypto.randomUUID() })); const packageIds = new Map((event.packages ?? []).map((item, index) => [item.id, copy.packages?.[index]?.id])); copy.seats = copy.seats?.map(item => ({ ...item, id: crypto.randomUUID(), packageId: packageIds.get(item.packageId) ?? item.packageId, status: 'available' })); adminEventStore.save(copy); refresh(); show('Event duplicated as a draft') }
+  const duplicate = (event: ManagedEvent) => { const copy = structuredClone(event); copy.id = crypto.randomUUID(); copy.title = `${event.title} (Copy)`; copy.status = 'draft'; copy.publication = { slug: `${event.publication?.slug ?? 'event'}-copy`, shortCode: `ABX${Math.random().toString(36).slice(2, 7).toUpperCase()}` }; copy.packages = copy.packages?.map(item => ({ ...item, id: crypto.randomUUID() })); copy.seats = generateSeats(copy.id, copy.packages ?? []); adminEventStore.save(copy); refresh(); show('Event duplicated as a draft') }
   const remove = (event: ManagedEvent) => { if (!window.confirm(`Delete “${event.title}”? This immediately removes public access and cannot be undone.`)) return; adminEventStore.remove(event.id); refresh(); show('Event deleted') }
   const bulk = (action: 'publish' | 'archive' | 'delete' | 'duplicate' | 'export') => { const chosen = events.filter(event => selected.includes(event.id)); if (!chosen.length) return show('Select one or more events first'); if ((action === 'archive' || action === 'delete') && !window.confirm(`Apply this action to ${chosen.length} event(s)?`)) return; if (action === 'export') { const data = new Blob([JSON.stringify(chosen, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(data); link.download = 'apex-event-export.json'; link.click(); URL.revokeObjectURL(link.href); return show('Event data exported') } chosen.forEach(event => { if (action === 'publish') adminEventStore.save({ ...event, status: 'published', publication: { ...event.publication!, publishedAt: new Date().toISOString() } }); if (action === 'archive') adminEventStore.save({ ...event, status: 'archived', publication: { ...event.publication!, archivedAt: new Date().toISOString() } }); if (action === 'delete' && event.status === 'draft') adminEventStore.remove(event.id); if (action === 'duplicate') duplicate(event) }); refresh(); show(`${chosen.length} event${chosen.length > 1 ? 's' : ''} updated`) }
   if (!events.length) return null

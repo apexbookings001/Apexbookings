@@ -5,6 +5,8 @@ import { AdminLoginPage } from './pages/AdminLoginPage'
 import { ROUTES } from './constants/routes'
 import { useAuth } from './features/auth/AuthContext'
 import { adminEventStore, PLATFORM_PAYMENT_DEFAULTS, type EventPaymentSettings, type EventSocialProofOverride } from './features/events/adminEventStore'
+import { PublicSeatSelector } from './features/events/PublicSeatSelector'
+import { isDatabaseSeatRecord, seatService, type SeatRecord } from './features/events/seatService'
 import type { PaymentMethod } from './types/domain'
 import { analyticsStore } from './features/analytics/analyticsStore'
 import { DEFAULT_BOOKING_TEMPLATE, createBookingPageData, masterBookingTemplateStore, normalizeBookingPageData, type BookingPageData, type BookingSectionId, type BookingPackage } from './features/events/bookingTemplate'
@@ -41,6 +43,8 @@ import { LocaleIndicator } from './components/LocaleIndicator'
 import { LanguageSwitcher } from './components/LanguageSwitcher'
 import { EventHero } from './components/EventHero'
 import { useAdminSessionRecovery } from './features/recovery/AdminSessionRecoveryProvider'
+import { PackageAndSeatModal } from './features/events/PackageAndSeatModal'
+import { PackageTypeLibraryPicker } from './features/events/PackageTypeLibraryPicker'
 import { useBookingSessionRecovery } from './features/recovery/BookingSessionRecoveryProvider'
 import { getAdminResumeRoute } from './features/recovery/recoveryStorage'
 const AdminDashboard = lazy(() => import('./AdminDashboard'))
@@ -805,18 +809,7 @@ function ConfettiRain() {
 // ─── Booking Modal ────────────────────────────────────────────────────────────
 type BStep = 'seats' | 'details' | 'payment' | 'waiting' | 'bank_waiting' | 'bank_details' | 'done' | 'declined'
 
-// Mock sold seats and package seat ranges
-const SOLD_SEATS: Record<number, number[]> = {
-  0: [3, 7, 12, 15, 22, 31, 45, 67, 78, 89],
-  1: [2, 5, 8, 11, 14, 17, 20, 23, 26, 29],
-  2: [1, 3, 5],
-}
-const OTHER_PKG_SEATS: Record<number, number[]> = {
-  0: [], // General uses all seats 1-312
-  1: [1, 2, 3, 4, 5], // some seats reserved for VVIP shown as other-pkg
-  2: [],
-}
-const TOTAL_SEATS: Record<number, number> = { 0: 100, 1: 60, 2: 20 }
+// Seat data is loaded live from Supabase via PublicSeatSelector.
 
 function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = false, recoveredState }: { tier: Omit<BookingPackage, 'id'> & { id: number; packageKey?: string }; onClose: () => void; initialStep?: BStep; previewOnly?: boolean; recoveredState?: PersistedBookingState | null }) {
   const { t } = useTheme()
@@ -827,7 +820,13 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const navigate = useNavigate()
   const bookingRecovery = useBookingSessionRecovery()
   const [step, setStep] = useState<BStep>(() => recoveredState?.step as BStep || initialStep)
-  const [selectedSeat, setSelectedSeat] = useState<number | null>(() => previewOnly ? 12 : recoveredState?.selectedSeat ?? null)
+  const [selectedSeatId, setSelectedSeatId] = useState<string | null>(() => previewOnly ? null : recoveredState?.selectedSeatId ?? null)
+  const [loadedSeats, setLoadedSeats] = useState<SeatRecord[]>([])
+  const [seatsLoading, setSeatsLoading] = useState(Boolean(!previewOnly && eventId && tier.packageKey))
+  const [seatRefreshRevision, setSeatRefreshRevision] = useState(0)
+  const [previewSeatNumber, setPreviewSeatNumber] = useState<number | null>(() => previewOnly ? 12 : null)
+  const reservedSeatIdRef = useRef<string | null>(null)
+  const restoredSeatIdRef = useRef<string | null>(recoveredState?.selectedSeatId ?? null)
   const [info, setInfo] = useState(() => previewOnly ? { name: 'Preview Customer', email: 'preview@example.com' } : recoveredState?.info ?? { name: '', email: '' })
   const [payMethod, setPayMethod] = useState<PaymentMethod | null>(() => previewOnly ? 'paypal' : recoveredState?.payMethod as PaymentMethod | null ?? null)
   const [selectedCoin, setSelectedCoin] = useState<CryptoCoin | null>(null)
@@ -848,13 +847,25 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const serviceFee = payments.pricing.serviceFee || 0
   const tax = tier.price * ((payments.pricing.taxPercentage || 0) / 100)
   const total = tier.price + serviceFee + tax
+  const selectedSeat = loadedSeats.find(seat => seat.id === selectedSeatId) ?? null
+  const selectedSeatLabel = selectedSeat?.label ?? (previewSeatNumber ? `R${String(previewSeatNumber).padStart(3, '0')}` : null)
+  const selectedSeatIsValid = Boolean(
+    selectedSeat
+    && eventId
+    && tier.packageKey
+    && isDatabaseSeatRecord(selectedSeat, eventId, tier.packageKey)
+  )
+  const handleSeatsChange = useCallback((seats: SeatRecord[], loading: boolean) => {
+    setLoadedSeats(seats)
+    setSeatsLoading(loading)
+  }, [])
 
   const STEPS: BStep[] = ['seats', 'details', 'payment', 'waiting', 'done']
   const stepIdx = STEPS.indexOf(step)
   const STEP_LABELS = [tr.booking.seat, tr.booking.yourDetails, tr.booking.choosePayment, tr.waiting.heading, tr.done.eyebrow]
 
   const go = (s: BStep) => {
-    if (!previewOnly && step === 'details' && s === 'payment' && info.email && eventId) void emailService.dispatchAdmin(eventId, { kind: 'booking_started', subject: 'New Booking Started', data: { Customer: info.name, Email: info.email, Event: data.hero?.title || 'Event', Package: tier.name, Seat: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD', Country: locale.country, Currency: locale.currency, Reference: bookingId, Time: new Date().toLocaleString() }, deepLink: `${window.location.origin}/admin/bookings` }).catch(error => showSeatMsg(error instanceof Error ? error.message : 'The booking notification could not be sent.'))
+    if (!previewOnly && step === 'details' && s === 'payment' && info.email && eventId) void emailService.dispatchAdmin(eventId, { kind: 'booking_started', subject: 'New Booking Started', data: { Customer: info.name, Email: info.email, Event: data.hero?.title || 'Event', Package: tier.name, Seat: selectedSeatLabel ?? 'TBD', Country: locale.country, Currency: locale.currency, Reference: bookingId, Time: new Date().toLocaleString() }, deepLink: `${window.location.origin}/admin/bookings` }).catch(error => showSeatMsg(error instanceof Error ? error.message : 'The booking notification could not be sent.'))
     contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
     setTimeout(() => setStep(s), 50)
   }
@@ -871,7 +882,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       packageId: tier.packageKey ?? tier.name,
       quantity: 1,
       step,
-      selectedSeat,
+      selectedSeatId,
       info,
       locale: { country: locale.country, language: locale.bcp47, currency: locale.currency },
       payMethod: payMethod as string | null,
@@ -886,7 +897,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       declineReason,
       scrollPosition: contentRef.current?.scrollTop ?? 0,
     })
-  }, [bankRequestId, bookingId, data.hero?.title, declineReason, eventId, info, locale.bcp47, locale.country, locale.currency, location.hash, location.pathname, location.search, payMethod, previewOnly, processing, proofFiles, recoveredState?.selectedCoinId, reviewRecordId, selectedCoin, selectedSeat, serverBookingId, step, ticketId, tier.id, tier.name, tier.packageKey])
+  }, [bankRequestId, bookingId, data.hero?.title, declineReason, eventId, info, locale.bcp47, locale.country, locale.currency, location.hash, location.pathname, location.search, payMethod, previewOnly, processing, proofFiles, recoveredState?.selectedCoinId, reviewRecordId, selectedCoin, selectedSeatId, serverBookingId, step, ticketId, tier.id, tier.name, tier.packageKey])
 
   useEffect(() => {
     if (previewOnly) return
@@ -922,6 +933,16 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     if (!recoveredState?.scrollPosition) return
     window.setTimeout(() => contentRef.current?.scrollTo({ top: recoveredState.scrollPosition, behavior: 'auto' }), 80)
   }, [recoveredState?.scrollPosition])
+
+  // A recovered UUID is only restored after its current database record is
+  // loaded and confirmed to still belong to this live event/package.
+  useEffect(() => {
+    if (previewOnly || seatsLoading || !selectedSeatId || restoredSeatIdRef.current !== selectedSeatId) return
+    if (!selectedSeat || !eventId || !tier.packageKey || !isDatabaseSeatRecord(selectedSeat, eventId, tier.packageKey) || selectedSeat.status !== 'available') {
+      setSelectedSeatId(null)
+    }
+    restoredSeatIdRef.current = null
+  }, [eventId, previewOnly, seatsLoading, selectedSeat, selectedSeatId, tier.packageKey])
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape' && step !== 'done' && step !== 'declined' && step !== 'bank_waiting') onClose() }
@@ -999,10 +1020,17 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       showSeatMsg('Publish this event before testing a live payment.')
       return
     }
+    if (!selectedSeat || !tier.packageKey || !selectedSeatIsValid) {
+      showSeatMsg('Choose an available seat before submitting your booking.')
+      return
+    }
     setProcessing(true)
     try {
       const checkout = await createPublicCheckout({
         eventId,
+        seat_id: selectedSeat.id,
+        package_id: tier.packageKey,
+        event_id: eventId,
         bookingReference: bookingId,
         eventName: data.hero?.title || 'Event',
         eventBanner: data.hero?.images?.[0] || '',
@@ -1016,7 +1044,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         currency: locale.currency,
         packageName: tier.name,
         packageAccent: tier.accent,
-        seatLabel: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD',
+        seatLabel: selectedSeat.label,
         benefits: tier.benefits || [],
         amount: total,
         paymentMethod: payMethod!,
@@ -1044,10 +1072,17 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       showSeatMsg('Publish this event before testing a bank transfer.')
       return
     }
+    if (!selectedSeat || !tier.packageKey || !selectedSeatIsValid) {
+      showSeatMsg('Choose an available seat before requesting bank details.')
+      return
+    }
     setProcessing(true)
     try {
       const result = await createPublicBankTransfer({
         eventId,
+        seat_id: selectedSeat.id,
+        package_id: tier.packageKey,
+        event_id: eventId,
         bookingReference: bookingId,
         eventName: data.hero?.title || 'Event',
         eventBanner: data.hero?.images?.[0] || '',
@@ -1061,7 +1096,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         currency: locale.currency,
         packageName: tier.name,
         packageAccent: tier.accent,
-        seatLabel: selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD',
+        seatLabel: selectedSeat.label,
         benefits: tier.benefits || [],
         amount: total,
         paymentMethod: 'bank_transfer',
@@ -1101,7 +1136,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       </div>
       <div className="space-y-1.5 text-base md:text-sm">
         <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.package}</span><span className="font-semibold" style={{ color: t.text }}>{tier.name}</span></div>
-        {selectedSeat && <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.seat}</span><span className="font-mono text-sm md:text-xs" style={{ color: checkoutAccent }}>{tr.booking.seat} {String(selectedSeat).padStart(3, '0')}</span></div>}
+        {selectedSeatLabel && <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.seat}</span><span className="font-mono text-sm md:text-xs" style={{ color: checkoutAccent }}>{selectedSeatLabel}</span></div>}
         <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.subtotal}</span><span style={{ color: t.text }}>{formatPrice(tier.price)}</span></div>
         {serviceFee > 0 && <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.serviceFee}</span><span style={{ color: t.text }}>{formatPrice(serviceFee)}</span></div>}
         {tax > 0 && <div className="flex justify-between"><span style={{ color: t.textSub }}>{tr.booking.taxes}</span><span style={{ color: t.text }}>{formatPrice(tax)}</span></div>}
@@ -1113,25 +1148,92 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     </div>
   )
 
+    // Release reserved seat on unmount if booking not completed
+  useEffect(() => {
+    return () => {
+      if (reservedSeatIdRef.current) {
+        void seatService.release(reservedSeatIdRef.current).catch(() => undefined)
+        reservedSeatIdRef.current = null
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleSeatSelect = async (seat: SeatRecord) => {
+    if (reservedSeatIdRef.current && reservedSeatIdRef.current !== seat.id) {
+      void seatService.release(reservedSeatIdRef.current).catch(() => undefined)
+      reservedSeatIdRef.current = null
+    }
+    if (import.meta.env.DEV) {
+      console.debug('[checkout seat selected]', {
+        id: seat.id,
+        label: seat.label,
+        event_id: seat.eventId,
+        package_id: seat.packageId,
+        status: seat.status,
+        current_event_id: eventId,
+        selected_package_id: tier.packageKey,
+      })
+    }
+    setSelectedSeatId(seat.id)
+  }
+
+  const handleContinueFromSeats = async () => {
+    if (previewOnly) { go('details'); return }
+    if (!selectedSeat || !eventId || !tier.packageKey || !selectedSeatIsValid || selectedSeat.status !== 'available') return
+    setProcessing(true)
+    try {
+      const reserved = await seatService.reserve(selectedSeat.id, eventId, tier.packageKey)
+      if (!reserved) {
+        showSeatMsg(translate('booking.alreadyTaken'))
+        setSeatRefreshRevision(current => current + 1)
+        return
+      }
+      reservedSeatIdRef.current = selectedSeat.id
+      setLoadedSeats(current => current.map(seat => seat.id === selectedSeat.id ? { ...seat, status: 'reserved' } : seat))
+      go('details')
+    } catch (error) {
+      showSeatMsg(error instanceof Error ? error.message : 'Unable to reserve this seat. Please try another one.')
+      setSeatRefreshRevision(current => current + 1)
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const hasRealSeats = Boolean(tier.packageKey && eventId)
+
   const StepSeats = () => (
     <div className="flex flex-col lg:flex-row gap-6">
       <div className="flex-1">
         <div className="text-base font-semibold uppercase tracking-wider mb-4 text-center lg:text-left" style={{ color: t.text, textShadow: t.isDark ? '0 2px 8px rgba(0,0,0,0.6)' : '0 1px 4px rgba(0,0,0,0.1)' }}>
-          {translate('booking.selectSeatHeading', { package: tier.name, count: TOTAL_SEATS[tier.id] })}
+          {translate('booking.selectSeatHeading', { package: tier.name, count: loadedSeats.filter(seat => seat.status === 'available').length })}
         </div>
-        <SeatGrid
-          totalSeats={TOTAL_SEATS[tier.id]}
-          selectedSeat={selectedSeat}
-          onSelectSeat={(n) => setSelectedSeat(prev => prev === n ? null : n)}
-          onAttemptTakenSeat={() => showSeatMsg(translate('booking.alreadyTaken'))}
-          soldSeats={SOLD_SEATS[tier.id] || []}
-          otherPkgSeats={OTHER_PKG_SEATS[tier.id] || []}
-        />
-        {selectedSeat && (
+        {hasRealSeats && tier.packageKey ? (
+          <PublicSeatSelector
+            eventId={eventId!}
+            packageId={tier.packageKey}
+            selectedSeatId={selectedSeatId}
+            onSelect={seat => { void handleSeatSelect(seat) }}
+            onSeatsChange={handleSeatsChange}
+            refreshToken={seatRefreshRevision}
+            onAttemptTaken={() => showSeatMsg(translate('booking.alreadyTaken'))}
+            accent={checkoutAccent}
+          />
+        ) : (
+          <SeatGrid
+            totalSeats={tier.seats || 100}
+            selectedSeat={previewSeatNumber}
+            onSelectSeat={(n) => setPreviewSeatNumber(prev => prev === n ? null : n)}
+            onAttemptTakenSeat={() => showSeatMsg(translate('booking.alreadyTaken'))}
+            soldSeats={[]}
+            otherPkgSeats={[]}
+          />
+        )}
+        {selectedSeatLabel && (
           <div className="mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl" style={{ background: `${checkoutAccent}12`, border: `1px solid ${checkoutAccent}40` }}>
             <span style={{ color: checkoutAccent }}>✓</span>
             <span className="text-sm font-semibold" style={{ color: checkoutAccent }}>
-              {translate('booking.seatSelected', { seat: String(selectedSeat).padStart(3, '0') })}
+              {translate('booking.seatSelected', { seat: selectedSeatLabel })}
             </span>
           </div>
         )}
@@ -1248,7 +1350,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
       </div>
       <p className="mt-5 text-sm leading-6" style={{ color: t.textSub }}>{translate('payment.bankBody')}</p>
       <div className="mt-5 grid gap-3 rounded-xl p-4 text-sm sm:grid-cols-2" style={{ background: t.inputBg, border: `1px solid ${t.border}` }}>
-        {[[translate('booking.eventName'), data.hero?.title || 'Event'], [translate('booking.selectedPackage'), tier.name], [translate('booking.selectedSeat'), selectedSeat ? `${tr.booking.seat} ${String(selectedSeat).padStart(3, '0')}` : tr.common.tbd], [translate('booking.totalAmount'), formatPrice(total)], [translate('booking.customerEmail'), info.email], [translate('booking.country'), locale.country], [translate('booking.currency'), locale.currency]].map(([label, value]) => <div key={label} className="min-w-0"><div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: t.textMuted }}>{label}</div><div className="mt-1 truncate font-medium" style={{ color: t.text }}>{value}</div></div>)}
+        {[[translate('booking.eventName'), data.hero?.title || 'Event'], [translate('booking.selectedPackage'), tier.name], [translate('booking.selectedSeat'), selectedSeatLabel ?? tr.common.tbd], [translate('booking.totalAmount'), formatPrice(total)], [translate('booking.customerEmail'), info.email], [translate('booking.country'), locale.country], [translate('booking.currency'), locale.currency]].map(([label, value]) => <div key={label} className="min-w-0"><div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: t.textMuted }}>{label}</div><div className="mt-1 truncate font-medium" style={{ color: t.text }}>{value}</div></div>)}
       </div>
       <div className="mt-5 grid gap-3 sm:grid-cols-2"><button onClick={() => setShowBankConfirmation(true)} className="rounded-xl px-4 py-3 text-sm font-bold" style={{ background: t.isDark ? '#00FF88' : '#2563EB', color: t.isDark ? '#08110d' : '#fff' }}>{translate('payment.requestBank')}</button><button onClick={() => setPayMethod(null)} className="rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>{translate('payment.chooseAnother')}</button></div>
       {showBankConfirmation && <div className="fixed inset-0 z-[10020] grid place-items-center bg-black/70 p-4 backdrop-blur-sm"><div className="w-full max-w-md rounded-2xl p-6 shadow-2xl" style={{ background: t.isDark ? '#18181B' : t.card, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.14)' : t.cardBorder}`, boxShadow: t.isDark ? '0 24px 64px rgba(0,0,0,0.72)' : t.cardShadow }}><h3 className="font-serif text-xl font-bold" style={{ color: t.text }}>{translate('payment.confirmBank')}</h3><p className="mt-3 text-sm leading-6" style={{ color: t.textSub }}>{translate('payment.bankBody')}</p><div className="mt-6 flex gap-3"><button onClick={() => setShowBankConfirmation(false)} className="flex-1 rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: t.inputBg, border: `1px solid ${t.border}`, color: t.text }}>{translate('common.cancel')}</button><button onClick={createBankTransferRequest} className="flex-1 rounded-xl px-4 py-3 text-sm font-bold" style={{ background: t.isDark ? '#00FF88' : t.accent, color: t.isDark ? '#08110d' : '#fff' }}>{translate('booking.continue')}</button></div></div></div>}
@@ -1259,7 +1361,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     <div className="mx-auto max-w-2xl rounded-3xl py-8 px-5 text-center sm:p-10" style={{ background: t.isDark ? 'transparent' : t.card, border: `1px solid ${t.isDark ? 'transparent' : t.cardBorder}`, boxShadow: t.isDark ? 'none' : t.cardShadow }}>
       <div className="relative mx-auto mb-6 grid h-24 w-24 place-items-center rounded-full" style={{ background: t.isDark ? 'rgba(16,185,129,.12)' : 'rgba(37,99,235,.1)', border: `1px solid ${t.isDark ? 'rgba(16,185,129,.35)' : 'rgba(37,99,235,.22)'}` }}><div className="h-12 w-12 animate-spin rounded-full border-4 border-transparent" style={{ borderTopColor: t.isDark ? '#34D399' : '#2563EB', borderRightColor: t.isDark ? '#34D399' : '#2563EB' }} /><div className="absolute h-4 w-4 rounded-full" style={{ background: t.isDark ? '#34D399' : '#2563EB' }} /></div>
       <p className="text-xs font-mono uppercase tracking-widest" style={{ color: t.isDark ? '#34D399' : '#2563EB' }}>{translate('payment.bankRequest')}</p><h3 className="mt-2 font-serif text-2xl font-bold sm:text-3xl" style={{ color: t.text }}>{translate('payment.awaitingBank')}</h3><p className="mx-auto mt-3 max-w-xl text-sm leading-6" style={{ color: t.textSub }}>{translate('payment.bankWaitingBody')}</p>
-      <div className="mt-7 grid gap-3 rounded-2xl p-4 text-left text-sm sm:grid-cols-2" style={{ background: t.card, border: `1px solid ${t.cardBorder}` }}>{[[translate('booking.reference'), bookingId], [translate('booking.eventName'), data.hero?.title || 'Event'], [tr.booking.package, tier.name], [tr.booking.seat, selectedSeat ? `${tr.booking.seat} ${String(selectedSeat).padStart(3, '0')}` : tr.common.tbd], [translate('booking.country'), locale.country], [translate('booking.currency'), locale.currency], [translate('booking.currentStatus'), translate('booking.waitingBank')]].map(([label, value]) => <div key={label}><div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: t.textMuted }}>{label}</div><div className="mt-1 font-medium" style={{ color: label === translate('booking.currentStatus') ? (t.isDark ? '#34D399' : '#2563EB') : t.text }}>{value}</div></div>)}</div>
+      <div className="mt-7 grid gap-3 rounded-2xl p-4 text-left text-sm sm:grid-cols-2" style={{ background: t.card, border: `1px solid ${t.cardBorder}` }}>{[[translate('booking.reference'), bookingId], [translate('booking.eventName'), data.hero?.title || 'Event'], [tr.booking.package, tier.name], [tr.booking.seat, selectedSeatLabel ?? tr.common.tbd], [translate('booking.country'), locale.country], [translate('booking.currency'), locale.currency], [translate('booking.currentStatus'), translate('booking.waitingBank')]].map(([label, value]) => <div key={label}><div className="text-[10px] font-mono uppercase tracking-wider" style={{ color: t.textMuted }}>{label}</div><div className="mt-1 font-medium" style={{ color: label === translate('booking.currentStatus') ? (t.isDark ? '#34D399' : '#2563EB') : t.text }}>{value}</div></div>)}</div>
       <p className="mt-6 text-sm font-semibold" style={{ color: t.text }}>{translate('payment.doNotClose')}</p>
     </div>
   )
@@ -1607,7 +1709,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
               </div>
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.booking.seat}</div>
-                <div className="text-sm font-bold" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{selectedSeat ? `Seat ${String(selectedSeat).padStart(3, '0')}` : 'TBD'}</div>
+                <div className="text-sm font-bold" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{selectedSeatLabel ?? 'TBD'}</div>
               </div>
             </div>
 
@@ -1684,7 +1786,15 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     </div>
   )
 
-  const canAdvance = (step === 'seats' && selectedSeat !== null) || (step === 'details' && !!info.name && !!info.email) || step === 'payment'
+  const canContinue = previewOnly
+    ? Boolean(previewSeatNumber) && !processing
+    : Boolean(selectedSeat?.id)
+      && selectedSeat.status === 'available'
+      && selectedSeat.eventId === eventId
+      && selectedSeat.packageId === tier.packageKey
+      && !seatsLoading
+      && !processing
+  const canAdvance = (step === 'seats' && canContinue) || (step === 'details' && !!info.name && !!info.email) || step === 'payment'
   const submitDisabled = processing || proofFiles.length === 0 || (payMethod === 'bank_transfer' && bankTimer === 0)
 
   return (
@@ -1777,7 +1887,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
                   : tr.booking.submitProof.replace('{amount}', formatPrice(total))
                 }
               </button>
-              : <button disabled={!canAdvance} onClick={() => canAdvance && go(STEPS[stepIdx + 1] as BStep)} className="flex items-center gap-2 px-8 py-3 rounded-2xl font-bold text-sm md:text-base transition-all hover:-translate-y-1"
+              : <button disabled={!canAdvance} onClick={() => { if (!canAdvance) return; if (step === 'seats') void handleContinueFromSeats(); else go(STEPS[stepIdx + 1] as BStep) }} className="flex items-center gap-2 px-8 py-3 rounded-2xl font-bold text-sm md:text-base transition-all hover:-translate-y-1"
                 style={{ background: canAdvance ? (t.isDark ? `${tier.accent}18` : `linear-gradient(135deg,${t.accent},${t.accentDim})`) : t.inputBg, color: canAdvance ? (t.isDark ? tier.accent : '#FFFFFF') : t.textMuted, border: canAdvance && t.isDark ? `1px solid ${tier.accent}40` : 'none', cursor: canAdvance ? 'pointer' : 'not-allowed', boxShadow: canAdvance ? (t.isDark ? `0 8px 24px ${tier.glow}` : `0 4px 16px ${t.accentGlow}`) : t.btnShadow }}>
                 {tr.common.continue} <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M9 18l6-6-6-6" /></svg>
               </button>
@@ -2120,21 +2230,6 @@ function FloatingChatButton({ eventId = 'default', isPreview = false, mode = 'pr
   return <PublicSupportChat eventId={eventId} isPreview={isPreview} />
 }
 
-function PackageTypeLibraryPicker({ currentName, action, onSelect }: { currentName?: string; action: 'add' | 'replace'; onSelect: (type: PackageTypeDefinition) => void }) {
-  return <div className="rounded-2xl border border-white/10 bg-white/[.025] p-3">
-    <div className="flex items-start justify-between gap-3"><div><div className="text-xs font-bold text-white">Package type library</div><div className="mt-1 text-[10px] leading-relaxed text-zinc-500">{action === 'add' ? 'Select a ready-made package to add it to this page.' : 'Apply a package type, then customize every field below.'}</div></div><span className="shrink-0 rounded-full bg-emerald-400/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-emerald-300">{PACKAGE_TYPE_LIBRARY.length} types</span></div>
-    <div className="mt-3 grid max-h-72 grid-cols-2 gap-2 overflow-y-auto pr-1">
-      {PACKAGE_TYPE_LIBRARY.map(type => {
-        const selected = currentName === type.name
-        return <button key={type.key} type="button" onClick={() => onSelect(type)} className="group rounded-xl border p-2.5 text-left transition-all hover:-translate-y-0.5" style={{ background: selected ? `${type.accent}16` : 'rgba(255,255,255,.035)', borderColor: selected ? `${type.accent}70` : 'rgba(255,255,255,.08)' }}>
-          <div className="flex items-start gap-2"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-base" style={{ background: `${type.accent}18`, border: `1px solid ${type.accent}35` }}>{type.icon}</span><div className="min-w-0"><div className="truncate text-[11px] font-bold text-white">{type.name}</div><div className="mt-0.5 text-[9px] uppercase tracking-wider" style={{ color: type.accent }}>{type.category}</div></div></div>
-          <div className="mt-2 line-clamp-2 text-[10px] leading-relaxed text-zinc-500">{type.description}</div>
-          {type.badge && <span className="mt-2 inline-flex rounded-full px-2 py-0.5 text-[9px] font-bold" style={{ background: `${type.accent}14`, color: type.accent }}>{type.badge}</span>}
-        </button>
-      })}
-    </div>
-  </div>
-}
 
 
 function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, close }: { data: BookingPageData; target: EditorTarget | null; eventId?: string; onApply: (data: BookingPageData) => void; onDraftChange?: (data: BookingPageData) => void; close: () => void }) {
@@ -2286,8 +2381,60 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
   const sectionLabel = BOOKING_SECTION_LABELS
   const headingInput = (key: string, defaultVal: string) => input('Section Heading', draft.sectionHeadings?.[key] ?? defaultVal, value => mutate(next => { if (!next.sectionHeadings) next.sectionHeadings = {}; next.sectionHeadings[key] = value }))
   const fields = () => {
-    if (target.section === 'hero') return <>{input('Eyebrow', draft.hero.eyebrow, value => mutate(next => { next.hero.eyebrow = value }))}{input('Hero title', draft.hero.title, value => mutate(next => { next.hero.title = value }))}{input('Host / subtitle', draft.hero.tour, value => mutate(next => { next.hero.tour = value }))}{input('Date', draft.hero.date, value => mutate(next => { next.hero.date = value }))}{input('Venue', draft.hero.venue, value => mutate(next => { next.hero.venue = value }))}{input('Primary button text', draft.hero.primaryCta, value => mutate(next => { next.hero.primaryCta = value }))}{input('Secondary button text', draft.hero.secondaryCta, value => mutate(next => { next.hero.secondaryCta = value }))}{input('Guest performers (one per line)', draft.hero.guests.join('\n'), value => mutate(next => { next.hero.guests = value.split('\n').map(item => item.trim()).filter(Boolean) }), true)}{heroImageControls}</>
-    if (target.section === 'about') return <>{headingInput('about', 'About the Show')}{input('Heading', draft.about.heading, value => mutate(next => { next.about.heading = value }))}{input('Accent heading', draft.about.accentHeading, value => mutate(next => { next.about.accentHeading = value }))}{input('Description', draft.about.body, value => mutate(next => { next.about.body = value }), true)}{input('Supporting copy', draft.about.detail, value => mutate(next => { next.about.detail = value }), true)}{aboutMediaControls}</>
+    if (target.section === 'hero') return <>
+      {input('Eyebrow', draft.hero.eyebrow, value => mutate(next => { next.hero.eyebrow = value }))}
+      {input('Hero title', draft.hero.title, value => mutate(next => { next.hero.title = value }))}
+      {input('Host / subtitle', draft.hero.tour, value => mutate(next => { next.hero.tour = value }))}
+      {input('Date', draft.hero.date, value => mutate(next => { next.hero.date = value }))}
+      {input('Venue name', draft.hero.venue, value => mutate(next => { next.hero.venue = value }))}
+      {input('Venue address', draft.hero.address ?? '', value => mutate(next => { next.hero.address = value }))}
+      {input('Doors open time', draft.hero.doors, value => mutate(next => { next.hero.doors = value }))}
+      {input('Show starts time', draft.hero.show, value => mutate(next => { next.hero.show = value }))}
+      {input('Primary button text', draft.hero.primaryCta, value => mutate(next => { next.hero.primaryCta = value }))}
+      {input('Secondary button text', draft.hero.secondaryCta, value => mutate(next => { next.hero.secondaryCta = value }))}
+      {input('Guest performers (one per line)', draft.hero.guests.join('\n'), value => mutate(next => { next.hero.guests = value.split('\n').map(item => item.trim()).filter(Boolean) }), true)}
+      {heroImageControls}
+    </>
+    if (target.section === 'about') return <>
+      {headingInput('about', 'About the Show')}
+      {input('Heading', draft.about.heading, value => mutate(next => { next.about.heading = value }))}
+      {input('Accent heading', draft.about.accentHeading, value => mutate(next => { next.about.accentHeading = value }))}
+      {input('Description', draft.about.body, value => mutate(next => { next.about.body = value }), true)}
+      {input('Supporting copy', draft.about.detail, value => mutate(next => { next.about.detail = value }), true)}
+      {/* Highlights / stat cards */}
+      <div className="mt-4 border-t border-white/10 pt-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Stat cards</div>
+          <button type="button" onClick={() => mutate(next => { next.about.highlights = [...(next.about.highlights ?? []), { icon: '⭐', value: 'New', label: 'Label' }] })} className="rounded-lg bg-emerald-400 px-2.5 py-1 text-[10px] font-bold text-zinc-950">+ Add card</button>
+        </div>
+        {(draft.about.highlights ?? []).map((h, i) => (
+          <div key={i} className="mb-3 rounded-xl border border-white/10 bg-white/[.025] p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-zinc-500">Card {i + 1}</span>
+              <button type="button" onClick={() => mutate(next => { next.about.highlights = next.about.highlights.filter((_, idx) => idx !== i) })} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {input('Icon', h.icon, v => mutate(next => { next.about.highlights[i].icon = v }))}
+              {input('Value', h.value, v => mutate(next => { next.about.highlights[i].value = v }))}
+              {input('Label', h.label, v => mutate(next => { next.about.highlights[i].label = v }))}
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Inclusions / Every Ticket Includes */}
+      <div className="mt-4 border-t border-white/10 pt-4">
+        <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300 mb-2">Every Ticket Includes</div>
+        <div className="text-[10px] text-zinc-500 mb-2">One item per line</div>
+        <textarea
+          value={(draft.about.inclusions ?? []).join('\n')}
+          onChange={e => mutate(next => { next.about.inclusions = e.target.value.split('\n').map(s => s.trim()).filter(Boolean) })}
+          rows={6}
+          className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400"
+          placeholder="HD LED stage production&#10;Surround sound system"
+        />
+      </div>
+      {aboutMediaControls}
+    </>
     if (target.section === 'venue') return <>{headingInput('venue', 'Venue')}{input('Venue name', draft.venue.name, value => mutate(next => { next.venue.name = value }))}{input('Address', draft.venue.address, value => mutate(next => { next.venue.address = value }), true)}{input('Google Maps link', draft.venue.mapLink, value => mutate(next => { next.venue.mapLink = value }))}{headingInput('venueFacts', 'Venue Facts')}
       {draft.venueFacts?.map((fact, i) => (
         <div key={fact.id} className="mt-4 border-t border-white/10 pt-4">
@@ -2312,68 +2459,64 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
         const item = draft.timeline[target.index]; 
         return <>{input('Time', item.time, value => mutate(next => { next.timeline[target.index!].time = value }))}{input('Title', item.title, value => mutate(next => { next.timeline[target.index!].title = value }))}{input('Description', item.desc, value => mutate(next => { next.timeline[target.index!].desc = value }), true)}{input('Icon (Emoji)', item.icon, value => mutate(next => { next.timeline[target.index!].icon = value }))}{input('Accent Color', item.accent, value => mutate(next => { next.timeline[target.index!].accent = value }))}</>
       }
-      return <>{headingInput('timeline', 'The Evening')}</>
-    }
-    if (target.section === 'tickets') { 
-      if (target.index !== undefined) {
-        const item = draft.packages[target.index]
-        const applyPackageType = (type: PackageTypeDefinition) => {
-          mutate(next => {
-            const currentId = next.packages[target.index!].id
-            next.packages[target.index!] = { ...createPackageFromType(type), id: currentId }
-          })
-          setPackageNotice(`${type.name} defaults applied. You can customize every field below.`)
-        }
-        return <>
-          <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[.035] p-4">
-            <div className="flex items-start gap-3"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl text-2xl" style={{ background: `${item.accent}18`, border: `1px solid ${item.accent}40` }}>{item.icon}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><div className="font-serif text-lg font-bold text-white">{item.name}</div>{item.badge && <span className="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase" style={{ background: `${item.accent}18`, color: item.accent }}>{item.badge}</span>}</div><div className="mt-1 text-xs text-zinc-400">{item.desc}</div><div className="mt-2 text-xs font-bold" style={{ color: item.accent }}>{item.seats.toLocaleString()} available · {item.benefits.length} benefits</div></div></div>
+      return <>
+        {headingInput('timeline', 'The Evening')}
+        <div className="mt-4 border-t border-white/10 pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Schedule entries</div>
+            <button type="button"
+              onClick={() => mutate(next => { next.timeline.push({ id: crypto.randomUUID(), time: '9:00 PM', title: 'New Entry', desc: '', icon: '🎵', accent: '#00D982' }) })}
+              className="rounded-lg bg-emerald-400 px-2.5 py-1 text-[10px] font-bold text-zinc-950">+ Add entry</button>
           </div>
-          <div className="rounded-xl border border-white/10 bg-white/[.025] p-3"><div><div className="text-xs font-bold text-white">Manage package cards</div><div className="mt-1 text-[10px] text-zinc-500">Add another card or remove only {item.name}; every other package remains unchanged.</div></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={addBlankPackage} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">+ Add another package</button><button type="button" disabled={draft.packages.length <= 1} onClick={removeSelectedPackage} className="rounded-lg bg-red-500/10 px-3 py-2 text-xs font-bold text-red-300 disabled:cursor-not-allowed disabled:opacity-40">Remove only this package</button></div></div>
-          <PackageTypeLibraryPicker currentName={item.name} action="replace" onSelect={applyPackageType} />
-          {packageNotice && <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-xs text-emerald-200">✓ {packageNotice}</div>}
-          {input('Package name', item.name, value => mutate(next => { next.packages[target.index!].name = value }))}
-          {input('Description', item.desc, value => mutate(next => { next.packages[target.index!].desc = value }), true)}
-          <div className="grid grid-cols-2 gap-3">{input('Price', String(item.price), value => mutate(next => { next.packages[target.index!].price = Math.max(0, Number(value) || 0) }))}{input('Available seats', String(item.seats), value => mutate(next => { next.packages[target.index!].seats = Math.max(0, Number(value) || 0) }))}</div>
-          <div><div className="mb-2 text-[11px] text-zinc-400">Quick badge</div><div className="flex flex-wrap gap-1.5">{['Great Value', 'Popular', 'Best Seller', 'Limited', 'Recommended', 'Exclusive', 'Ultimate Access'].map(badge => <button key={badge} type="button" onClick={() => mutate(next => { next.packages[target.index!].badge = badge })} className="rounded-full border px-2.5 py-1 text-[10px]" style={{ background: item.badge === badge ? `${item.accent}18` : 'rgba(255,255,255,.03)', borderColor: item.badge === badge ? `${item.accent}60` : 'rgba(255,255,255,.1)', color: item.badge === badge ? item.accent : '#A1A1AA' }}>{badge}</button>)}<button type="button" onClick={() => mutate(next => { next.packages[target.index!].badge = null })} className="rounded-full border border-white/10 px-2.5 py-1 text-[10px] text-zinc-500">No badge</button></div></div>
-          {input('Custom badge', item.badge ?? '', value => mutate(next => { next.packages[target.index!].badge = value.trim() || null }))}
-          <div className="grid grid-cols-[1fr_auto] items-end gap-3">{input('Icon', item.icon, value => mutate(next => { next.packages[target.index!].icon = value }))}<label className="block"><span className="text-[11px] text-zinc-400">Accent</span><input type="color" value={item.accent} onChange={event => mutate(next => { next.packages[target.index!].accent = event.target.value; next.packages[target.index!].glow = `${event.target.value}38` })} className="mt-1.5 h-10 w-14 cursor-pointer rounded-xl border border-white/10 bg-white/5 p-1" /></label></div>
-          {input('Seat sections (one per line)', item.sections.join('\n'), value => mutate(next => { next.packages[target.index!].sections = value.split('\n').map(section => section.trim()).filter(Boolean) }), true)}
-          {input('Benefits (one per line)', item.benefits.join('\n'), value => mutate(next => { next.packages[target.index!].benefits = value.split('\n').map(benefit => benefit.trim()).filter(Boolean) }), true)}
-        </>
-      }
-      return <>{headingInput('tickets', 'Select Packages')}
-        <div className="rounded-2xl border border-white/10 bg-white/[.025] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs font-bold text-white">Package card manager</div><div className="mt-1 text-[10px] text-zinc-500">Add a new card or remove one card at a time. Existing cards are never replaced by these controls.</div></div><button type="button" onClick={addBlankPackage} className="rounded-lg bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">+ Add blank package</button></div><div className="mt-3 space-y-2">{draft.packages.map(item => <div key={item.id} className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[.035] p-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-lg" style={{ background: `${item.accent}18` }}>{item.icon}</span><div className="min-w-0 flex-1"><div className="truncate text-xs font-bold text-white">{item.name}</div><div className="mt-0.5 text-[10px] text-zinc-500">{item.seats.toLocaleString()} seats · ${item.price.toLocaleString()}</div></div><button type="button" disabled={draft.packages.length <= 1} onClick={() => removePackageById(item.id)} aria-label={`Remove ${item.name} package`} className="shrink-0 rounded-lg bg-red-500/10 px-2.5 py-1.5 text-[10px] font-bold text-red-300 disabled:cursor-not-allowed disabled:opacity-35">Remove</button></div>)}</div></div>
-        <PackageTypeLibraryPicker action="add" onSelect={type => { mutate(next => { next.packages.push(createPackageFromType(type)) }); setPackageNotice(`${type.name} was added. Apply these changes, then tap its card to customize it.`) }} />
-        {packageNotice && <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3 text-xs text-emerald-200">✓ {packageNotice}</div>}
-        <div className="mt-4 pt-4 border-t border-white/10">
-          <div className="text-xs font-semibold mb-1 text-emerald-400">Add quick show bundles</div>
-          <div className="mb-3 text-[10px] text-zinc-500">Append a ready-made two-tier setup without removing existing package cards.</div>
-          <div className="grid grid-cols-2 gap-2">
-            {Object.entries({
-              'Concert': [
-                { id: 'regular', name: 'Regular', price: 150, desc: 'Standard floor access', badge: 'Great Value', accent: '#64748B', glow: 'rgba(100,116,139,0.2)', seats: 5000, icon: '🎫', sections: ['Floor'], benefits: ['Standard entry', 'Floor access', 'Mobile ticket delivery'] },
-                { id: 'vip', name: 'VIP Pit', price: 350, desc: 'Premium pit access', badge: 'Best Seller', accent: '#00D982', glow: 'rgba(0,217,130,0.24)', seats: 500, icon: '💎', sections: ['VIP Pit'], benefits: ['Early entry', 'Pit access', 'VIP bar'] }
-              ],
-              'Comedy': [
-                { id: 'ga', name: 'Standard Seating', price: 65, desc: 'Rear stalls', badge: null, accent: '#71717A', glow: 'rgba(113,113,122,0.18)', seats: 800, icon: '🪑', sections: ['Stalls'], benefits: ['Standard entry', 'Reserved seat'] },
-                { id: 'front', name: 'Front Row', price: 120, desc: 'Best views', badge: null, accent: '#8B5CF6', glow: 'rgba(139,92,246,0.22)', seats: 50, icon: '🎭', sections: ['Row A'], benefits: ['Front row seat', 'Meet & greet'] }
-              ],
-              'Sports': [
-                { id: 'ga', name: 'Upper Tier', price: 90, desc: 'Upper bowl', badge: null, accent: '#71717A', glow: 'rgba(113,113,122,0.18)', seats: 15000, icon: '🎫', sections: ['Upper Bowl'], benefits: ['Standard entry'] },
-                { id: 'club', name: 'Club Level', price: 280, desc: 'Premium seating', badge: 'Popular', accent: '#F59E0B', glow: 'rgba(245,158,11,0.22)', seats: 2000, icon: '🏆', sections: ['Club'], benefits: ['Club access', 'Padded seats', 'Private bar'] }
-              ],
-              'Theatre': [
-                { id: 'balcony', name: 'Balcony', price: 75, desc: 'Upper level', badge: null, accent: '#71717A', glow: 'rgba(113,113,122,0.18)', seats: 800, icon: '🎭', sections: ['Balcony'], benefits: ['Standard entry'] },
-                { id: 'stalls', name: 'Premium Stalls', price: 145, desc: 'Main floor', badge: 'Best View', accent: '#22D3EE', glow: 'rgba(34,211,238,0.22)', seats: 400, icon: '✨', sections: ['Stalls'], benefits: ['Premium seat', 'Lounge access'] }
-              ]
-            }).map(([presetName, presetData]) => (
-              <button key={presetName} onClick={() => { mutate(next => { next.packages.push(...presetData.map(item => ({ ...item, id: crypto.randomUUID(), sections: [...item.sections], benefits: [...item.benefits] }))) }); setPackageNotice(`${presetName} bundle added. Existing package cards were preserved.`) }} className="bg-white/5 border border-white/10 rounded-xl p-2 text-xs hover:bg-white/10 transition-colors">
-                + {presetName}
-              </button>
-            ))}
-          </div>
+          {draft.timeline.map((item, i) => (
+            <div key={item.id} className="mb-3 rounded-xl border border-white/10 bg-white/[.025] p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">{item.icon}</span>
+                  <span className="text-xs font-bold text-white truncate max-w-[120px]">{item.title}</span>
+                  <span className="text-[10px] text-zinc-500">{item.time}</span>
+                </div>
+                <div className="flex gap-1">
+                  <button type="button"
+                    onClick={() => mutate(next => { const t = next.timeline.splice(i, 1)[0]; next.timeline.splice(i - 1, 0, t) })}
+                    disabled={i === 0}
+                    className="text-[10px] px-1.5 py-0.5 rounded text-zinc-400 hover:text-white disabled:opacity-20">↑</button>
+                  <button type="button"
+                    onClick={() => mutate(next => { const t = next.timeline.splice(i, 1)[0]; next.timeline.splice(i + 1, 0, t) })}
+                    disabled={i === draft.timeline.length - 1}
+                    className="text-[10px] px-1.5 py-0.5 rounded text-zinc-400 hover:text-white disabled:opacity-20">↓</button>
+                  <button type="button"
+                    onClick={() => mutate(next => { next.timeline.splice(i, 1) })}
+                    className="text-[10px] px-1.5 py-0.5 rounded text-red-400 hover:text-red-300">✕</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {input('Time', item.time, v => mutate(next => { next.timeline[i].time = v }))}
+                {input('Icon', item.icon, v => mutate(next => { next.timeline[i].icon = v }))}
+              </div>
+              {input('Title', item.title, v => mutate(next => { next.timeline[i].title = v }))}
+              {input('Description', item.desc, v => mutate(next => { next.timeline[i].desc = v }), true)}
+              <label className="flex items-center justify-between">
+                <span className="text-[11px] text-zinc-400">Accent colour</span>
+                <input type="color" value={item.accent}
+                  onChange={e => mutate(next => { next.timeline[i].accent = e.target.value })}
+                  className="h-8 w-12 cursor-pointer rounded-lg border border-white/10 bg-white/5 p-0.5" />
+              </label>
+            </div>
+          ))}
         </div>
       </>
+    }
+    if (target.section === 'tickets') { 
+      return <div className="space-y-4">
+        {headingInput('tickets', 'Select Packages')}
+        <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-6 text-center">
+          <div className="grid h-12 w-12 mx-auto place-items-center rounded-full bg-emerald-400/20 text-emerald-300 mb-3 text-xl">🎫</div>
+          <h3 className="text-sm font-bold text-emerald-200">Package settings have moved</h3>
+          <p className="mt-2 text-xs text-emerald-300/80 mb-4">You can now manage visual package cards, venue capacity, and seat allocations all in one place.</p>
+          <button type="button" onClick={() => { close(); setTimeout(() => Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Packages & Seats')?.click(), 100) }} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-xs font-bold text-zinc-950 shadow-lg">Open Packages & Seats</button>
+        </div>
+      </div>
     }
     if (target.section === 'testimonials') { 
       if (target.index !== undefined) {
@@ -2435,6 +2578,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   const [publicationError, setPublicationError] = useState<string | null>(null)
   const [publicationNotice, setPublicationNotice] = useState<string | null>(null)
   const [socialProofOpen, setSocialProofOpen] = useState(() => recoveredEditor?.socialProofOpen ?? false)
+  const [packagesOpen, setPackagesOpen] = useState(false)
   const [eventSocialProof, setEventSocialProof] = useState<EventSocialProofOverride>(() => socialProofOverride ?? {})
   const latestDataRef = useRef(data)
   const lastSavedHash = useRef(JSON.stringify(initialSource))
@@ -2580,7 +2724,8 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
     <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly }}>
       <SocialProofOverlayProvider>
       <div className="booking-experience ios-stable-scroll" data-theme={t.isDark ? 'dark' : 'light'} style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
-        {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><span className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} sections edited</span><span role="status" className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${saveStatus === 'error' ? 'bg-red-400/10 text-red-200' : saveStatus === 'offline' ? 'bg-amber-400/10 text-amber-200' : 'bg-white/5 text-zinc-300'}`}>{saveStatus === 'saving' ? 'Saving…' : saveStatus === 'offline' ? 'Offline — changes pending' : saveStatus === 'error' ? 'Save failed — retry' : saveStatus === 'saved' ? 'Saved' : 'Ready'}</span><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}<button type="button" onClick={() => void saveDraftNow()} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { void saveDraftNow().then(() => { setPublishedUrl(null); setPublicationError(null); setPublicationOpen(true) }) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={() => { void saveDraftNow().then(() => onExit?.()) }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
+        {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><span className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} sections edited</span><span role="status" className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${saveStatus === 'error' ? 'bg-red-400/10 text-red-200' : saveStatus === 'offline' ? 'bg-amber-400/10 text-amber-200' : 'bg-white/5 text-zinc-300'}`}>{saveStatus === 'saving' ? 'Saving…' : saveStatus === 'offline' ? 'Offline — changes pending' : saveStatus === 'error' ? 'Save failed — retry' : saveStatus === 'saved' ? 'Saved' : 'Ready'}</span><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}
+<button type="button" onClick={() => setPackagesOpen(true)} className="rounded-xl bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300">Packages & Seats</button><button type="button" onClick={() => void saveDraftNow()} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { void saveDraftNow().then(() => { setPublishedUrl(null); setPublicationError(null); setPublicationOpen(true) }) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={() => { void saveDraftNow().then(() => onExit?.()) }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
         {mode === 'editor' && <select aria-label="Editor device mode" value={deviceMode} onChange={event => setDeviceMode(event.target.value as 'desktop' | 'tablet' | 'mobile')} className="fixed right-3 top-24 z-[249] rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white shadow-xl"><option value="desktop">Desktop</option><option value="tablet">Tablet</option><option value="mobile">Mobile</option></select>}
         <div data-editor-device={mode === 'editor' ? deviceMode : undefined} style={mode === 'editor' ? { width: '100%', maxWidth: deviceMode === 'mobile' ? 390 : deviceMode === 'tablet' ? 768 : 'none', marginInline: 'auto' } : undefined}>
           <ScrollProgress />
@@ -2599,6 +2744,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
           {mode !== 'published' && <PublicOnboardingGuide context={mode === 'editor' ? 'booking-page editor' : 'booking preview'} />}
         </div>
         {mode === 'editor' && <BookingEditorPanel data={data} target={selected} eventId={eventId} onDraftChange={setData} onApply={applyEditorChanges} close={() => setSelected(null)} />}
+        {packagesOpen && <PackageAndSeatModal data={data} eventId={eventId} onApply={(next: BookingPageData) => setData(next)} onClose={() => setPackagesOpen(false)} />}
         {socialProofOpen && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#111113] p-6 text-white"><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Event override</p><h2 className="mt-2 font-serif text-2xl font-bold">Social proof for this event</h2><p className="mt-1 text-sm text-zinc-500">Only entered values override the defaults in Admin Settings.</p><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Enabled<input type="checkbox" checked={eventSocialProof.enabled ?? true} onChange={event => setEventSocialProof(current => ({ ...current, enabled: event.target.checked }))}/></label><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Show on mobile<input type="checkbox" checked={eventSocialProof.mobileVisible ?? true} onChange={event => setEventSocialProof(current => ({ ...current, mobileVisible: event.target.checked }))}/></label><label className="sm:col-span-2 text-xs text-zinc-400">Popup message<input value={eventSocialProof.message ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, message: event.target.value }))} placeholder="Use global default" className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white"/></label><label className="text-xs text-zinc-400">Duration<input type="number" value={eventSocialProof.duration ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, duration: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label><label className="text-xs text-zinc-400">Delay<input type="number" value={eventSocialProof.delay ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, delay: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label></div><div className="mt-6 flex justify-end gap-2"><button onClick={() => setSocialProofOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button onClick={() => { void onSocialProofChange?.(eventSocialProof); setSocialProofOpen(false) }} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save event override</button></div></section></div>}
         {publicationOpen && publicationReview && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111113] p-6 text-white">{publishedUrl ? <div className="text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-400 text-xl font-bold text-zinc-950">✓</div><h2 className="mt-4 font-serif text-2xl font-bold">Page published successfully</h2><p className="mt-2 break-all text-sm text-zinc-400">{publishedUrl}</p>{publicationNotice && <p className="mt-3 text-xs text-emerald-300" role="status">{publicationNotice}</p>}<div className="mt-6 flex flex-wrap justify-center gap-2"><button type="button" onClick={() => void copyPublishedLink()} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Copy Link</button><button type="button" onClick={openPublishedPage} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Open Published Page</button><button type="button" onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Close</button></div></div> : <><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Publication review</p><h2 className="mt-2 font-serif text-2xl font-bold">Review before publishing</h2><div className="mt-5 grid gap-3 sm:grid-cols-2">{[['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language], ['Public URL', publicationReview.publicUrl]].map(([label, value]) => <div key={label} className="rounded-xl bg-white/[.04] p-3"><div className="text-[10px] uppercase text-zinc-500">{label}</div><div className="mt-1 break-all text-sm font-semibold">{value || 'Missing'}</div></div>)}</div>{publicationSectionReview}{missingPublicationFields.length > 0 && <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">Missing required information: {missingPublicationFields.join(', ')}</div>}{publicationError && <div className="mt-4 rounded-xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-200">{publicationError}</div>}<div className="mt-6 flex flex-wrap justify-end gap-2"><button disabled={publishing} onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={publishing} onClick={() => { void saveDraftNow().then(() => window.open(eventId ? `/admin/events/${eventId}/preview` : '/demo', '_blank', 'noopener,noreferrer')) }} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Preview Page</button><button disabled={publishing || missingPublicationFields.length > 0} onClick={() => void confirmPublish()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-40">{publishing ? 'Publishing…' : 'Confirm and Publish'}</button></div></>}</section></div>}
       </div>

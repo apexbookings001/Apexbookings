@@ -5,6 +5,9 @@ import type { PaymentMethod } from '../../types/domain'
 
 export type PublicCheckoutInput = {
   eventId: string
+  seat_id: string
+  package_id: string
+  event_id: string
   bookingReference: string
   eventName: string
   eventBanner: string
