@@ -2050,6 +2050,7 @@ function TicketSection() {
     if (mode !== 'published' || !eventId) return
     let active = true
     setSeatAvailabilityReady(false)
+    setAvailableSeatsByPackage({})
     void refreshSeatAvailability().catch(() => { if (active) setSeatAvailabilityReady(true) })
     const client = supabase
     if (!client) return () => { active = false }
