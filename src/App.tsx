@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useRef, useCallback, createContext, useContext } from 'react'
+import { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo, createContext, useContext } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ProtectedRoute } from './components/routing/ProtectedRoute'
 import { AdminLoginPage } from './pages/AdminLoginPage'
@@ -38,6 +38,8 @@ import { createPublicCheckout } from './services/supabase/publicCheckoutReposito
 import { createPublicBankTransfer } from './services/supabase/publicBankTransferRepository'
 import { uploadPaymentProofs } from './services/supabase/paymentProofRepository'
 import { QRCodeSVG } from 'qrcode.react'
+import { downloadTicketPng } from './features/tickets/ticketDownloadService'
+import { createTicketViewModel } from './features/tickets/ticketViewModel'
 import { sessionPersistence, type PersistedBookingState } from './features/bookings/sessionPersistence'
 import { TicketVerificationPage } from './pages/TicketVerificationPage'
 import { LocaleProvider, useLocale, tr as trFn } from './i18n/LocaleContext'
@@ -46,11 +48,13 @@ import { LanguageSwitcher } from './components/LanguageSwitcher'
 import { EventHero } from './components/EventHero'
 import { useAdminSessionRecovery } from './features/recovery/AdminSessionRecoveryProvider'
 import { PackageAndSeatModal } from './features/events/PackageAndSeatModal'
+import type { PackageSeatPreview } from './features/events/PackagesAndSeatsWorkspace'
 import { PackageTypeLibraryPicker } from './features/events/PackageTypeLibraryPicker'
 import { DiscountCountdown } from './features/events/DiscountCountdown'
 import { packagePricing } from './features/events/packagePricing'
 import { useBookingSessionRecovery } from './features/recovery/BookingSessionRecoveryProvider'
 import { getAdminResumeRoute } from './features/recovery/recoveryStorage'
+import { useDocumentScrollLock } from './hooks/useDocumentScrollLock'
 const AdminDashboard = lazy(() => import('./AdminDashboard'))
 
 import { ThemeCtx, useTheme, DARK, LIGHT } from './theme'
@@ -59,9 +63,38 @@ type StudioPreviewState = 'page' | 'packages' | 'checkout' | 'payment-pending' |
 type EditorTarget = { section: BookingSectionId; index?: number; field?: string }
 const BOOKING_SECTION_IDS: BookingSectionId[] = ['hero', 'about', 'venue', 'timeline', 'tickets', 'testimonials', 'faq', 'cta', 'footer']
 const BOOKING_SECTION_LABELS: Record<BookingSectionId, string> = { hero: 'Hero', about: 'About', venue: 'Venue', timeline: 'Timeline', tickets: 'Packages', testimonials: 'Customer reviews', faq: 'FAQ', cta: 'Call to action', footer: 'Footer' }
-type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean }
+type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean; seatPreview?: SeatRecord[] }
 const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false })
 const useBooking = () => useContext(BookingCtx)
+
+function mergeEditorPreview(previous: BookingPageData, next: BookingPageData, target: EditorTarget | null): BookingPageData {
+  if (!target) return next
+  const merged = structuredClone(previous)
+  if (target.section === 'hero') merged.hero = next.hero
+  if (target.section === 'about') merged.about = next.about
+  if (target.section === 'venue') {
+    merged.venue = next.venue
+    merged.venueFacts = next.venueFacts
+    merged.importantInfo = next.importantInfo
+  }
+  if (target.section === 'timeline') merged.timeline = next.timeline
+  if (target.section === 'tickets') merged.packages = next.packages
+  if (target.section === 'testimonials') merged.testimonials = next.testimonials
+  if (target.section === 'faq') merged.faq = next.faq
+  if (target.section === 'cta') merged.cta = next.cta
+  if (target.section === 'footer') merged.footer = next.footer
+  merged.visibility = { ...previous.visibility, [target.section]: next.visibility[target.section] }
+  const headingKeys = target.section === 'venue' ? ['venue', 'venueFacts'] : [target.section]
+  merged.sectionHeadings = { ...previous.sectionHeadings }
+  for (const key of headingKeys) {
+    if (key in next.sectionHeadings) merged.sectionHeadings[key] = next.sectionHeadings[key]
+  }
+  merged.editorState = {
+    touchedSections: BOOKING_SECTION_IDS.filter(section => previous.editorState.touchedSections.includes(section) || next.editorState.touchedSections.includes(section)),
+    updatedAtBySection: { ...previous.editorState.updatedAtBySection, ...next.editorState.updatedAtBySection },
+  }
+  return merged
+}
 
 function EditableTarget({ target, className = '', children }: { target: EditorTarget; className?: string; children: React.ReactNode }) {
   const { data, mode, select } = useBooking()
@@ -228,12 +261,12 @@ function LocalizedTicketHeading() {
   )
 }
 
-function LocalizedBookBtn({ tier, premium = false }: { tier: { name: string; accent: string; glow: string }; premium?: boolean }) {
+function LocalizedBookBtn({ tier, premium = false, soldOut = false }: { tier: { name: string; accent: string; glow: string }; premium?: boolean; soldOut?: boolean }) {
   const { translations: tr } = useLocale()
   const { t } = useTheme()
   const accent = t.isDark ? tier.accent : t.accent
   return (
-    <button className="w-full py-3.5 rounded-2xl font-bold text-sm text-center transition-all duration-300 hover:-translate-y-1"
+    <button disabled={soldOut} className="w-full py-3.5 rounded-2xl font-bold text-sm text-center transition-all duration-300 hover:-translate-y-1 disabled:cursor-not-allowed disabled:opacity-50"
       style={{ background: t.isDark ? `${accent}18` : premium ? `linear-gradient(135deg,${t.accent},${t.accentDim})` : `${accent}0D`, color: t.isDark || !premium ? accent : '#FFFFFF', border: `1.5px solid ${t.isDark ? `${accent}40` : accent}`, boxShadow: t.isDark ? `0 8px 24px ${tier.glow}` : premium ? `0 10px 20px ${t.accentGlow}` : `0 3px 8px ${t.accentGlow}` }}>
       {tr.tickets.bookNow} {tier.name} →
     </button>
@@ -819,7 +852,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const { t } = useTheme()
   const checkoutAccent = t.isDark ? tier.accent : t.accent
   const { translations: tr, formatPrice, locale, t: translate } = useLocale()
-  const { data, payments, eventId, mode } = useBooking()
+  const { data, payments, eventId, mode, seatPreview } = useBooking()
   const location = useLocation()
   const navigate = useNavigate()
   const bookingRecovery = useBookingSessionRecovery()
@@ -846,9 +879,15 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const [bookingId] = useState(() => recoveredState?.bookingReference || `APEX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`)
   const [checkoutIdempotencyKey] = useState(() => recoveredState?.checkoutIdempotencyKey || crypto.randomUUID())
   const contentRef = useRef<HTMLDivElement>(null)
-  const ticketDownloadRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const submitInFlightRef = useRef(false)
+  const [isPreparingTicket, setIsPreparingTicket] = useState(false)
+  useDocumentScrollLock(true)
+
+  useEffect(() => {
+    document.body.classList.add('checkout-open')
+    return () => document.body.classList.remove('checkout-open')
+  }, [])
 
   const pricing = packagePricing(tier)
   const total = pricing.totalDue
@@ -864,6 +903,9 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
     setLoadedSeats(seats)
     setSeatsLoading(loading)
   }, [])
+  const draftSeatsForPackage = mode === 'editor' && seatPreview
+    ? seatPreview.filter(seat => seat.packageId === tier.packageKey)
+    : undefined
 
   const STEPS: BStep[] = ['seats', 'details', 'payment', 'waiting', 'done']
   const stepIdx = STEPS.indexOf(step)
@@ -954,14 +996,8 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape' && step !== 'done' && step !== 'declined' && step !== 'bank_waiting') onClose() }
     window.addEventListener('keydown', fn)
-    // Lock background scroll (iframe-safe — no position:fixed)
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    document.body.classList.add('checkout-open')
     return () => {
       window.removeEventListener('keydown', fn)
-      document.body.style.overflow = prev
-      document.body.classList.remove('checkout-open')
     }
   }, [onClose, step])
 
@@ -1229,6 +1265,15 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   const hasRealSeats = Boolean(tier.packageKey && eventId)
 
+  // A package can opt out of customer seat choice while still requiring a
+  // database seat UUID at checkout. Select the first current available seat;
+  // the existing protected reservation RPC confirms it on Continue.
+  useEffect(() => {
+    if (previewOnly || tier.seatSelectionEnabled !== false || selectedSeatId || !hasRealSeats) return
+    const nextSeat = loadedSeats.find(seat => seat.status === 'available')
+    if (nextSeat) setSelectedSeatId(nextSeat.id)
+  }, [hasRealSeats, loadedSeats, previewOnly, selectedSeatId, tier.seatSelectionEnabled])
+
   const StepSeats = () => (
     <div className="flex flex-col lg:flex-row gap-6">
       <div className="flex-1">
@@ -1243,8 +1288,11 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
             onSelect={seat => { void handleSeatSelect(seat) }}
             onSeatsChange={handleSeatsChange}
             refreshToken={seatRefreshRevision}
-            onAttemptTaken={() => showSeatMsg(translate('booking.alreadyTaken'))}
+            onAttemptTaken={() => showSeatMsg('This seat is already taken or unavailable. Please choose another seat.')}
             accent={checkoutAccent}
+            selectionEnabled={tier.seatSelectionEnabled !== false}
+            seatsOverride={draftSeatsForPackage}
+            allowDraftSeats={previewOnly}
           />
         ) : (
           <SeatGrid
@@ -1660,6 +1708,25 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   const currentTicket = ticketId ? ticketStore.findById(ticketId) : null
   const ticketRefUrl = currentTicket ? `${window.location.origin}/ticket/${currentTicket.qrToken ?? currentTicket.id}` : ''
+  const ticketView = useMemo(() => createTicketViewModel(currentTicket, {
+    eventName: data.hero?.title,
+    eventBanner: data.hero?.images?.[0],
+    eventDate: data.hero?.date,
+    eventTime: data.hero?.show,
+    eventVenue: data.hero?.venue,
+    eventHost: data.hero?.tour?.replace('Hosted by ', '') || data.hero?.title,
+    customerName: info.name,
+    packageName: tier.name,
+    packageAccent: tier.accent,
+    seatLabel: selectedSeatLabel ?? undefined,
+    benefits: tier.benefits || [],
+    ticketNumber: currentTicket?.ticketNumber || 'TKT-XXXX-XXXX',
+    bookingReference: bookingId,
+    status: currentTicket?.status || 'approved',
+  }, {
+    locale: locale.bcp47,
+    verificationUrl: ticketRefUrl,
+  }), [bookingId, currentTicket, data.hero, info.name, locale.bcp47, selectedSeatLabel, ticketRefUrl, tier.accent, tier.benefits, tier.name])
 
   const handleShare = async () => {
     if (navigator.share) {
@@ -1673,17 +1740,16 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   }
 
   const handleDownload = async () => {
-    if (!ticketDownloadRef.current) return
+    if (isPreparingTicket) return
+    setIsPreparingTicket(true)
     try {
-      const { toPng } = await import('html-to-image')
-      const image = await toPng(ticketDownloadRef.current, { cacheBust: true, pixelRatio: 2, backgroundColor: t.isDark ? '#111113' : '#FFFFFF' })
-      const link = document.createElement('a')
-      link.download = `apex-ticket-${currentTicket?.ticketNumber || bookingId}.png`
-      link.href = image
-      link.click()
+      await downloadTicketPng(ticketView)
       showSeatMsg(tr.toast.downloaded)
-    } catch {
-      showSeatMsg('Ticket image could not be downloaded. Please try again.')
+    } catch (error) {
+      console.error('[ticket-download] Unable to prepare ticket', error)
+      showSeatMsg('Unable to prepare your ticket. Please try again.')
+    } finally {
+      setIsPreparingTicket(false)
     }
   }
 
@@ -1698,13 +1764,13 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         <h3 className="font-serif text-3xl font-bold mb-2" style={{ color: t.text }}>{tr.done.heading} {data.hero?.title || ''}</h3>
         <p className="text-sm mb-8" style={{ color: t.textSub }}>{tr.done.subtitle.replace('{email}', info.email || 'your email')}</p>
         
-        <div ref={ticketDownloadRef} className="premium-issued-ticket max-w-md mx-auto overflow-hidden relative" style={{ '--ticket-accent': tier.accent, background: t.isDark ? 'linear-gradient(145deg,#111113,#1a1a1f)' : t.card, border: `1px solid ${t.isDark ? `${tier.accent}55` : t.accent}`, boxShadow: t.isDark ? `0 28px 80px ${tier.glow}` : `0 24px 60px ${t.accentGlow}` } as React.CSSProperties}>
+        <div className="premium-issued-ticket max-w-md mx-auto overflow-hidden relative" style={{ '--ticket-accent': tier.accent, background: t.isDark ? 'linear-gradient(145deg,#111113,#1a1a1f)' : t.card, border: `1px solid ${t.isDark ? `${tier.accent}55` : t.accent}`, boxShadow: t.isDark ? `0 28px 80px ${tier.glow}` : `0 24px 60px ${t.accentGlow}` } as React.CSSProperties}>
           <div className="premium-ticket-banner h-40 relative">
-            <img src={data.hero?.images?.[0] || ''} alt={data.hero?.title} className="w-full h-full object-cover" />
+            <img src={ticketView.eventImage} alt={ticketView.eventTitle} className="w-full h-full object-cover" />
             <div className="absolute inset-0 bg-gradient-to-t from-[#111113] to-transparent opacity-90" />
             <div className="absolute bottom-4 left-5 right-5 text-left">
-              <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: tier.accent }}>{data.hero?.tour?.replace('Hosted by ', '') || data.hero?.title} {tr.done.presents}</div>
-              <div className="font-serif text-xl font-bold leading-tight" style={{ color: '#FFFFFF' }}>{data.hero?.title}</div>
+              <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: tier.accent }}>{ticketView.eventHost} {tr.done.presents}</div>
+              <div className="font-serif text-xl font-bold leading-tight break-words" style={{ color: '#FFFFFF' }}>{ticketView.eventTitle}</div>
             </div>
           </div>
           <div className="premium-ticket-body relative p-6 text-left" style={{ background: t.isDark ? 'transparent' : t.card }}>
@@ -1712,39 +1778,39 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
             <div className="flex justify-between items-start mb-6">
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.customerName}</div>
-                <div className="font-bold text-lg" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{currentTicket?.customerName || info.name || 'Alex Morgan'}</div>
+                <div className="font-bold text-lg break-words" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{ticketView.customerName}</div>
               </div>
               <div className="text-right">
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.ticketNo}</div>
-                <div className="font-mono text-xs font-bold" style={{ color: checkoutAccent }}>{currentTicket?.ticketNumber || 'TKT-XXXX-XXXX'}</div>
+                <div className="font-mono text-xs font-bold break-all" style={{ color: checkoutAccent }}>{ticketView.ticketCode}</div>
               </div>
             </div>
             
             <div className="premium-ticket-details grid grid-cols-2 gap-4 mb-6">
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.dateTime}</div>
-                <div className="text-sm font-semibold" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{data.hero?.date}</div>
-                <div className="text-xs mt-0.5" style={{ color: t.textSub }}>{data.hero?.show}</div>
+                <div className="text-sm font-semibold break-words" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{ticketView.eventDate}</div>
+                <div className="text-xs mt-0.5 break-words" style={{ color: t.textSub }}>{ticketView.eventTime}</div>
               </div>
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.done.venue}</div>
-                <div className="text-sm font-semibold" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{data.hero?.venue}</div>
+                <div className="text-sm font-semibold break-words" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{ticketView.venue}</div>
               </div>
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.booking.package}</div>
-                <div className="text-sm font-bold" style={{ color: checkoutAccent }}>{tier.name}</div>
+                <div className="text-sm font-bold break-words" style={{ color: checkoutAccent }}>{ticketView.packageName}</div>
               </div>
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: t.textMuted }}>{tr.booking.seat}</div>
-                <div className="text-sm font-bold" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{selectedSeatLabel ?? 'TBD'}</div>
+                <div className="text-sm font-bold break-words" style={{ color: t.isDark ? '#FFFFFF' : t.text }}>{ticketView.seatLabel}</div>
               </div>
             </div>
 
-            {tier.benefits && tier.benefits.length > 0 && (
+            {ticketView.packageBenefits.length > 0 && (
               <div className="premium-ticket-benefits mb-6 p-4 rounded-2xl" style={{ background: t.isDark ? 'rgba(0,0,0,0.4)' : t.inputBg, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.05)' : t.border}` }}>
                 <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: t.textMuted }}>{tr.done.includedBenefits}</div>
                 <ul className="text-xs space-y-1.5" style={{ color: t.isDark ? '#D4D4D8' : t.textSub }}>
-                  {tier.benefits.map((b: string, i: number) => (
+                  {ticketView.packageBenefits.map((b: string, i: number) => (
                     <li key={i} className="flex items-start gap-2">
                       <span style={{ color: checkoutAccent }}>✦</span>
                       <span>{b}</span>
@@ -1757,7 +1823,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
             <div className="flex justify-center mb-4">
               <div className="premium-ticket-qr bg-white p-3 rounded-2xl flex items-center justify-center">
                 <QRCodeSVG
-                  value={ticketRefUrl}
+                  value={ticketView.verificationUrl || ticketView.qrToken || ticketView.ticketCode}
                   size={120}
                   bgColor="#FFFFFF"
                   fgColor="#09090B"
@@ -1774,9 +1840,9 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
         </div>
         
         <div className="flex flex-wrap gap-3 justify-center mt-6">
-          <button onClick={handleDownload} className="px-6 py-3 rounded-xl text-sm font-bold flex items-center gap-2 transition-all hover:scale-105" style={{ background: checkoutAccent, color: t.isDark ? '#09090B' : '#FFFFFF', boxShadow: t.btnShadow }}>
+          <button disabled={isPreparingTicket} onClick={handleDownload} className="px-6 py-3 rounded-xl text-sm font-bold flex items-center gap-2 transition-all hover:scale-105 disabled:cursor-wait disabled:opacity-60" style={{ background: checkoutAccent, color: t.isDark ? '#09090B' : '#FFFFFF', boxShadow: t.btnShadow }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-4 h-4"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-            {tr.done.downloadTicket}
+            {isPreparingTicket ? 'Preparing ticket…' : tr.done.downloadTicket}
           </button>
           <button onClick={handleShare} className="px-6 py-3 rounded-xl text-sm font-bold flex items-center gap-2 transition-all hover:scale-105" style={{ background: t.isDark ? 'rgba(255,255,255,0.06)' : t.card, border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.1)' : t.border}`, color: t.text, boxShadow: t.btnShadow }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13" /></svg>
@@ -1936,7 +2002,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 function TicketSection() {
   const { t } = useTheme()
   const { translations: tr, formatPrice, t: translate } = useLocale()
-  const { data, mode, previewState, simulationOnly, eventId } = useBooking()
+  const { data, mode, previewState, simulationOnly, eventId, seatPreview } = useBooking()
   const location = useLocation()
   const navigate = useNavigate()
   const bookingRecovery = useBookingSessionRecovery()
@@ -1945,10 +2011,40 @@ function TicketSection() {
   const [recoveredState, setRecoveredState] = useState<PersistedBookingState | null>(null)
   const [expiredState, setExpiredState] = useState<PersistedBookingState | null>(null)
   const [sessionExpired, setSessionExpired] = useState(false)
-  const tiers = data.packages.map((tier, id) => ({ ...tier, packageKey: tier.id, id }))
+  const [availableSeatsByPackage, setAvailableSeatsByPackage] = useState<Record<string, number>>({})
+  const [seatAvailabilityReady, setSeatAvailabilityReady] = useState(false)
+  const previewSeatsByPackage = (seatPreview ?? []).reduce<Record<string, SeatRecord[]>>((groups, seat) => {
+    if (seat.packageId) (groups[seat.packageId] ??= []).push(seat)
+    return groups
+  }, {})
+  const hasPreviewSeats = mode === 'editor' && seatPreview !== undefined
+  const tiers = data.packages.map((tier, id) => ({
+    ...tier,
+    allocatedSeats: hasPreviewSeats ? (previewSeatsByPackage[tier.id]?.length ?? tier.seats) : tier.seats,
+    seats: mode === 'published' && seatAvailabilityReady
+      ? (availableSeatsByPackage[tier.id] ?? 0)
+      : hasPreviewSeats
+        ? (previewSeatsByPackage[tier.id] ?? []).filter(seat => seat.status === 'available').length
+        : tier.seats,
+    packageKey: tier.id,
+    id,
+  }))
   const prices = tiers.map(tier => packagePricing(tier).chargedUnitPrice)
   const lowestPrice = Math.min(...prices)
   const highestPrice = Math.max(...prices)
+
+  useEffect(() => {
+    if (mode !== 'published' || !eventId) return
+    let active = true
+    setSeatAvailabilityReady(false)
+    void Promise.all(data.packages.map(async tier => {
+      const seats = await seatService.listPublic(eventId, tier.id)
+      return [tier.id, seats.filter(seat => seat.status === 'available').length] as const
+    })).then(entries => {
+      if (active) { setAvailableSeatsByPackage(Object.fromEntries(entries)); setSeatAvailabilityReady(true) }
+    }).catch(() => { if (active) setSeatAvailabilityReady(true) })
+    return () => { active = false }
+  }, [data.packages, eventId, mode])
 
   const previewStep: BStep = previewState === 'checkout' ? 'details'
     : previewState === 'payment-pending' ? 'payment'
@@ -2014,7 +2110,7 @@ function TicketSection() {
             const isPremium = !t.isDark && valueLevel >= 0.75
             const isElevated = !t.isDark && valueLevel >= 0.35
             return (
-            <EditableTarget key={tier.id} target={{ section: 'tickets', index }}><div onClick={() => { if (mode !== 'editor') setModalTier(tier.id) }}
+            <EditableTarget key={tier.id} target={{ section: 'tickets', index }}><div onClick={() => { if (mode !== 'editor' && (mode !== 'published' || tier.seats > 0)) setModalTier(tier.id) }}
               className="ticket-tier-card relative rounded-3xl p-7 cursor-pointer flex flex-col items-center text-center transition-all duration-300 group"
               style={{ background: t.isDark ? t.card : isPremium ? 'linear-gradient(145deg,#FFFFFF 0%,#EEF4FF 100%)' : isElevated ? 'linear-gradient(145deg,#FFFFFF 0%,#F7F9FF 100%)' : t.card, border: `1px solid ${t.isDark ? t.cardBorder : isPremium ? t.accent : isElevated ? `${t.accent}70` : t.cardBorder}`, boxShadow: t.isDark ? t.cardShadow : isPremium ? `0 16px 32px ${t.accentGlow}` : isElevated ? `0 10px 24px rgba(23,26,31,0.07)` : t.cardShadow }}
               onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-5px)'; (e.currentTarget as HTMLDivElement).style.borderColor = visualAccent; (e.currentTarget as HTMLDivElement).style.boxShadow = t.isDark ? `0 0 40px ${tier.glow}, 0 20px 60px rgba(0,0,0,0.3)` : `0 12px 28px ${visualGlow}` }}
@@ -2036,7 +2132,9 @@ function TicketSection() {
                 <span className="text-sm ml-1" style={{ color: t.textMuted }}>{tr.tickets.perTicket}</span>
               </div>
               {tierPricing.discountIsActive && <div className="mb-4 min-h-10 text-center text-xs" style={{ color: '#00FF88' }}><div className="font-bold">Save {formatPrice(tierPricing.discountAmount)} — {tierPricing.discountPercentage}% OFF</div>{tierPricing.discountEndsAt && <DiscountCountdown endsAt={tierPricing.discountEndsAt} className="mt-1" />}</div>}
-              <div className="text-xs font-mono mb-4 text-center" style={{ color: tier.seats < 20 ? '#EF4444' : t.textMuted }}><AnimatedMetric value={tier.seats} /> {tr.tickets.seatsRemaining}</div>
+              <div className="text-xs font-mono mb-4 text-center" style={{ color: tier.seats < 20 ? '#EF4444' : t.textMuted }}>
+                {(mode === 'published' && seatAvailabilityReady) || hasPreviewSeats ? <><AnimatedMetric value={tier.allocatedSeats} /> total seats · <AnimatedMetric value={tier.seats} /> {tr.tickets.seatsRemaining}</> : <><AnimatedMetric value={tier.seats} /> {tr.tickets.seatsRemaining}</>}
+              </div>
               <div className="w-full h-1.5 rounded-full mb-6 overflow-hidden" style={{ background: t.isDark ? t.border : '#F3F4F6' }}>
                 <div className="h-full rounded-full" style={{ width: `${100 - (tier.seats / 400) * 100}%`, background: visualAccent }} />
               </div>
@@ -2048,7 +2146,7 @@ function TicketSection() {
                   </li>
                 ))}
               </ul>
-              <LocalizedBookBtn tier={tier} premium={isPremium} />
+              <LocalizedBookBtn tier={tier} premium={isPremium} soldOut={mode === 'published' && seatAvailabilityReady && tier.seats <= 0} />
             </div></EditableTarget>
             )
           })}
@@ -2262,18 +2360,29 @@ function FloatingChatButton({ eventId = 'default', isPreview = false, mode = 'pr
 
 function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, close }: { data: BookingPageData; target: EditorTarget | null; eventId?: string; onApply: (data: BookingPageData) => void; onDraftChange?: (data: BookingPageData) => void; close: () => void }) {
   const [draft, setDraft] = useState<BookingPageData>(() => structuredClone(data))
-  const [libraryTarget, setLibraryTarget] = useState<'image' | 'hero' | 'about' | null>(null)
+  const [mediaLibraryOpen, setMediaLibraryOpen] = useState(false)
+  const [mediaLibraryTarget, setMediaLibraryTarget] = useState<'image' | 'hero' | 'about' | null>(null)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [packageNotice, setPackageNotice] = useState<string | null>(null)
   const draftReady = useRef(false)
-  useEffect(() => { setDraft(structuredClone(data)); setLibraryTarget(null); setUploadProgress(0); setUploadError(null); setPackageNotice(null) }, [data, target])
+  const editorTargetKey = target ? `${target.section}:${target.index ?? ''}` : 'none'
+  useEffect(() => { draftReady.current = false; setDraft(structuredClone(data)); setMediaLibraryOpen(false); setMediaLibraryTarget(null); setUploadProgress(0); setUploadError(null); setPackageNotice(null) }, [editorTargetKey])
   useEffect(() => {
+    if (!target) return
     if (!draftReady.current) { draftReady.current = true; return }
     const timer = window.setTimeout(() => onDraftChange?.(structuredClone(draft)), 120)
     return () => window.clearTimeout(timer)
-  }, [draft, onDraftChange])
+  }, [draft, onDraftChange, target])
   if (!target) return null
+  const openMediaLibrary = (nextTarget: 'image' | 'hero' | 'about') => {
+    setMediaLibraryTarget(nextTarget)
+    setMediaLibraryOpen(true)
+  }
+  const closeMediaLibrary = () => {
+    setMediaLibraryOpen(false)
+    setMediaLibraryTarget(null)
+  }
   const mutate = (change: (next: BookingPageData) => void) => setDraft(current => { const next = structuredClone(current); change(next); return next })
   const input = (label: string, value: string, set: (value: string) => void, multiline = false) => <label className="block"><span className="text-[11px] text-zinc-400">{label}</span>{multiline ? <textarea value={value} onChange={event => set(event.target.value)} className="mt-1.5 h-24 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" /> : <input value={value} onChange={event => set(event.target.value)} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none focus:border-emerald-400" />}</label>
   const applyImage = (url: string) => mutate(next => { if (target.section === 'hero') next.hero.images[0] = url; if (target.section === 'about') next.about.image = url; if (target.section === 'venue') next.venue.image = url; if (target.section === 'cta') next.cta.image = url; if (target.section === 'testimonials' && target.index !== undefined) next.testimonials[target.index].avatar = url })
@@ -2327,7 +2436,7 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
   const remove = () => mutate(next => { if (target.section === 'timeline' && target.index !== undefined) next.timeline.splice(target.index, 1); if (target.section === 'testimonials' && target.index !== undefined) next.testimonials.splice(target.index, 1); if (target.section === 'faq' && target.index !== undefined) next.faq.splice(target.index, 1) })
   const addBlankPackage = () => {
     const starter = createPackageFromType(PACKAGE_TYPE_LIBRARY[0])
-    mutate(next => { next.packages.push({ ...starter, name: 'New Package', desc: 'Describe what this package includes', badge: null, price: 0, seats: 100 }) })
+    mutate(next => { next.packages.push({ ...starter, name: 'New Package', desc: 'Describe what this package includes', badge: null, originalPrice: starter.price, seats: 100 }) })
     setPackageNotice('New package card added. Apply your changes, then tap the new card to customize it.')
   }
   const removePackageById = (packageId: string) => {
@@ -2361,18 +2470,19 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
   const visibleHeroImages = draft.hero.images.filter(Boolean)
   const selectLibraryAsset = (asset: LibraryAsset) => {
     if (!asset.url) return
-    if (libraryTarget === 'hero') addHeroImage(asset.url)
-    else if (libraryTarget === 'about') applyAboutMedia(asset.url, asset.mimeType.startsWith('video/') ? 'video' : 'image')
+    if (mediaLibraryTarget === 'hero') addHeroImage(asset.url)
+    else if (mediaLibraryTarget === 'about') applyAboutMedia(asset.url, asset.mimeType.startsWith('video/') ? 'video' : 'image')
     else applyImage(asset.url)
     mediaLibraryStore.use(asset.id, eventId)
   }
-  const libraryPicker = <MediaLibraryPicker open={libraryTarget !== null} target={libraryTarget === 'hero' ? 'hero background' : libraryTarget === 'about' ? 'event card media' : target.section === 'testimonials' ? 'review avatar' : `${BOOKING_SECTION_LABELS[target.section]} image`} accept={libraryTarget === 'about' ? 'visual' : 'image'} onClose={() => setLibraryTarget(null)} onSelect={selectLibraryAsset} />
-  const imageControls = <><label className="mt-4 block rounded-xl border border-dashed border-white/20 p-3 text-center text-xs text-zinc-300">Upload from device<input hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }} /></label><button type="button" onClick={() => setLibraryTarget('image')} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2 text-xs text-emerald-300">Select from Library</button><button type="button" onClick={() => applyImage('')} className="mt-2 text-xs text-red-300">Delete image</button>{libraryPicker}</>
+  const libraryPicker = <MediaLibraryPicker open={mediaLibraryOpen && mediaLibraryTarget !== null} target={mediaLibraryTarget === 'hero' ? 'hero background' : mediaLibraryTarget === 'about' ? 'event card media' : target.section === 'testimonials' ? 'review avatar' : `${BOOKING_SECTION_LABELS[target.section]} image`} accept={mediaLibraryTarget === 'about' ? 'visual' : 'image'} onClose={closeMediaLibrary} onSelect={selectLibraryAsset} />
+  const currentEditableImage = target.section === 'venue' ? draft.venue.image : target.section === 'cta' ? draft.cta.image : target.section === 'hero' ? draft.hero.images[0] : target.section === 'about' ? draft.about.image : target.section === 'testimonials' && target.index !== undefined ? draft.testimonials[target.index].avatar : ''
+  const imageControls = <><div className="mt-4"><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Current image</div>{currentEditableImage ? <div className="relative mt-2 overflow-hidden rounded-xl border border-white/10 bg-black/40"><img src={currentEditableImage} alt={`Current ${BOOKING_SECTION_LABELS[target.section]} image`} className="aspect-[4/3] w-full object-cover"/><button type="button" onClick={() => applyImage('')} className="absolute right-2 top-2 rounded-lg bg-black/80 px-2.5 py-1.5 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove image</button></div> : <div className="mt-2 grid aspect-[4/3] place-items-center rounded-xl border border-dashed border-white/15 bg-white/[.03] text-xs text-zinc-500">No image selected</div>}</div><label className="mt-3 block rounded-xl border border-dashed border-white/20 p-3 text-center text-xs text-zinc-300">Upload from device<input hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }} /></label><button type="button" onClick={event => { event.stopPropagation(); openMediaLibrary('image') }} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2 text-xs text-emerald-300">Select from Library</button>{libraryPicker}</>
   const heroImageControls = target.section === 'hero' ? <div className="mt-4 rounded-2xl border border-white/10 bg-white/[.03] p-4">
     <div className="flex items-start justify-between gap-3"><div><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Hero images</div><div className="mt-1 text-[10px] leading-relaxed text-zinc-500">Every current banner is shown below. The first image is the opening background.</div></div><span className="shrink-0 rounded-full bg-emerald-400/10 px-2 py-1 text-[9px] font-bold text-emerald-300">{visibleHeroImages.length} images</span></div>
     {visibleHeroImages.length ? <div className="mt-3 grid grid-cols-2 gap-2">{visibleHeroImages.map((src, index) => <div key={`${src}-${index}`} className="group relative overflow-hidden rounded-xl border border-white/10 bg-black/40"><img src={src} alt={`Hero image ${index + 1}`} className="aspect-video w-full object-cover"/><div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/90 to-transparent px-2 pb-2 pt-6"><span className="rounded bg-black/60 px-1.5 py-0.5 text-[8px] font-bold uppercase text-white">{index === 0 ? 'Opening image' : `Slide ${index + 1}`}</span></div><button type="button" onClick={() => removeHeroImage(src)} aria-label={`Remove hero image ${index + 1}`} className="absolute right-1.5 top-1.5 rounded-lg bg-black/75 px-2 py-1 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove</button></div>)}</div> : <div className="mt-3 grid aspect-video place-items-center rounded-xl border border-dashed border-white/10 text-xs text-zinc-500">No hero images selected</div>}
     <label className="mt-3 block cursor-pointer rounded-xl bg-emerald-400 px-3 py-2.5 text-center text-xs font-bold text-zinc-950">Add images from device<input hidden multiple type="file" accept="image/*" onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void uploadHeroImages(files) }} /></label>
-    <button type="button" onClick={() => setLibraryTarget('hero')} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Select from Library</button>
+    <button type="button" onClick={event => { event.stopPropagation(); openMediaLibrary('hero') }} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Select from Library</button>
     {libraryPicker}
     {uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3 text-xs text-zinc-400">Uploading hero images…</div>}
     {uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Hero media saved to Media Center.</div>}
@@ -2382,13 +2492,13 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
     <div className="flex items-center justify-between gap-3"><div><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Event card media</div><div className="mt-1 text-[10px] text-zinc-500">Images display in full. Videos play inline on the event page.</div></div><span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-emerald-300">{draft.about.mediaType === 'video' ? 'Video' : 'Image'}</span></div>
     {draft.about.image ? <div className="relative mt-3 overflow-hidden rounded-xl border border-white/10 bg-black/40">{draft.about.mediaType === 'video' ? <video src={draft.about.image} controls playsInline preload="metadata" className="aspect-video w-full object-contain" /> : <img src={draft.about.image} alt="Current event card media" className="aspect-video w-full object-contain" />}<button type="button" onClick={() => applyAboutMedia('', 'image')} className="absolute right-2 top-2 rounded-lg bg-black/80 px-2.5 py-1.5 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove media</button></div> : <div className="mt-3 grid aspect-video place-items-center rounded-xl border border-dashed border-white/10 text-xs text-zinc-500">No media selected</div>}
     <label className="mt-3 block cursor-pointer rounded-xl bg-emerald-400 px-3 py-2.5 text-center text-xs font-bold text-zinc-950">Upload image or video<input hidden type="file" accept="image/*,video/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }} /></label>
-    <button type="button" onClick={() => setLibraryTarget('about')} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Select from Library</button>
+    <button type="button" onClick={event => { event.stopPropagation(); openMediaLibrary('about') }} className="mt-2 w-full rounded-xl bg-white/5 px-3 py-2.5 text-xs text-emerald-300">Select from Library</button>
     {libraryPicker}
     {uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }} /></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}
     {uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Media uploaded successfully.</div>}
     {uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}
   </div> : null
-  const reviewImageControls = target.section === 'testimonials' && target.index !== undefined ? <><div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Customer review image</div>{draft.testimonials[target.index].avatar ? <div className="relative mt-3 w-full overflow-hidden rounded-2xl border border-white/10 bg-black/40"><img src={draft.testimonials[target.index].avatar} alt={draft.testimonials[target.index].name} className="aspect-[16/9] w-full object-contain"/><button type="button" onClick={() => applyImage('')} className="absolute right-2 top-2 rounded-lg bg-black/80 px-2.5 py-1.5 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove image</button></div> : <div className="mt-3 grid aspect-video w-full place-items-center rounded-2xl border border-dashed border-white/10 bg-white/5 text-xs text-zinc-500">No customer image selected</div>}<div className="mt-3 grid gap-2 sm:grid-cols-2"><label className="cursor-pointer rounded-lg bg-emerald-400 px-3 py-2 text-center text-xs font-bold text-zinc-950">{draft.testimonials[target.index].avatar ? 'Replace image' : 'Upload image'}<input hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }}/></label><button type="button" onClick={() => setLibraryTarget('image')} className="rounded-lg bg-white/5 px-3 py-2 text-xs text-emerald-300">Select from Library</button></div>{uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }}/></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}{uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Image uploaded successfully.</div>}{uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}</div>{libraryPicker}</> : null
+  const reviewImageControls = target.section === 'testimonials' && target.index !== undefined ? <><div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Customer review image</div>{draft.testimonials[target.index].avatar ? <div className="relative mt-3 w-full overflow-hidden rounded-2xl border border-white/10 bg-black/40"><img src={draft.testimonials[target.index].avatar} alt={draft.testimonials[target.index].name} className="aspect-[16/9] w-full object-contain"/><button type="button" onClick={() => applyImage('')} className="absolute right-2 top-2 rounded-lg bg-black/80 px-2.5 py-1.5 text-[10px] font-bold text-red-200 shadow-lg hover:bg-red-500 hover:text-white">Remove image</button></div> : <div className="mt-3 grid aspect-video w-full place-items-center rounded-2xl border border-dashed border-white/10 bg-white/5 text-xs text-zinc-500">No customer image selected</div>}<div className="mt-3 grid gap-2 sm:grid-cols-2"><label className="cursor-pointer rounded-lg bg-emerald-400 px-3 py-2 text-center text-xs font-bold text-zinc-950">{draft.testimonials[target.index].avatar ? 'Replace image' : 'Upload image'}<input hidden type="file" accept="image/*" onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; void upload(file) }}/></label><button type="button" onClick={event => { event.stopPropagation(); openMediaLibrary('image') }} className="rounded-lg bg-white/5 px-3 py-2 text-xs text-emerald-300">Select from Library</button></div>{uploadProgress > 0 && uploadProgress < 100 && <div className="mt-3"><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full bg-emerald-400 transition-[width]" style={{ width: `${uploadProgress}%` }}/></div><div className="mt-1 text-[10px] text-zinc-500">Uploading {uploadProgress}%</div></div>}{uploadProgress === 100 && <div className="mt-2 text-xs text-emerald-300">Image uploaded successfully.</div>}{uploadError && <div className="mt-2 rounded-lg bg-red-500/10 p-2 text-xs text-red-300">{uploadError}</div>}</div>{libraryPicker}</> : null
   const reviewGalleryControls = target.section === 'testimonials' && target.index === undefined ? <div className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">Review card images</div><div className="mt-1 text-[10px] text-zinc-500">All current and default customer images are visible here.</div><div className="mt-3 grid grid-cols-2 gap-2">{draft.testimonials.map((review, index) => <div key={review.id} className="relative overflow-hidden rounded-xl border border-white/10 bg-black/40">{review.avatar ? <img src={review.avatar} alt={review.name} className="aspect-video w-full object-cover"/> : <div className="grid aspect-video place-items-center text-[10px] text-zinc-500">No image</div>}<div className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/90 to-transparent px-2 pb-2 pt-5 text-[9px] font-bold text-white">{review.name}</div>{review.avatar && <button type="button" onClick={() => removeReviewImage(index)} aria-label={`Remove image for ${review.name}`} className="absolute right-1.5 top-1.5 rounded-lg bg-black/75 px-2 py-1 text-[9px] font-bold text-red-200 hover:bg-red-500 hover:text-white">Remove</button>}</div>)}</div></div> : null
   const sectionLabel = BOOKING_SECTION_LABELS
   const headingInput = (key: string, defaultVal: string) => input('Section Heading', draft.sectionHeadings?.[key] ?? defaultVal, value => mutate(next => { if (!next.sectionHeadings) next.sectionHeadings = {}; next.sectionHeadings[key] = value }))
@@ -2589,11 +2699,19 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null)
   const [publicationError, setPublicationError] = useState<string | null>(null)
   const [publicationNotice, setPublicationNotice] = useState<string | null>(null)
+  const [publishedToastUrl, setPublishedToastUrl] = useState<string | null>(null)
+  const [publishNeedsPackageSave, setPublishNeedsPackageSave] = useState(false)
   const [socialProofOpen, setSocialProofOpen] = useState(() => recoveredEditor?.socialProofOpen ?? false)
+  useDocumentScrollLock(publicationOpen || socialProofOpen)
   const [packagesOpen, setPackagesOpen] = useState(false)
+  const [packageSaveNotice, setPackageSaveNotice] = useState<string | null>(null)
   const [eventSocialProof, setEventSocialProof] = useState<EventSocialProofOverride>(() => socialProofOverride ?? {})
+  const [seatPreview, setSeatPreview] = useState<SeatRecord[] | undefined>(undefined)
   const latestDataRef = useRef(data)
+  const packagesButtonRef = useRef<HTMLButtonElement>(null)
+  const lastSavedDataRef = useRef(structuredClone(initialSource))
   const lastSavedHash = useRef(JSON.stringify(initialSource))
+  const packageSeatDraftDirty = useRef(false)
   const saveTimer = useRef<number | null>(null)
   const saveInFlight = useRef<Promise<void> | null>(null)
   useReveal(data)
@@ -2603,12 +2721,18 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   const saveDraftNow = useCallback(async () => {
     if (mode !== 'editor' || !onSave) return
     if (!navigator.onLine) { setSaveStatus('offline'); return }
-    const next = latestDataRef.current
+    const liveDraft = latestDataRef.current
+    // Packages & Seats is intentionally excluded from Event Studio's general
+    // autosave until its own explicit save succeeds.
+    const next = packageSeatDraftDirty.current
+      ? { ...liveDraft, packages: lastSavedDataRef.current.packages }
+      : liveDraft
     const nextHash = JSON.stringify(next)
     if (nextHash === lastSavedHash.current) { setSaveStatus('saved'); return }
     if (saveInFlight.current) await saveInFlight.current
     setSaveStatus('saving')
     const operation = Promise.resolve(onSave(next)).then(() => {
+      lastSavedDataRef.current = structuredClone(next)
       lastSavedHash.current = nextHash
       setSaveStatus('saved')
     }).catch(error => {
@@ -2624,7 +2748,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
     const snapshot: EventStudioRecoverySnapshot = { eventId: eventId ?? 'template', data, selected, previewState, deviceMode, publicationOpen, socialProofOpen, updatedAt: Date.now() }
     setUiState(recoveryKey, snapshot)
     if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    if (JSON.stringify(data) !== lastSavedHash.current) {
+    if (!packageSeatDraftDirty.current && JSON.stringify(data) !== lastSavedHash.current) {
       setSaveStatus(navigator.onLine ? 'saving' : 'offline')
       saveTimer.current = window.setTimeout(() => void saveDraftNow(), 1500)
     }
@@ -2652,8 +2776,41 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
         },
       }
     }
-    setData(next)
+    setData(previous => mergeEditorPreview(previous, next, selected))
   }
+
+  const applyPackageDraftPreview = useCallback((preview: PackageSeatPreview) => {
+    packageSeatDraftDirty.current = true
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    setSeatPreview(preview.seats)
+    setData(previous => ({ ...previous, packages: preview.page.packages }))
+  }, [])
+
+  const applySavedPackages = useCallback((preview: PackageSeatPreview) => {
+    packageSeatDraftDirty.current = false
+    setSeatPreview(preview.seats)
+    lastSavedDataRef.current = {
+      ...lastSavedDataRef.current,
+      packages: structuredClone(preview.page.packages),
+    }
+    lastSavedHash.current = JSON.stringify(lastSavedDataRef.current)
+    setData(previous => ({ ...previous, packages: preview.page.packages }))
+  }, [])
+
+  const finishPackageSave = useCallback(() => {
+    setPackagesOpen(false)
+    setPackageSaveNotice('Packages & Seats saved.')
+    window.setTimeout(() => {
+      packagesButtonRef.current?.focus()
+      setPackageSaveNotice(null)
+    }, 2600)
+  }, [])
+
+  const discardPackageDraft = useCallback(() => {
+    packageSeatDraftDirty.current = false
+    setSeatPreview(undefined)
+    setData(previous => ({ ...previous, packages: structuredClone(lastSavedDataRef.current.packages) }))
+  }, [])
 
   const focusEditorSection = (section: BookingSectionId) => {
     setPublicationOpen(false)
@@ -2672,29 +2829,32 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
     if (JSON.stringify(latestDataRef.current) === lastSavedHash.current) {
       const next = structuredClone(sourceData)
       setData(next)
+      lastSavedDataRef.current = structuredClone(next)
       lastSavedHash.current = JSON.stringify(next)
     }
   }, [sourceData])
   useEffect(() => setEventSocialProof(socialProofOverride ?? {}), [socialProofOverride])
-  useEffect(() => {
-    if (!publicationOpen && !socialProofOpen) return
-    const previous = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = previous }
-  }, [publicationOpen, socialProofOpen])
-
   const missingPublicationFields = publicationReview
     ? ([['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language]] as const).filter(([, value]) => !value?.trim()).map(([label]) => label)
     : []
 
   const confirmPublish = async () => {
     if (!onPublish || missingPublicationFields.length) return
+    if (packageSeatDraftDirty.current) {
+      setPublicationError('Save your Packages & Seats changes before publishing.')
+      setPublishNeedsPackageSave(true)
+      return
+    }
     setPublishing(true)
     setPublicationError(null)
+    setPublishNeedsPackageSave(false)
     try {
       await saveDraftNow()
-      setPublishedUrl(await onPublish(data))
+      const url = await onPublish(latestDataRef.current)
+      setPublicationOpen(false)
+      setPublishedUrl(null)
       setPublicationNotice(null)
+      setPublishedToastUrl(url)
     } catch (error) {
       setPublicationError(error instanceof Error ? error.message : 'The page could not be published.')
     } finally {
@@ -2703,12 +2863,13 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   }
 
   const copyPublishedLink = async () => {
-    if (!publishedUrl) return
+    const url = publishedUrl ?? publishedToastUrl
+    if (!url) return
     try {
-      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(publishedUrl)
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(url)
       else {
         const input = document.createElement('textarea')
-        input.value = publishedUrl
+        input.value = url
         input.style.position = 'fixed'
         input.style.opacity = '0'
         document.body.appendChild(input)
@@ -2723,21 +2884,22 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   }
 
   const openPublishedPage = () => {
-    if (!publishedUrl) return
-    const opened = window.open(publishedUrl, '_blank')
+    const url = publishedUrl ?? publishedToastUrl
+    if (!url) return
+    const opened = window.open(url, '_blank')
     if (opened) opened.opener = null
-    else window.location.assign(publishedUrl)
+    else window.location.assign(url)
   }
 
   const publicationSectionReview = <div className="mt-4 rounded-2xl border border-white/10 bg-white/[.025] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><div className="text-sm font-bold">Page section review</div><div className="mt-1 text-xs text-zinc-500">Select any badge to jump directly to that editor section.</div></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} edited</span></div>{editedSections.length > 0 && <div className="mt-4"><div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">Edited sections</div><div className="mt-2 flex flex-wrap gap-2">{editedSections.map(section => <button key={section} type="button" onClick={() => focusEditorSection(section)} className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1.5 text-[10px] font-semibold text-emerald-200">✓ {BOOKING_SECTION_LABELS[section]}</button>)}</div></div>}{untouchedSections.length > 0 && <div className="mt-4"><div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">Untouched sections — review recommended</div><div className="mt-2 flex flex-wrap gap-2">{untouchedSections.map(section => <button key={section} type="button" onClick={() => focusEditorSection(section)} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1.5 text-[10px] font-semibold text-amber-200">● {BOOKING_SECTION_LABELS[section]}</button>)}</div></div>}</div>
 
   return (
     <LocaleProvider eventCountryCode={eventCountryCode} eventCurrencyCode={eventCurrencyCode} eventLanguageCode={eventLanguageCode}>
-    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly }}>
+    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly, seatPreview }}>
       <SocialProofOverlayProvider>
       <div className="booking-experience ios-stable-scroll" data-theme={t.isDark ? 'dark' : 'light'} style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
         {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><span className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} sections edited</span><span role="status" className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${saveStatus === 'error' ? 'bg-red-400/10 text-red-200' : saveStatus === 'offline' ? 'bg-amber-400/10 text-amber-200' : 'bg-white/5 text-zinc-300'}`}>{saveStatus === 'saving' ? 'Saving…' : saveStatus === 'offline' ? 'Offline — changes pending' : saveStatus === 'error' ? 'Save failed — retry' : saveStatus === 'saved' ? 'Saved' : 'Ready'}</span><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}
-<button type="button" onClick={() => setPackagesOpen(true)} className="rounded-xl bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300">Packages & Seats</button><button type="button" onClick={() => void saveDraftNow()} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { void saveDraftNow().then(() => { setPublishedUrl(null); setPublicationError(null); setPublicationOpen(true) }) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={() => { void saveDraftNow().then(() => onExit?.()) }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
+<button ref={packagesButtonRef} type="button" onClick={() => setPackagesOpen(true)} className="rounded-xl bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300">Packages & Seats</button><button type="button" onClick={() => void saveDraftNow()} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { void saveDraftNow().then(() => { setPublishedUrl(null); setPublicationError(null); setPublicationNotice(null); setPublishNeedsPackageSave(false); setPublicationOpen(true) }) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={() => { void saveDraftNow().then(() => onExit?.()) }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
         {mode === 'editor' && <select aria-label="Editor device mode" value={deviceMode} onChange={event => setDeviceMode(event.target.value as 'desktop' | 'tablet' | 'mobile')} className="fixed right-3 top-24 z-[249] rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white shadow-xl"><option value="desktop">Desktop</option><option value="tablet">Tablet</option><option value="mobile">Mobile</option></select>}
         <div data-editor-device={mode === 'editor' ? deviceMode : undefined} style={mode === 'editor' ? { width: '100%', maxWidth: deviceMode === 'mobile' ? 390 : deviceMode === 'tablet' ? 768 : 'none', marginInline: 'auto' } : undefined}>
           <ScrollProgress />
@@ -2755,10 +2917,12 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
           {mode !== 'editor' && <PublicConversionEnhancements packages={data.packages as any} seats={[]} eventId={eventId} isPreview={mode === 'preview'} settingsOverride={socialProofOverride} />}
           {mode !== 'published' && <PublicOnboardingGuide context={mode === 'editor' ? 'booking-page editor' : 'booking preview'} />}
         </div>
-        {mode === 'editor' && <BookingEditorPanel data={data} target={selected} eventId={eventId} onDraftChange={setData} onApply={applyEditorChanges} close={() => setSelected(null)} />}
-        {packagesOpen && <PackageAndSeatModal data={data} eventId={eventId} onApply={(next: BookingPageData) => setData(next)} onClose={() => setPackagesOpen(false)} />}
+        {mode === 'editor' && <BookingEditorPanel data={data} target={selected} eventId={eventId} onDraftChange={next => setData(previous => mergeEditorPreview(previous, next, selected))} onApply={applyEditorChanges} close={() => setSelected(null)} />}
+        {packagesOpen && <PackageAndSeatModal data={data} eventId={eventId} onApply={applySavedPackages} onDraftChange={applyPackageDraftPreview} onSaveSuccess={finishPackageSave} onDiscardChanges={discardPackageDraft} onClose={() => setPackagesOpen(false)} />}
+        {mode === 'editor' && packageSaveNotice && <div role="status" className="fixed bottom-5 left-1/2 z-[10002] -translate-x-1/2 rounded-2xl border border-emerald-400/30 bg-zinc-950 px-4 py-3 text-sm font-semibold text-emerald-200 shadow-2xl">{packageSaveNotice}</div>}
+        {mode === 'editor' && publishedToastUrl && <div role="status" className="fixed bottom-5 left-1/2 z-[10002] flex w-[min(94vw,42rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950 px-4 py-3 text-sm text-emerald-100 shadow-2xl"><span className="font-semibold">Event published.</span><button type="button" onClick={() => void copyPublishedLink()} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">Copy Link</button><button type="button" onClick={openPublishedPage} className="rounded-lg bg-emerald-400 px-3 py-1.5 text-xs font-bold text-zinc-950">View Published Page</button><button type="button" onClick={() => setPublishedToastUrl(null)} className="rounded-lg bg-white/5 px-2.5 py-1.5 text-xs text-zinc-300">Close</button>{publicationNotice && <span className="w-full text-center text-xs text-emerald-300">{publicationNotice}</span>}</div>}
         {socialProofOpen && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#111113] p-6 text-white"><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Event override</p><h2 className="mt-2 font-serif text-2xl font-bold">Social proof for this event</h2><p className="mt-1 text-sm text-zinc-500">Only entered values override the defaults in Admin Settings.</p><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Enabled<input type="checkbox" checked={eventSocialProof.enabled ?? true} onChange={event => setEventSocialProof(current => ({ ...current, enabled: event.target.checked }))}/></label><label className="flex items-center justify-between rounded-xl bg-white/[.04] p-3 text-sm">Show on mobile<input type="checkbox" checked={eventSocialProof.mobileVisible ?? true} onChange={event => setEventSocialProof(current => ({ ...current, mobileVisible: event.target.checked }))}/></label><label className="sm:col-span-2 text-xs text-zinc-400">Popup message<input value={eventSocialProof.message ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, message: event.target.value }))} placeholder="Use global default" className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white"/></label><label className="text-xs text-zinc-400">Duration<input type="number" value={eventSocialProof.duration ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, duration: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label><label className="text-xs text-zinc-400">Delay<input type="number" value={eventSocialProof.delay ?? ''} onChange={event => setEventSocialProof(current => ({ ...current, delay: Number(event.target.value) || undefined }))} className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm"/></label></div><div className="mt-6 flex justify-end gap-2"><button onClick={() => setSocialProofOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button onClick={() => { void onSocialProofChange?.(eventSocialProof); setSocialProofOpen(false) }} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save event override</button></div></section></div>}
-        {publicationOpen && publicationReview && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111113] p-6 text-white">{publishedUrl ? <div className="text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-emerald-400 text-xl font-bold text-zinc-950">✓</div><h2 className="mt-4 font-serif text-2xl font-bold">Page published successfully</h2><p className="mt-2 break-all text-sm text-zinc-400">{publishedUrl}</p>{publicationNotice && <p className="mt-3 text-xs text-emerald-300" role="status">{publicationNotice}</p>}<div className="mt-6 flex flex-wrap justify-center gap-2"><button type="button" onClick={() => void copyPublishedLink()} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Copy Link</button><button type="button" onClick={openPublishedPage} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Open Published Page</button><button type="button" onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Close</button></div></div> : <><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Publication review</p><h2 className="mt-2 font-serif text-2xl font-bold">Review before publishing</h2><div className="mt-5 grid gap-3 sm:grid-cols-2">{[['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language], ['Public URL', publicationReview.publicUrl]].map(([label, value]) => <div key={label} className="rounded-xl bg-white/[.04] p-3"><div className="text-[10px] uppercase text-zinc-500">{label}</div><div className="mt-1 break-all text-sm font-semibold">{value || 'Missing'}</div></div>)}</div>{publicationSectionReview}{missingPublicationFields.length > 0 && <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">Missing required information: {missingPublicationFields.join(', ')}</div>}{publicationError && <div className="mt-4 rounded-xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-200">{publicationError}</div>}<div className="mt-6 flex flex-wrap justify-end gap-2"><button disabled={publishing} onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={publishing} onClick={() => { void saveDraftNow().then(() => window.open(eventId ? `/admin/events/${eventId}/preview` : '/demo', '_blank', 'noopener,noreferrer')) }} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Preview Page</button><button disabled={publishing || missingPublicationFields.length > 0} onClick={() => void confirmPublish()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-40">{publishing ? 'Publishing…' : 'Confirm and Publish'}</button></div></>}</section></div>}
+        {publicationOpen && publicationReview && <div className="fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4"><section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#111113] p-6 text-white"><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Publication review</p><h2 className="mt-2 font-serif text-2xl font-bold">Review before publishing</h2><div className="mt-5 grid gap-3 sm:grid-cols-2">{[['Page name', publicationReview.pageName], ['Event date', publicationReview.eventDate], ['Venue', publicationReview.venue], ['Currency', publicationReview.currency], ['Language', publicationReview.language], ['Public URL', publicationReview.publicUrl]].map(([label, value]) => <div key={label} className="rounded-xl bg-white/[.04] p-3"><div className="text-[10px] uppercase text-zinc-500">{label}</div><div className="mt-1 break-all text-sm font-semibold">{value || 'Missing'}</div></div>)}</div>{publicationSectionReview}{missingPublicationFields.length > 0 && <div className="mt-4 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3 text-sm text-amber-200">Missing required information: {missingPublicationFields.join(', ')}</div>}{publicationError && <div className="mt-4 rounded-xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-200">{publicationError}</div>}{publishNeedsPackageSave && <button type="button" disabled={publishing} onClick={() => { setPublicationOpen(false); setPackagesOpen(true) }} className="mt-3 rounded-xl bg-emerald-400/15 px-3 py-2 text-xs font-bold text-emerald-200 disabled:opacity-40">Open Packages &amp; Seats</button>}<div className="mt-6 flex flex-wrap justify-end gap-2"><button disabled={publishing} onClick={() => setPublicationOpen(false)} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Cancel</button><button disabled={publishing} onClick={() => { void saveDraftNow().then(() => window.open(eventId ? `/admin/events/${eventId}/preview` : '/demo', '_blank', 'noopener,noreferrer')) }} className="rounded-xl bg-white/5 px-4 py-2.5 text-sm">Preview Page</button><button disabled={publishing || missingPublicationFields.length > 0} onClick={() => void confirmPublish()} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 disabled:opacity-40">{publishing ? 'Publishing…' : 'Confirm and Publish'}</button></div></section></div>}
       </div>
       </SocialProofOverlayProvider>
     </BookingCtx.Provider></ThemeCtx.Provider>
@@ -2767,8 +2931,8 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
 }
 
 // ─── App Root ─────────────────────────────────────────────────────────────────
-const PAGE_BY_PATH = { '/admin/events': 'events', '/admin/bookings': 'bookings', '/admin/payments': 'payments', '/admin/media': 'media', '/admin/chat': 'chat', '/admin/notifications': 'notifications', '/admin/settings': 'settings', '/admin/documentation': 'documentation' } as const
-type AdminDashboardPage = 'dashboard' | 'events' | 'bookings' | 'payments' | 'media' | 'chat' | 'notifications' | 'settings' | 'documentation'
+const PAGE_BY_PATH = { '/admin/events': 'events', '/admin/bookings': 'bookings', '/admin/payments': 'payments', '/admin/media': 'media', '/admin/chat': 'chat', '/admin/notifications': 'notifications', '/admin/social-proof': 'socialProof', '/admin/settings': 'settings', '/admin/documentation': 'documentation' } as const
+type AdminDashboardPage = 'dashboard' | 'events' | 'bookings' | 'payments' | 'media' | 'chat' | 'notifications' | 'socialProof' | 'settings' | 'documentation'
 function adminPageForPath(pathname: string): AdminDashboardPage { return (Object.entries(PAGE_BY_PATH).find(([path]) => pathname === path || pathname.startsWith(`${path}/`))?.[1] ?? 'dashboard') as AdminDashboardPage }
 function AdminRoutePage() { const navigate = useNavigate(); const location = useLocation(); const { signOut } = useAuth(); const page = adminPageForPath(location.pathname); return <Suspense fallback={<div className="grid min-h-screen place-items-center bg-zinc-950 text-sm text-zinc-400">Loading dashboard…</div>}><AdminDashboard initialPage={page} onNavigate={(next) => navigate(ROUTES.admin[next])} onExitAdmin={() => { void signOut(); navigate('/') }} /></Suspense> }
 function BookingEditorRoute() {
@@ -2788,15 +2952,21 @@ function BookingEditorRoute() {
   const data = isTemplate ? masterBookingTemplateStore.load() : event?.bookingPage ?? createBookingPageData({ name: event?.title, venue: event?.venue, banners: event?.setup?.banners })
   const save = async (next: BookingPageData) => {
     if (isTemplate) masterBookingTemplateStore.save(next)
-    else if (event) setEvent(await adminEventStore.saveAsync({ ...event, bookingPage: next }))
+    else if (event) {
+      const current = adminEventStore.list().find(item => item.id === event.id) ?? event
+      setEvent(await adminEventStore.saveAsync({ ...current, bookingPage: next }))
+    }
   }
   const publish = async (next: BookingPageData) => {
     if (!event?.publication?.shortCode) throw new Error('This event does not have a reserved public link.')
+    const current = adminEventStore.list().find(item => item.id === event.id) ?? event
+    const publication = current.publication ?? event.publication
+    if (!publication?.shortCode) throw new Error('This event does not have a reserved public link.')
     const saved = await adminEventStore.saveAsync({
-      ...event,
+      ...current,
       bookingPage: next,
       status: 'published',
-      publication: { ...event.publication, publishedAt: event.publication.publishedAt ?? new Date().toISOString() },
+      publication: { ...publication, publishedAt: publication.publishedAt ?? new Date().toISOString() },
     })
     setEvent(saved)
     return `${window.location.origin}/events/${saved.publication!.slug}`

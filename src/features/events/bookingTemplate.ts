@@ -17,7 +17,10 @@ export type BookingPackage = {
   accent: string
   glow: string
   seats: number
+  /** False means checkout assigns the next available package seat. */
+  seatSelectionEnabled?: boolean
   icon: string
+  category?: string
   sections: string[]
   benefits: string[]
 }

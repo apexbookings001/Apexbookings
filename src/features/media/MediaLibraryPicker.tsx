@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import { isEventAssetCategory, mediaLibraryStore, type LibraryAsset } from './mediaLibraryStore'
 
 type MediaLibraryPickerProps = {
@@ -18,14 +19,33 @@ export function MediaLibraryPicker({ open, target, accept, onClose, onSelect }: 
   const snapshot = useSyncExternalStore(mediaLibraryStore.subscribe, mediaLibraryStore.snapshot, mediaLibraryStore.snapshot)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [brokenIds, setBrokenIds] = useState<Set<string>>(() => new Set())
+  const scrollPosition = useRef(0)
 
   useEffect(() => {
     if (!open) return
     setSelectedId(null)
     setBrokenIds(new Set())
-    if (import.meta.env.DEV) console.debug('[media-library] picker opened', { target })
+    if (import.meta.env.DEV) console.debug('[media-library] picker opened', { open, target })
     void mediaLibraryStore.hydrate().catch(() => undefined)
   }, [open, target])
+
+  useEffect(() => {
+    if (!open) return
+    const body = document.body
+    const previous = { overflow: body.style.overflow, position: body.style.position, top: body.style.top, width: body.style.width }
+    scrollPosition.current = window.scrollY
+    body.style.overflow = 'hidden'
+    body.style.position = 'fixed'
+    body.style.top = `-${scrollPosition.current}px`
+    body.style.width = '100%'
+    return () => {
+      body.style.overflow = previous.overflow
+      body.style.position = previous.position
+      body.style.top = previous.top
+      body.style.width = previous.width
+      window.scrollTo({ top: scrollPosition.current, behavior: 'auto' })
+    }
+  }, [open])
 
   const assets = useMemo(
     () => snapshot.data.filter(asset => isSelectableAsset(asset, accept)),
@@ -33,9 +53,9 @@ export function MediaLibraryPicker({ open, target, accept, onClose, onSelect }: 
   )
   const selected = assets.find(asset => asset.id === selectedId && Boolean(asset.url))
 
-  if (!open) return null
+  if (!open || typeof document === 'undefined') return null
 
-  return <div className="fixed inset-0 z-[11000] flex items-end bg-black/75 p-0 sm:grid sm:place-items-center sm:p-5" role="dialog" aria-modal="true" aria-label="Media library">
+  return createPortal(<div className="fixed inset-0 z-[2147483000] flex items-end bg-black/75 p-0 sm:grid sm:place-items-center sm:p-5" role="dialog" aria-modal="true" aria-label="Media library" onMouseDown={event => event.stopPropagation()}>
     <section className="flex max-h-[min(100dvh,50rem)] w-full flex-col rounded-t-3xl border border-white/10 bg-[#111113] text-white shadow-2xl sm:max-w-4xl sm:rounded-3xl">
       <header className="flex shrink-0 items-start justify-between gap-4 border-b border-white/10 px-4 pb-3 pt-5 sm:px-6">
         <div><p className="font-mono text-[10px] font-bold uppercase tracking-[.18em] text-emerald-300">Media library</p><h2 className="mt-1 text-lg font-bold">Select from Library</h2><p className="mt-1 text-xs text-zinc-400">Choose media for {target ?? 'this section'}.</p></div>
@@ -44,7 +64,7 @@ export function MediaLibraryPicker({ open, target, accept, onClose, onSelect }: 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 [-webkit-overflow-scrolling:touch] sm:px-6">
         {snapshot.loading && <div className="grid min-h-44 place-items-center text-sm text-zinc-400">Loading media library…</div>}
         {!snapshot.loading && snapshot.error && <div className="grid min-h-44 place-items-center rounded-2xl border border-red-400/25 bg-red-400/10 p-6 text-center"><div><p className="text-sm font-semibold text-red-200">Unable to load the media library.</p><p className="mt-1 text-xs text-red-200/80">{snapshot.error}</p><button type="button" onClick={() => void mediaLibraryStore.hydrate().catch(() => undefined)} className="mt-4 rounded-xl bg-white/10 px-3 py-2 text-xs font-bold text-white">Retry</button></div></div>}
-        {!snapshot.loading && !snapshot.error && assets.length === 0 && <div className="grid min-h-44 place-items-center rounded-2xl border border-dashed border-white/15 p-6 text-center text-sm text-zinc-400">No media has been uploaded yet.</div>}
+        {!snapshot.loading && !snapshot.error && assets.length === 0 && <div className="grid min-h-44 place-items-center rounded-2xl border border-dashed border-white/15 p-6 text-center text-sm text-zinc-400">No media files are available yet.</div>}
         {!snapshot.loading && !snapshot.error && assets.length > 0 && <div className="grid grid-cols-1 gap-3 min-[390px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
           {assets.map(asset => {
             const isVideo = asset.mimeType.startsWith('video/')
@@ -66,5 +86,5 @@ export function MediaLibraryPicker({ open, target, accept, onClose, onSelect }: 
         <button type="button" disabled={!selected} onClick={() => { if (!selected) return; onSelect(selected); onClose() }} className="shrink-0 rounded-xl bg-emerald-400 px-4 py-2.5 text-xs font-bold text-zinc-950 disabled:cursor-not-allowed disabled:opacity-40">Use Selected Media</button>
       </footer>
     </section>
-  </div>
+  </div>, document.body)
 }

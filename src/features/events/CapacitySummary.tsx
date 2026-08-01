@@ -14,21 +14,26 @@ export type CapacityStats = {
 async function fetchCapacityStats(eventId: string, totalCapacity: number): Promise<CapacityStats> {
   const sb = requireSupabase()
 
-  // Get seat counts grouped by status
-  const { data: seatData, error: seatError } = await sb
+  // Allocation is the declared capacity of active package rows, not the
+  // number of seats generated so far. Seat rows only drive availability.
+  const [{ data: seatData, error: seatError }, { data: packageData, error: packageError }] = await Promise.all([
+    sb
     .from('seats')
     .select('status')
     .eq('event_id', eventId)
-    .is('deleted_at', null)
+    .is('deleted_at', null),
+    sb.from('packages').select('capacity').eq('event_id', eventId).is('deleted_at', null).eq('enabled', true),
+  ])
 
   if (seatError) throw seatError
+  if (packageError) throw packageError
 
   const seats = (seatData ?? []) as { status: string }[]
   const available = seats.filter(s => s.status === 'available').length
   const reserved = seats.filter(s => s.status === 'reserved').length
   const sold = seats.filter(s => s.status === 'sold').length
   const disabled = seats.filter(s => s.status === 'disabled').length
-  const allocated = seats.length
+  const allocated = (packageData ?? []).reduce((sum, pkg) => sum + Math.max(0, Number(pkg.capacity ?? 0)), 0)
 
   return {
     totalCapacity,
@@ -70,7 +75,16 @@ export function CapacitySummary({
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(() => {
-    if (!eventId || capacity <= 0) return
+    if (!eventId) return
+    // A zero capacity is an intentional, unconfigured duplicate state. It is
+    // not a missing value and must render as an all-zero summary rather than
+    // leaving the previous event's data (or a loading state) on screen.
+    if (capacity <= 0) {
+      setStats({ totalCapacity: 0, allocated: 0, unallocated: 0, available: 0, reserved: 0, sold: 0, disabled: 0 })
+      setError(null)
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setError(null)
     fetchCapacityStats(eventId, capacity)

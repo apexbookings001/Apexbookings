@@ -224,17 +224,20 @@ export function useAdminRecoveryState<T>(key: string, initialValue: T, validate?
   const usable = recovered !== undefined && (!validate || validate(recovered)) ? recovered : initialValue
   const [value, setValue] = useState<T>(usable)
   const hydrated = useRef(false)
+  const shouldPersist = useRef(false)
   useEffect(() => {
     if (hydrated.current) return
     hydrated.current = true
     if (recovered !== undefined && (!validate || validate(recovered))) setValue(recovered)
   }, [recovered, validate])
+  useEffect(() => {
+    if (!shouldPersist.current) return
+    shouldPersist.current = false
+    setUiState(key, value)
+  }, [key, setUiState, value])
   const setRecoveredValue: Dispatch<SetStateAction<T>> = useCallback(next => {
-    setValue(current => {
-      const resolved = typeof next === 'function' ? (next as (previous: T) => T)(current) : next
-      setUiState(key, resolved)
-      return resolved
-    })
-  }, [key, setUiState])
+    shouldPersist.current = true
+    setValue(current => typeof next === 'function' ? (next as (previous: T) => T)(current) : next)
+  }, [])
   return [value, setRecoveredValue]
 }

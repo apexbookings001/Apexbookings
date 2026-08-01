@@ -3,7 +3,7 @@ import type { SeatRecord } from './seatService'
 import { seatService } from './seatService'
 import { requireSupabase } from '../../services/supabase/client'
 
-type SeatFilter = 'all' | 'available' | 'disabled' | 'reserved' | 'sold'
+type SeatFilter = 'all' | 'available' | 'disabled'
 
 const T = {
   bg2: '#111113',
@@ -41,7 +41,12 @@ function SeatButton({
 }) {
   const isSold = seat.status === 'sold'
   const isReserved = seat.status === 'reserved'
-  const colors = isSelected ? STATUS_COLORS.selected : STATUS_COLORS[seat.status] ?? STATUS_COLORS.available
+  const isProtected = isSold || isReserved
+  // Reserved and sold are protected backend states; this setup UI exposes
+  // them only as unavailable, never as manually editable states.
+  const colors = isSelected
+    ? STATUS_COLORS.selected
+    : STATUS_COLORS[isProtected ? 'disabled' : seat.status] ?? STATUS_COLORS.available
 
   return (
     <button
@@ -53,13 +58,13 @@ function SeatButton({
         background: colors.bg,
         border: `1.5px solid ${colors.border}`,
         color: colors.text,
-        cursor: isSold || isReserved ? 'not-allowed' : 'pointer',
+        cursor: isProtected ? 'not-allowed' : 'pointer',
         transform: isSelected ? 'scale(1.08)' : 'scale(1)',
         boxShadow: isSelected ? `0 0 10px ${T.cyan}40` : 'none',
-        opacity: isSold ? 0.7 : 1,
+        opacity: isProtected ? 0.7 : 1,
       }}
       onClick={e => {
-        if (isSold) return
+        if (isProtected) return
         onClick(seat.id, seat.label, e.shiftKey)
       }}
     >
@@ -184,7 +189,7 @@ export function VisualSeatManager({
   const handleSeatClick = useCallback((id: string, label: string, isShift: boolean) => {
     const currentSeats = seatsRef.current
     const seat = currentSeats.find(s => s.id === id)
-    if (!seat || seat.status === 'sold') return
+    if (!seat || seat.status === 'sold' || seat.status === 'reserved') return
 
     if (isShift && lastClickedLabel.current) {
       // Range selection — include available and disabled, skip sold
@@ -195,7 +200,7 @@ export function VisualSeatManager({
         const [lo, hi] = fromIdx < toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx]
         const rangeIds = currentSeats
           .slice(lo, hi + 1)
-          .filter(s => s.status !== 'sold')
+          .filter(s => s.status === 'available' || s.status === 'disabled')
           .map(s => s.id)
         setSelectedIds(prev => {
           const added = rangeIds.filter(rid => !prev.includes(rid))
@@ -350,8 +355,6 @@ export function VisualSeatManager({
     switch (filter) {
       case 'available': return 'No available seats.'
       case 'disabled': return 'No unavailable seats.'
-      case 'reserved': return 'No reserved seats.'
-      case 'sold': return 'No sold seats.'
       default: return 'No seats generated yet. Save the allocation to generate seats.'
     }
   }
@@ -377,16 +380,6 @@ export function VisualSeatManager({
                 {stats.disabled} unavail
               </span>
             )}
-            {stats.reserved > 0 && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-mono" style={{ background: 'rgba(139,92,246,0.1)', color: T.purple }}>
-                {stats.reserved} reserved
-              </span>
-            )}
-            {stats.sold > 0 && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-mono" style={{ background: 'rgba(245,158,11,0.1)', color: T.gold }}>
-                {stats.sold} sold
-              </span>
-            )}
           </div>
         </div>
         <span style={{ color: T.textMuted, fontSize: 12 }}>{isExpanded ? '▲' : '▼'}</span>
@@ -396,12 +389,15 @@ export function VisualSeatManager({
         <div className="p-4 space-y-4">
           {/* ── Legend ───────────────────────────────────────────────────────── */}
           <div className="flex flex-wrap gap-3">
-            {Object.entries(STATUS_COLORS).map(([key, val]) => (
+            {(['available', 'disabled'] as const).map(key => {
+              const val = STATUS_COLORS[key]
+              return (
               <span key={key} className="flex items-center gap-1.5 text-[10px] font-mono" style={{ color: T.textMuted }}>
                 <span className="w-3 h-3 rounded-sm inline-block" style={{ background: val.bg, border: `1px solid ${val.border}` }} />
                 {val.label}
               </span>
-            ))}
+              )
+            })}
           </div>
 
           {/* ── Toolbar ──────────────────────────────────────────────────────── */}
@@ -412,8 +408,6 @@ export function VisualSeatManager({
                 ['all', `All (${stats.total})`],
                 ['available', `Avail (${stats.available})`],
                 ['disabled', `Unavail (${stats.disabled})`],
-                ['reserved', `Reserved (${stats.reserved})`],
-                ['sold', `Sold (${stats.sold})`],
               ] as [SeatFilter, string][]).map(([val, label]) => (
                 <button
                   key={val}
@@ -592,7 +586,7 @@ export function VisualSeatManager({
           )}
 
           <div className="text-[10px] font-mono" style={{ color: T.textMuted }}>
-            Shift+click to select a range. Sold and reserved seats are protected.
+            Shift+click to select a range. Seats already reserved or sold remain protected.
           </div>
         </div>
       )}

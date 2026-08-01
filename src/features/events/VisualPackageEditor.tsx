@@ -1,18 +1,31 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { type BookingPackage } from './bookingTemplate'
 import { createPackageFromType, PACKAGE_TYPE_LIBRARY, type PackageTypeDefinition } from './packageTypeLibrary'
 import { PackageTypeLibraryPicker } from './PackageTypeLibraryPicker'
 import { defaultDiscountEndsAt, packagePricing, validatePackageDiscount } from './packagePricing'
+import { packageService, type PackageSeatStats } from './packageService'
 
 export function VisualPackageEditor({
   packages,
   onChange,
+  eventId,
 }: {
   packages: BookingPackage[]
   onChange: (packages: BookingPackage[]) => void
+  eventId?: string
 }) {
   const [targetIndex, setTargetIndex] = useState<number | undefined>(undefined)
   const [packageNotice, setPackageNotice] = useState<string | null>(null)
+  const [seatStats, setSeatStats] = useState<Record<string, PackageSeatStats>>({})
+
+  useEffect(() => {
+    if (!eventId) return
+    let active = true
+    void Promise.all(packages.map(async item => [item.id, await packageService.getSeatStats(item.id)] as const))
+      .then(entries => { if (active) setSeatStats(Object.fromEntries(entries)) })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [eventId, packages])
 
   const mutate = (change: (next: BookingPackage[]) => void) => {
     const next = structuredClone(packages)
@@ -32,7 +45,7 @@ export function VisualPackageEditor({
 
   const addBlankPackage = () => {
     const starter = createPackageFromType(PACKAGE_TYPE_LIBRARY[0])
-    mutate(next => { next.push({ ...starter, name: 'New Package', desc: 'Describe what this package includes', badge: null, price: 0, seats: 100 }) })
+    mutate(next => { next.push({ ...starter, name: 'New Package', desc: 'Describe what this package includes', badge: null, price: 0, originalPrice: 0, seats: 0 }) })
     setPackageNotice('New package card added.')
   }
 
@@ -45,6 +58,15 @@ export function VisualPackageEditor({
     setTargetIndex(undefined)
   }
 
+  const movePackage = (from: number, direction: -1 | 1) => {
+    const to = from + direction
+    if (to < 0 || to >= packages.length) return
+    mutate(next => {
+      const [item] = next.splice(from, 1)
+      next.splice(to, 0, item)
+    })
+  }
+
   // ── Detail view ────────────────────────────────────────────────────────────
   if (targetIndex !== undefined) {
     const item = packages[targetIndex]
@@ -55,8 +77,19 @@ export function VisualPackageEditor({
 
     const applyPackageType = (type: PackageTypeDefinition) => {
       mutate(next => {
-        const currentId = next[targetIndex].id
-        next[targetIndex] = { ...createPackageFromType(type), id: currentId }
+        const current = next[targetIndex]
+        // A package type supplies presentation only. Its example price and
+        // seats must never overwrite the operational values of this event.
+        next[targetIndex] = {
+          ...createPackageFromType(type),
+          id: current.id,
+          price: current.price ?? 0,
+          originalPrice: current.originalPrice ?? current.price ?? 0,
+          discountedPrice: current.discountedPrice ?? null,
+          discountEnabled: current.discountEnabled ?? false,
+          discountEndsAt: current.discountEndsAt ?? null,
+          seats: current.seats ?? 0,
+        }
       })
       setPackageNotice(`${type.name} defaults applied. Customize every field below.`)
     }
@@ -79,7 +112,7 @@ export function VisualPackageEditor({
                 {item.badge && <span className="rounded-full px-2 py-0.5 text-[9px] font-bold uppercase" style={{ background: `${item.accent}18`, color: item.accent }}>{item.badge}</span>}
               </div>
               <div className="mt-1 text-xs text-zinc-400">{item.desc}</div>
-              <div className="mt-2 text-xs font-bold" style={{ color: item.accent }}>{item.seats.toLocaleString()} available · {item.benefits.length} benefits</div>
+              <div className="mt-2 text-xs font-bold" style={{ color: item.accent }}>{item.seats.toLocaleString()} allocated · {(seatStats[item.id]?.available ?? 0).toLocaleString()} available · {item.benefits.length} benefits</div>
             </div>
           </div>
         </div>
@@ -104,7 +137,7 @@ export function VisualPackageEditor({
         {input('Description', item.desc, v => mutate(next => { next[targetIndex].desc = v }), true)}
         <div className="grid grid-cols-2 gap-3">
           {input('Original Price', String(item.originalPrice ?? item.price), v => mutate(next => { const price = Math.max(0, Number(v) || 0); next[targetIndex].price = price; next[targetIndex].originalPrice = price }))}
-          {input('Available seats (visual)', String(item.seats), v => mutate(next => { next[targetIndex].seats = Math.max(0, Number(v) || 0) }))}
+          <div className="rounded-xl border border-white/10 bg-white/[.025] px-3 py-2"><div className="text-[11px] text-zinc-400">Seat allocation</div><div className="mt-1 text-sm font-bold text-white">{item.seats.toLocaleString()} allocated · {(seatStats[item.id]?.available ?? 0).toLocaleString()} available</div><div className="mt-1 text-[10px] text-zinc-500">Change allocation in Capacity &amp; Seat Allocation.</div></div>
         </div>
         <div className="rounded-xl border border-white/10 bg-white/[.025] p-3 space-y-3">
           <div className="flex items-center justify-between gap-3"><div><div className="text-xs font-bold text-white">Enable Discount</div><div className="text-[10px] text-zinc-500">Show an expiring package offer.</div></div><button type="button" onClick={() => mutate(next => { const current = next[targetIndex]; current.discountEnabled = !current.discountEnabled; if (!current.discountEndsAt) current.discountEndsAt = defaultDiscountEndsAt() })} className={`h-6 w-11 rounded-full p-0.5 transition ${item.discountEnabled ? 'bg-emerald-400' : 'bg-white/10'}`}><span className={`block h-5 w-5 rounded-full bg-white transition ${item.discountEnabled ? 'translate-x-5' : ''}`} /></button></div>
@@ -171,7 +204,7 @@ export function VisualPackageEditor({
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-lg" style={{ background: `${item.accent}18` }}>{item.icon}</span>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs font-bold text-white">{item.name}</div>
-                <div className="mt-0.5 text-[10px] text-zinc-500">{item.seats.toLocaleString()} seats · ${item.price.toLocaleString()}</div>
+                <div className="mt-0.5 text-[10px] text-zinc-500">{item.seats.toLocaleString()} allocated · {(seatStats[item.id]?.available ?? 0).toLocaleString()} available · ${item.price.toLocaleString()}</div>
               </div>
               <div className="text-xs text-emerald-400 font-bold px-2">Edit →</div>
             </button>
@@ -212,7 +245,7 @@ export function VisualPackageEditor({
             <button key={presetName} type="button"
               onClick={() => {
                 mutate(next => {
-                  next.push(...presetData.map(item => ({ ...item, id: crypto.randomUUID(), sections: [...item.sections], benefits: [...item.benefits] })))
+                  next.push(...presetData.map(item => ({ ...item, id: crypto.randomUUID(), category: presetName, sections: [...item.sections], benefits: [...item.benefits] })))
                 })
                 setPackageNotice(`${presetName} bundle added. Existing cards were preserved.`)
               }}

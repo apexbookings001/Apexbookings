@@ -223,7 +223,7 @@ const SUPPORTED_AUDIENCE_COUNTRIES = [
 const emptyCoupons: { code: string; discount: string; uses: number; max: number; expires: string; status: string }[] = []
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
-export type Page = 'dashboard' | 'bookings' | 'events' | 'payments' | 'media' | 'chat' | 'notifications' | 'settings' | 'documentation'
+export type Page = 'dashboard' | 'bookings' | 'events' | 'payments' | 'media' | 'chat' | 'notifications' | 'socialProof' | 'settings' | 'documentation'
 
 type NavigationItem = { id: Page; label: string; icon: React.ReactNode; badge?: number; badgeColor?: string }
 
@@ -233,7 +233,8 @@ const NAV_ITEMS: NavigationItem[] = [
   { id: 'payments' as Page, label: 'Payment', icon: <Icons.card/> },
   { id: 'media' as Page, label: 'Media Center', icon: <Icons.image/> },
   { id: 'chat' as Page, label: 'Live Chat', icon: <Icons.chat/> },
-  { id: 'notifications' as Page, label: 'Social Proof', icon: <Icons.bell/> },
+  { id: 'notifications' as Page, label: 'Notifications', icon: <Icons.bell/> },
+  { id: 'socialProof' as Page, label: 'Social Proof', icon: <Icons.megaphone/> },
   { id: 'events' as Page, label: 'Event', icon: <Icons.calendar/> },
   { id: 'settings' as Page, label: 'Settings', icon: <Icons.settings/> },
   { id: 'documentation' as Page, label: 'Documentation', icon: <Icons.listview/> },
@@ -388,7 +389,7 @@ function TopNav({ page, onExitAdmin, collapsed, show, onHamburger, onCreateEvent
   const PAGE_TITLES: Record<Page, string> = {
     dashboard: 'Dashboard Overview', bookings: 'Bookings Management',
     events: 'Event Management', payments: 'Payment Center', media: 'Media Center',
-    chat: 'Live Support Chat', notifications: 'Social Proof Notifications',
+    chat: 'Live Support Chat', notifications: 'Notifications', socialProof: 'Social Proof',
     settings: 'System Settings', documentation: 'Documentation',
   }
 
@@ -2887,6 +2888,7 @@ export default function AdminDashboard({ onExitAdmin, initialPage = 'dashboard',
     media: <MediaLibraryPage show={show} />,
     chat: <SupportDashboard />,
     notifications: <NotificationCenter />,
+    socialProof: <SocialProofPage show={show} />,
     settings: <SettingsPage show={show}/>,
     documentation: <DocumentationPage />,
   }

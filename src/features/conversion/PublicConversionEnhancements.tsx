@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { StudioSeat, TicketPackage } from '../events/adminEventStore'
-import { paymentReviewStore } from '../payments/paymentReviewStore'
 import { socialProofStore, type SocialProofItem } from './socialProofStore'
 import { useTheme } from '../../theme'
 import { MobileSocialProofOverlay } from './MobileSocialProofOverlay'
@@ -23,7 +22,13 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
   const available = seats.length > 0 
     ? seats.filter(seat => seat.status === 'available').length 
     : packages.reduce((sum, pkg: any) => sum + (pkg.seats || pkg.capacity || 0), 0)
-  const notices = useMemo(() => { const settings = socialProofStore.settings(); if (settings.mode === 'live') return paymentReviewStore.list().filter(item => item.status === 'approved').map(item => ({ id: item.id, name: item.customer, city: settings.city, state: settings.state, ticketPackage: item.packageName, message: settings.message, duration: settings.duration, animation: settings.animation, position: settings.position, visible: true, createdAt: item.createdAt })); const configured = socialProofStore.list().filter(item => item.visible); return configured.length ? configured : isPreview ? socialProofStore.previewItems() : [socialProofStore.defaultItem()] }, [isPreview, socialProofVersion])
+  const notices = useMemo(() => {
+    const settings = socialProofStore.settings()
+    const configured = socialProofStore.list().filter(item => item.visible && (item.sourceType !== 'demo' || isPreview) && (item.sourceType !== 'verified_booking' || settings.includeVerifiedBookings) && (!item.eventId || item.eventId === eventId))
+    // Demo cards are clearly labelled preview data and never enter the production rotation.
+    const preview = isPreview ? [...configured, ...socialProofStore.previewItems()] : configured
+    return preview.filter(item => isMobile ? item.mobileVisible : item.desktopVisible).slice(0, Math.max(1, Math.min(20, settings.maxCards ?? 20)))
+  }, [eventId, isMobile, isPreview, socialProofVersion])
 
   useEffect(() => socialProofStore.subscribe(() => setSocialProofVersion(version => version + 1)), [])
   useEffect(() => {
@@ -53,7 +58,8 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
       const tickets = document.getElementById('tickets')?.getBoundingClientRect()
       const footer = document.getElementById('footer')?.getBoundingClientRect()
       const footerVisible = Boolean(footer && footer.top < window.innerHeight && footer.bottom > 0)
-      setShowBar(Boolean(hero && tickets && hero.bottom < 0 && !footerVisible && (tickets.top > window.innerHeight || tickets.bottom < 0)))
+      const nextShowBar = Boolean(hero && tickets && hero.bottom < 0 && !footerVisible && (tickets.top > window.innerHeight || tickets.bottom < 0))
+      setShowBar(previous => previous === nextShowBar ? previous : nextShowBar)
     }
     update()
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
@@ -131,9 +137,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
                 {toast.name.slice(0, 2).toUpperCase()}
               </div>
             )}
-            <span className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 ring-2 ring-zinc-900 text-[8px] text-zinc-950 font-bold">
-              ✓
-            </span>
+            {toast.sourceType === 'verified_booking' && <span className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 ring-2 ring-zinc-900 text-[8px] text-zinc-950 font-bold">✓</span>}
           </div>
           <div className="min-w-0 flex-1 space-y-1 pr-4">
             <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
@@ -145,19 +149,19 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5 text-xs" style={{ color: t.isDark ? 'rgba(255,255,255,0.85)' : t.textSub }}>
-              <span>{toast.message.replace(/\.?$/, '')}</span>
+              <span>{(toast.sourceType === 'verified_booking' ? translations.socialProof.justPurchased : toast.message).replace(/\.?$/, '')}</span>
               <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase shrink-0"
                 style={{ background: t.isDark ? 'rgba(0,255,136,0.12)' : `${t.accent}10`, color: t.isDark ? '#00FF88' : t.accent, border: `1px solid ${t.isDark ? 'rgba(0,255,136,0.3)' : `${t.accent}30`}` }}>
                 {toast.ticketPackage}
               </span>
             </div>
             <div className="flex items-center justify-between pt-0.5 text-[10px]" style={{ color: t.textMuted }}>
-              <span>{translations.socialProof.recentBooking}</span>
+              <span>{toast.sourceType === 'demo' ? 'Demo preview' : toast.sourceType === 'manual_message' ? 'Promotion' : translations.socialProof.recentBooking}</span>
               <span className="inline-flex items-center gap-1 font-medium" style={{ color: t.isDark ? '#34D399' : '#059669' }}>
                 <svg className="h-3 w-3 fill-current" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                 </svg>
-                {translations.socialProof.verified}
+                {toast.sourceType === 'demo' ? 'Preview data' : toast.sourceType === 'manual_message' ? 'Message' : translations.socialProof.verified}
               </span>
             </div>
           </div>

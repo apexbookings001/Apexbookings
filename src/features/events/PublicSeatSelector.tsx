@@ -3,14 +3,12 @@ import type { SeatRecord } from './seatService'
 import { isDatabaseSeatRecord, seatService } from './seatService'
 import { requireSupabase } from '../../services/supabase/client'
 
-type PublicSeatStatus = 'available' | 'selected' | 'reserved' | 'sold' | 'disabled'
+type PublicSeatStatus = 'available' | 'selected' | 'unavailable'
 
 const STATUS_STYLE: Record<PublicSeatStatus, { bg: string; border: string; text: string; cursor: string; label: string }> = {
   available: { bg: 'rgba(255,255,255,0.06)', border: 'rgba(255,255,255,0.12)', text: '#A1A1AA', cursor: 'pointer', label: 'Available' },
   selected:  { bg: 'rgba(0,255,136,0.22)',   border: '#00FF88',                text: '#00FF88', cursor: 'pointer', label: 'Selected' },
-  reserved:  { bg: 'rgba(139,92,246,0.15)',   border: 'rgba(139,92,246,0.45)', text: '#8B5CF6', cursor: 'not-allowed', label: 'Reserved' },
-  sold:      { bg: 'rgba(239,68,68,0.18)',    border: '#EF4444',               text: '#EF4444', cursor: 'not-allowed', label: 'Sold' },
-  disabled:  { bg: 'rgba(255,255,255,0.03)',  border: 'rgba(255,255,255,0.06)',text: '#3f3f46', cursor: 'not-allowed', label: 'Unavailable' },
+  unavailable: { bg: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.06)', text: '#3f3f46', cursor: 'not-allowed', label: 'Already taken / unavailable' },
 }
 
 export function PublicSeatSelector({
@@ -22,6 +20,9 @@ export function PublicSeatSelector({
   refreshToken = 0,
   onAttemptTaken,
   accent = '#00FF88',
+  selectionEnabled = true,
+  seatsOverride,
+  allowDraftSeats = false,
 }: {
   eventId: string
   packageId: string
@@ -31,12 +32,22 @@ export function PublicSeatSelector({
   refreshToken?: number
   onAttemptTaken?: (label: string) => void
   accent?: string
+  selectionEnabled?: boolean
+  /** Editor-only current draft. Published checkout never supplies this. */
+  seatsOverride?: SeatRecord[]
+  allowDraftSeats?: boolean
 }) {
   const [seats, setSeats] = useState<SeatRecord[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(seatsOverride === undefined)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    if (seatsOverride !== undefined) {
+      setSeats(seatsOverride)
+      setLoading(false)
+      setError(null)
+      return
+    }
     if (!eventId || !packageId) return
     setLoading(true)
     setError(null)
@@ -50,12 +61,15 @@ export function PublicSeatSelector({
     } finally {
       setLoading(false)
     }
-  }, [eventId, packageId])
+  }, [eventId, packageId, seatsOverride])
 
   useEffect(() => { void load() }, [load, refreshToken])
 
   const duplicateLabels = useMemo(() => new Set(seats.filter((seat, index) => seats.findIndex(item => item.label === seat.label) !== index).map(seat => seat.label)), [seats])
-  const validSeats = useMemo(() => seats.filter(seat => isDatabaseSeatRecord(seat, eventId, packageId) && !duplicateLabels.has(seat.label)), [duplicateLabels, eventId, packageId, seats])
+  const validSeats = useMemo(() => seats.filter(seat => {
+    const belongsToPackage = seat.eventId === eventId && seat.packageId === packageId
+    return belongsToPackage && !duplicateLabels.has(seat.label) && (allowDraftSeats || isDatabaseSeatRecord(seat, eventId, packageId))
+  }), [allowDraftSeats, duplicateLabels, eventId, packageId, seats])
   const invalidCount = seats.length - validSeats.length
 
   useEffect(() => {
@@ -64,6 +78,7 @@ export function PublicSeatSelector({
 
   // Realtime subscription — cross-device availability
   useEffect(() => {
+    if (seatsOverride !== undefined) return
     if (!eventId || !packageId) return
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let ch: any = null
@@ -82,11 +97,11 @@ export function PublicSeatSelector({
     return () => {
       if (ch) { try { void requireSupabase().removeChannel(ch) } catch { /* */ } }
     }
-  }, [eventId, packageId, load])
+  }, [eventId, packageId, load, seatsOverride])
 
   const getStatus = (seat: SeatRecord): PublicSeatStatus => {
     if (seat.id === selectedSeatId) return 'selected'
-    return (seat.status === 'available' ? 'available' : seat.status) as PublicSeatStatus
+    return seat.status === 'available' ? 'available' : 'unavailable'
   }
 
   const availableCount = validSeats.filter(s => s.status === 'available').length
@@ -119,6 +134,7 @@ export function PublicSeatSelector({
 
   return (
     <div className="space-y-3">
+      {!selectionEnabled && <div className="rounded-xl border border-white/10 bg-white/[.025] px-3 py-2 text-center text-xs text-zinc-300">A seat is assigned automatically for this package. The full seating layout remains visible.</div>}
       {/* Seat legend */}
       <div className="flex flex-wrap gap-3 justify-center text-[10px] font-mono" style={{ color: '#71717A' }}>
         {(Object.entries(STATUS_STYLE) as [PublicSeatStatus, typeof STATUS_STYLE[PublicSeatStatus]][]).map(([status, style]) => (
@@ -150,7 +166,7 @@ export function PublicSeatSelector({
         {validSeats.map(seat => {
           const status = getStatus(seat)
           const style = STATUS_STYLE[status]
-          const isSelectable = status === 'available' || status === 'selected'
+          const isSelectable = selectionEnabled && (status === 'available' || status === 'selected')
           const shortLabel = seat.label.split('-').pop() ?? seat.label
 
           return (
@@ -175,7 +191,7 @@ export function PublicSeatSelector({
                 if (isSelectable) {
                   onSelect(seat)
                 } else {
-                  onAttemptTaken?.(seat.label)
+                  onAttemptTaken?.(selectionEnabled ? seat.label : 'Seat selection is not enabled for this package')
                 }
               }}
             >

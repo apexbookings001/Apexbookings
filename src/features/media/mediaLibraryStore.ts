@@ -75,6 +75,7 @@ export type LibraryAsset = {
 type MediaUrlRecord = {
   bucket?: unknown
   path?: unknown
+  url?: unknown
   secure_url?: unknown
   public_url?: unknown
   metadata?: unknown
@@ -131,6 +132,7 @@ export async function resolveMediaDisplayUrl(record: MediaUrlRecord): Promise<st
     ? record.metadata as Record<string, unknown>
     : {}
   const directUrl = usableUrl(record.secure_url)
+    || usableUrl(record.url)
     || usableUrl(record.public_url)
     || usableUrl(metadata.secure_url)
     || usableUrl(metadata.secureUrl)

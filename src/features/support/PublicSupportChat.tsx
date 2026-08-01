@@ -1212,6 +1212,8 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
   const [emailDraft, setEmailDraft] = useBookingRecoveryState(`chat:${eventId}:emailDraft`, isPreview ? user?.email ?? '' : '', value => typeof value === 'string')
   const [unreadCount, setUnreadCount] = useState(0)
   const [dockOffset, setDockOffset] = useState(0)
+  const dockOffsetRef = useRef(0)
+  const dockFrameRef = useRef<number | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const { setChatActive } = useSocialProofOverlay()
 
@@ -1219,14 +1221,15 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
   useEffect(() => {
     if (!open) return
     const scrollY = window.scrollY
+    const useFixedBody = window.innerWidth < 640
     const body = document.body
     const html = document.documentElement
     const previous = { bodyOverflow: body.style.overflow, bodyPosition: body.style.position, bodyTop: body.style.top, bodyWidth: body.style.width, htmlOverflow: html.style.overflow }
     body.style.overflow = 'hidden'; html.style.overflow = 'hidden'
-    if (window.innerWidth < 640) { body.style.position = 'fixed'; body.style.top = `-${scrollY}px`; body.style.width = '100%' }
+    if (useFixedBody) { body.style.position = 'fixed'; body.style.top = `-${scrollY}px`; body.style.width = '100%' }
     return () => {
       body.style.overflow = previous.bodyOverflow; body.style.position = previous.bodyPosition; body.style.top = previous.bodyTop; body.style.width = previous.bodyWidth; html.style.overflow = previous.htmlOverflow
-      if (window.innerWidth < 640) window.scrollTo(0, scrollY)
+      if (useFixedBody) window.scrollTo(0, scrollY)
     }
   }, [open])
 
@@ -1317,6 +1320,11 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
     const footer = document.getElementById('footer')
     if (!footer) return
 
+    const setDockOffsetIfChanged = (nextOffset: number) => {
+      if (dockOffsetRef.current === nextOffset) return
+      dockOffsetRef.current = nextOffset
+      setDockOffset(nextOffset)
+    }
     const updateDock = () => {
       const footerRect = footer.getBoundingClientRect()
       const vh = window.innerHeight
@@ -1331,20 +1339,27 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
         const naturalBtnTop = vh - baseBottom - btnHeight
         const targetBtnTop = visibleFooterTop - gap - btnHeight
         const offset = Math.min(0, targetBtnTop - naturalBtnTop) // negative = up
-        setDockOffset(offset)
+        setDockOffsetIfChanged(offset)
       } else {
-        setDockOffset(0)
+        setDockOffsetIfChanged(0)
       }
+    }
+    const scheduleDockUpdate = () => {
+      if (dockFrameRef.current !== null) return
+      dockFrameRef.current = requestAnimationFrame(() => {
+        dockFrameRef.current = null
+        updateDock()
+      })
     }
 
     // Use both IntersectionObserver (trigger) + scroll (smooth tracking)
     const observer = new IntersectionObserver(entries => {
       if (entries[0].isIntersecting) {
-        updateDock()
-        window.addEventListener('scroll', updateDock, { passive: true })
+        scheduleDockUpdate()
+        window.addEventListener('scroll', scheduleDockUpdate, { passive: true })
       } else {
-        setDockOffset(0)
-        window.removeEventListener('scroll', updateDock)
+        setDockOffsetIfChanged(0)
+        window.removeEventListener('scroll', scheduleDockUpdate)
       }
     }, { threshold: 0, rootMargin: '0px 0px -56px 0px' })
 
@@ -1352,7 +1367,9 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
 
     return () => {
       observer.disconnect()
-      window.removeEventListener('scroll', updateDock)
+      window.removeEventListener('scroll', scheduleDockUpdate)
+      if (dockFrameRef.current !== null) cancelAnimationFrame(dockFrameRef.current)
+      dockFrameRef.current = null
     }
   }, [])
 

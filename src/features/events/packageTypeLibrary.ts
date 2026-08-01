@@ -45,6 +45,7 @@ export function createPackageFromType(type: PackageTypeDefinition): BookingPacka
     glow: type.glow,
     seats: type.seats,
     icon: type.icon,
+    category: type.category,
     sections: [...type.sections],
     benefits: [...type.benefits],
   }

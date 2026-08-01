@@ -641,7 +641,7 @@
   }
 
   .testimonial-card {
-    width: min(19rem, calc(100vw - 2.5rem));
+    width: min(19rem, 100%);
   }
 
   .premium-cta-card {
@@ -1008,6 +1008,122 @@ select option,
 select optgroup {
   background: #18181B;
   color: #FAFAFA;
+}
+
+/* ── Mobile viewport and gesture stability ─────────────────────────────── */
+html,
+body,
+#root {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  box-sizing: border-box;
+  overflow-x: clip;
+}
+
+@supports not (overflow: clip) {
+  html,
+  body,
+  #root {
+    overflow-x: hidden;
+  }
+}
+
+body {
+  box-sizing: border-box;
+  overscroll-behavior-x: none;
+}
+
+img,
+video,
+iframe,
+svg {
+  max-width: 100%;
+}
+
+/* Prevent accidental double-tap zoom on controls without suppressing pan or
+   intentional pinch-to-zoom. Horizontal scrollers explicitly remain auto. */
+:where(button, a[href], input, textarea, select, [role="button"], .cursor-pointer) {
+  touch-action: manipulation;
+}
+
+:where(.overflow-x-auto, .overflow-x-scroll, .event-hero__rail, [data-horizontal-scroll]) {
+  touch-action: auto;
+}
+
+.booking-experience,
+.ios-stable-scroll,
+.checkout-surface,
+.support-chat-surface,
+.admin-mobile-chat-shell {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.booking-checkout {
+  width: 100%;
+  height: 100vh;
+  height: 100svh;
+  height: 100dvh;
+  max-width: 100%;
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.checkout-surface,
+.package-seat-modal > section {
+  min-height: 0;
+}
+
+.package-seat-modal {
+  width: 100%;
+  height: 100vh;
+  height: 100svh;
+  height: 100dvh;
+  max-width: 100%;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  padding-top: max(1rem, env(safe-area-inset-top, 0px));
+  padding-right: max(1rem, env(safe-area-inset-right, 0px));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  padding-left: max(1rem, env(safe-area-inset-left, 0px));
+  box-sizing: border-box;
+}
+
+.package-seat-modal > section {
+  max-height: 100%;
+}
+
+@supports (-webkit-touch-callout: none) {
+  /* iOS Safari/WebKit zooms controls whose computed text is below 16px. */
+  @media (max-width: 1023px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
+
+    .booking-checkout {
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    .checkout-surface {
+      height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
+      height: calc(100svh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
+      height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
+      max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)) !important;
+    }
+
+    .checkout-header,
+    .checkout-footer,
+    .mobile-booking-island,
+    .social-proof-mobile > div {
+      -webkit-backdrop-filter: none !important;
+      backdrop-filter: none !important;
+    }
+  }
 }
 
 select option:checked {

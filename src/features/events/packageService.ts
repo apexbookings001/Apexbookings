@@ -1,5 +1,7 @@
 import { requireSupabase } from '../../services/supabase/client'
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i
+
 export type DbPackage = {
   id: string
   eventId: string
@@ -70,6 +72,10 @@ export const packageService = {
     eventId: string
     name: string
     price: number
+    originalPrice?: number
+    discountedPrice?: number | null
+    discountEnabled?: boolean
+    discountEndsAt?: string | null
     capacity: number
     displayOrder: number
     seatSelectionEnabled: boolean
@@ -77,12 +83,22 @@ export const packageService = {
     description?: string
     benefits?: string[]
     color?: string
+    icon?: string
+    category?: string
+    badge?: string | null
+    accent?: string
+    glow?: string
+    sections?: string[]
   }): Promise<void> {
     const { error } = await requireSupabase().from('packages').upsert({
       id: pkg.id,
       event_id: pkg.eventId,
       name: pkg.name,
       price: pkg.price,
+      original_price: pkg.originalPrice ?? pkg.price,
+      discount_price: pkg.discountEnabled ? pkg.discountedPrice ?? null : null,
+      discount_enabled: Boolean(pkg.discountEnabled),
+      discount_ends_at: pkg.discountEnabled ? pkg.discountEndsAt ?? null : null,
       capacity: pkg.capacity,
       display_order: pkg.displayOrder,
       seat_selection_enabled: pkg.seatSelectionEnabled,
@@ -92,6 +108,12 @@ export const packageService = {
         description: pkg.description ?? '',
         benefits: pkg.benefits ?? [],
         color: pkg.color ?? '',
+        icon: pkg.icon ?? '',
+        category: pkg.category ?? '',
+        badge: pkg.badge ?? null,
+        accent: pkg.accent ?? pkg.color ?? '',
+        glow: pkg.glow ?? '',
+        sections: pkg.sections ?? [],
       }),
     }, { onConflict: 'id' })
     if (error) throw error
@@ -106,6 +128,9 @@ export const packageService = {
 
   /** Get seat statistics for a package */
   async getSeatStats(packageId: string): Promise<PackageSeatStats> {
+    if (!UUID_PATTERN.test(packageId)) {
+      return { total: 0, available: 0, reserved: 0, sold: 0, disabled: 0 }
+    }
     const { data, error } = await requireSupabase().rpc('admin_package_seat_stats', { p_package_id: packageId })
     if (error) throw error
     const d = data as Record<string, number>

@@ -4,7 +4,7 @@ import { supabase } from '../../lib/supabase'
 import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
 import { seatLabelForPackage } from './seatLabels'
-import { defaultDiscountEndsAt, validatePackageDiscount } from './packagePricing'
+import { validatePackageDiscount } from './packagePricing'
 
 export type TimelineItem = { id: string; time: string; title: string; description: string }
 export type Testimonial = { id: string; name: string; photo: string; review: string; rating: number }
@@ -25,6 +25,14 @@ export type TicketPackage = {
   seatSelectionEnabled?: boolean
   enabled?: boolean
   deletedAt?: string | null
+  // Card presentation is persisted alongside the same package UUID in the
+  // package row's existing offer JSON. It is not a second package list.
+  icon?: string
+  category?: string
+  badge?: string | null
+  accent?: string
+  glow?: string
+  sections?: string[]
 }
 export type StudioSeat = { id: string; eventId: string; number: number; label: string; packageId: string; status: SeatStatus }
 export type EventPaymentMethod = { enabled: boolean; hidden?: boolean; order?: number; instructions: string; destination?: string; qrCode?: string }
@@ -70,6 +78,7 @@ export type ManagedEvent = {
 
 const id = () => crypto.randomUUID()
 const image = 'https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?w=1600&h=900&fit=crop&auto=format'
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export const createDefaultPackages = (capacity: number): TicketPackage[] => {
   const total = Math.max(0, capacity)
@@ -77,10 +86,35 @@ export const createDefaultPackages = (capacity: number): TicketPackage[] => {
   const vip = Math.floor(total * 0.3)
   const regular = total - vip - vvip
   return [
-    { id: id(), name: 'Regular', price: 0, description: 'General event admission.', benefits: ['Event entry'], capacity: regular, color: '#71717A', displayOrder: 0, seatSelectionEnabled: true, enabled: true },
-    { id: id(), name: 'VIP', price: 0, description: 'Enhanced event experience.', benefits: ['Priority entry', 'VIP access'], capacity: vip, color: '#00FF88', displayOrder: 1, seatSelectionEnabled: true, enabled: true },
-    { id: id(), name: 'VVIP', price: 0, description: 'The complete premium experience.', benefits: ['Priority entry', 'Premium access'], capacity: vvip, color: '#F59E0B', displayOrder: 2, seatSelectionEnabled: true, enabled: true },
+    { id: id(), name: 'Regular', price: 0, originalPrice: 0, description: 'General event admission.', benefits: ['Event entry'], capacity: regular, color: '#71717A', displayOrder: 0, seatSelectionEnabled: true, enabled: true },
+    { id: id(), name: 'VIP', price: 0, originalPrice: 0, description: 'Enhanced event experience.', benefits: ['Priority entry', 'VIP access'], capacity: vip, color: '#00FF88', displayOrder: 1, seatSelectionEnabled: true, enabled: true },
+    { id: id(), name: 'VVIP', price: 0, originalPrice: 0, description: 'The complete premium experience.', benefits: ['Priority entry', 'Premium access'], capacity: vvip, color: '#F59E0B', displayOrder: 2, seatSelectionEnabled: true, enabled: true },
   ]
+}
+
+const packagesFromBookingPage = (page?: BookingPageData): TicketPackage[] | undefined => {
+  if (!page?.packages?.length) return undefined
+  return page.packages.map((item, index) => ({
+    id: item.id,
+    name: item.name,
+    price: item.price ?? 0,
+    originalPrice: item.originalPrice ?? item.price ?? 0,
+    discountedPrice: item.discountedPrice ?? null,
+    discountEnabled: item.discountEnabled ?? false,
+    discountEndsAt: item.discountEndsAt ?? null,
+    description: item.desc ?? '',
+    benefits: item.benefits ?? [],
+    color: item.accent,
+    capacity: item.seats ?? 0,
+    displayOrder: index,
+    seatSelectionEnabled: item.seatSelectionEnabled !== false,
+    enabled: true,
+    icon: item.icon,
+    badge: item.badge,
+    accent: item.accent,
+    glow: item.glow,
+    sections: item.sections ?? [],
+  }))
 }
 
 export const PLATFORM_PAYMENT_DEFAULTS: EventPaymentSettings = {
@@ -158,14 +192,40 @@ export const generateSeats = (eventId: string, packages: TicketPackage[], existi
 
 export const ensureStudioEvent = (event: ManagedEvent): ManagedEvent => {
   const content = event.content ?? createStudioContent({ title: event.title, venue: event.venue, date: event.date, hostName: event.setup?.hostName ?? 'Your host', mapLink: event.setup?.mapLink ?? '', banners: event.setup?.banners })
-  const packages = event.packages ?? createDefaultPackages(event.capacity)
-  const seats = event.seats ?? generateSeats(event.id, packages)
+  // Event Studio hydrates the event's own persisted packages first. Legacy
+  // booking-page data is used only as a one-time compatibility source. Never
+  // synthesize operational prices/allocations from a non-zero event capacity.
+  const sourcePackages = event.packages ?? packagesFromBookingPage(event.bookingPage) ?? createDefaultPackages(0)
+  // Early booking-page templates used readable IDs such as "regular". Package
+  // and seat foreign keys are UUIDs, so upgrade those legacy IDs once before
+  // any package or seat RPC is called.
+  const packageIdMap = new Map<string, string>()
+  const packages = sourcePackages.map(pkg => {
+    const packageId = UUID_PATTERN.test(pkg.id) ? pkg.id : id()
+    packageIdMap.set(pkg.id, packageId)
+    return packageId === pkg.id ? pkg : { ...pkg, id: packageId }
+  })
+  const bookingPage = event.bookingPage ? {
+    ...event.bookingPage,
+    packages: event.bookingPage.packages.map((pkg, index) => ({
+      ...pkg,
+      // The index fallback is solely a one-time upgrade for old template
+      // records; all normal editing uses the stored package UUID.
+      id: packageIdMap.get(pkg.id) ?? packages[index]?.id ?? pkg.id,
+    })),
+  } : undefined
+  // Seats are operational data. They are created only after a complete
+  // Packages & Seats save, never merely because a draft has package cards.
+  const seats = event.seats
+    ? event.seats.map(seat => ({ ...seat, packageId: packageIdMap.get(seat.packageId) ?? seat.packageId }))
+    : []
   const publication = event.publication ?? createEventPublication(event.title)
   const scheduledNow = event.status === 'scheduled' && publication.scheduledFor && new Date(publication.scheduledFor).getTime() <= Date.now()
   return {
     ...event,
     status: scheduledNow ? 'published' : event.status,
     content,
+    bookingPage,
     packages,
     seats,
     payments: paymentSettings(event.payments),
@@ -193,16 +253,21 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
       return {
         ...item,
         id: nextId,
+        price: 0,
+        originalPrice: 0,
+        discountedPrice: null,
+        discountEnabled: false,
+        discountEndsAt: null,
+        capacity: 0,
         enabled: true,
         deletedAt: null,
         displayOrder: idx,
-        discountEndsAt: item.discountEnabled && (!item.discountEndsAt || Date.parse(item.discountEndsAt) <= Date.now()) ? defaultDiscountEndsAt() : item.discountEndsAt,
       }
     })
 
-  // A duplicate gets independent seats for its new event and package IDs. It
-  // never copies sold/reserved states, bookings, or temporary reservations.
-  duplicate.seats = generateSeats(eventId, duplicate.packages ?? [])
+  // Seats are created only after the duplicate's administrator completes the
+  // new capacity, allocation and pricing setup.
+  duplicate.seats = []
 
   if (duplicate.content) {
     duplicate.content.timeline = duplicate.content.timeline.map(item => ({ ...item, id: crypto.randomUUID() }))
@@ -213,8 +278,16 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
     duplicate.bookingPage.timeline = duplicate.bookingPage.timeline.map(item => ({ ...item, id: crypto.randomUUID() }))
     duplicate.bookingPage.packages = duplicate.bookingPage.packages.map(item => {
       const nextId = packageIds.get(item.id) ?? crypto.randomUUID()
-      const expired = item.discountEnabled && (!item.discountEndsAt || Date.parse(item.discountEndsAt) <= Date.now())
-      return { ...item, id: nextId, discountEndsAt: expired ? defaultDiscountEndsAt() : item.discountEndsAt }
+      return {
+        ...item,
+        id: nextId,
+        price: 0,
+        originalPrice: 0,
+        discountedPrice: null,
+        discountEnabled: false,
+        discountEndsAt: null,
+        seats: 0,
+      }
     })
     duplicate.bookingPage.testimonials = duplicate.bookingPage.testimonials.map(item => ({ ...item, id: crypto.randomUUID() }))
     duplicate.bookingPage.faq = duplicate.bookingPage.faq.map(item => ({ ...item, id: crypto.randomUUID() }))
@@ -237,8 +310,102 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
     status: 'draft',
     locale: change.locale,
     publication: createEventPublication(change.title),
-    // Copy capacity as an editable starting point
-    capacity: source.capacity ?? 0,
+    capacity: 0,
+  }
+}
+
+/**
+ * The master booking template has visual package cards but is not itself an
+ * event record. Convert only that presentation into a temporary source, then
+ * route it through the same duplicateManagedEvent operation as a real event.
+ * This prevents the template's example prices, allocations and capacity from
+ * becoming operational values on the new draft.
+ */
+export function duplicateBookingTemplateEvent(sourcePage: BookingPageData, change: {
+  title: string
+  date: string
+  venue: string
+  locale: EventLocaleSettings
+}): ManagedEvent {
+  const page = structuredClone(sourcePage)
+  const templatePackages = page.packages.map((item, index) => {
+    const packageId = crypto.randomUUID()
+    return {
+      id: packageId,
+      name: item.name,
+      price: 0,
+      originalPrice: 0,
+      discountedPrice: null,
+      discountEnabled: false,
+      discountEndsAt: null,
+      description: item.desc ?? '',
+      benefits: item.benefits ?? [],
+      color: item.accent,
+      capacity: 0,
+      displayOrder: index,
+      seatSelectionEnabled: true,
+      enabled: true,
+      icon: item.icon,
+      category: undefined,
+      badge: item.badge,
+      accent: item.accent,
+      glow: item.glow,
+      sections: item.sections ?? [],
+    } satisfies TicketPackage
+  })
+  page.packages = page.packages.map((item, index) => ({
+    ...item,
+    id: templatePackages[index].id,
+    price: 0,
+    originalPrice: 0,
+    discountedPrice: null,
+    discountEnabled: false,
+    discountEndsAt: null,
+    seats: 0,
+  }))
+  return duplicateManagedEvent({
+    id: crypto.randomUUID(),
+    title: page.hero.title,
+    venue: page.venue.name,
+    date: page.hero.date,
+    banner: page.hero.images[0],
+    sold: 0,
+    capacity: 0,
+    revenue: 0,
+    status: 'draft',
+    schedule: [],
+    packages: templatePackages,
+    seats: [],
+    bookingPage: page,
+    locale: change.locale,
+  }, change)
+}
+
+export type DuplicateDatabaseSnapshot = {
+  eventId: string
+  capacity: number | null
+  packages: Array<{ id: string; eventId: string; name: string; price: number; capacity: number }>
+  seatRowCount: number
+}
+
+/** Read back exactly what Supabase stored for one just-created duplicate. */
+export async function verifyDuplicateDatabaseSnapshot(eventId: string): Promise<DuplicateDatabaseSnapshot> {
+  if (!supabase) throw new Error('Supabase is not configured.')
+  const [{ data: event, error: eventError }, { data: packages, error: packageError }, { count, error: seatError }] = await Promise.all([
+    supabase.from('events').select('id,capacity').eq('id', eventId).single(),
+    supabase.from('packages').select('id,event_id,name,price,capacity').eq('event_id', eventId).is('deleted_at', null).order('display_order'),
+    supabase.from('seats').select('id', { count: 'exact', head: true }).eq('event_id', eventId).is('deleted_at', null),
+  ])
+  if (eventError) throw eventError
+  if (packageError) throw packageError
+  if (seatError) throw seatError
+  return {
+    eventId: String(event.id),
+    capacity: event.capacity == null ? null : Number(event.capacity),
+    packages: (packages ?? []).map(row => ({
+      id: String(row.id), eventId: String(row.event_id), name: String(row.name), price: Number(row.price), capacity: Number(row.capacity),
+    })),
+    seatRowCount: count ?? 0,
   }
 }
 
@@ -289,9 +456,48 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
   if (!supabase) throw new Error('Supabase is not configured.')
   const orgId = requireOrganizationId()
   const prepared = ensureStudioEvent(event)
+  const invalidDiscount = (prepared.packages ?? []).find(pkg => pkg.enabled !== false && !pkg.deletedAt && pkg.discountEnabled && validatePackageDiscount(pkg))
+  if (invalidDiscount) throw new Error(`${invalidDiscount.name}: ${validatePackageDiscount(invalidDiscount)}`)
+
+  // Duplicate drafts deliberately begin with zero capacity, prices and seats.
+  // Publishing is the boundary where the complete, saved configuration is
+  // enforced, including a database check for the generated seat rows.
+  const publishPackages = (prepared.packages ?? []).filter(pkg => pkg.enabled !== false && !pkg.deletedAt)
   if (prepared.status === 'published') {
-    const invalid = (prepared.packages ?? []).find(pkg => pkg.enabled !== false && !pkg.deletedAt && validatePackageDiscount(pkg))
-    if (invalid) throw new Error(`${invalid.name}: ${validatePackageDiscount(invalid)}`)
+    if (!Number.isInteger(prepared.capacity) || prepared.capacity <= 0) {
+      throw new Error('Complete package pricing and seat allocation before publishing: enter the total venue capacity.')
+    }
+    const totalAllocated = publishPackages.reduce((sum, pkg) => sum + pkg.capacity, 0)
+    if (totalAllocated !== prepared.capacity) {
+      const detail = totalAllocated > prepared.capacity
+        ? `Package allocations exceed the venue capacity by ${totalAllocated - prepared.capacity} seats.`
+        : `Allocate the remaining ${prepared.capacity - totalAllocated} seats before publishing.`
+      throw new Error(detail)
+    }
+    const incompletePackage = publishPackages.find(pkg =>
+      !UUID_PATTERN.test(pkg.id)
+      || !Number.isInteger(pkg.capacity)
+      || pkg.capacity < 0
+      || (pkg.capacity > 0 && (!Number.isFinite(pkg.price) || pkg.price <= 0))
+    )
+    if (incompletePackage) {
+      throw new Error(`${incompletePackage.name}: complete package pricing and seat allocation before publishing.`)
+    }
+    const { data: seatRows, error: seatError } = await supabase
+      .from('seats')
+      .select('package_id')
+      .eq('event_id', prepared.id)
+      .is('deleted_at', null)
+    if (seatError) throw seatError
+    const seatCountByPackage = new Map<string, number>()
+    for (const seat of seatRows ?? []) {
+      const packageId = String(seat.package_id ?? '')
+      seatCountByPackage.set(packageId, (seatCountByPackage.get(packageId) ?? 0) + 1)
+    }
+    const mismatchedSeats = publishPackages.find(pkg => (seatCountByPackage.get(pkg.id) ?? 0) !== pkg.capacity)
+    if (mismatchedSeats) {
+      throw new Error(`${mismatchedSeats.name}: save packages and seats to generate the allocated seats before publishing.`)
+    }
   }
 
   // ── Upsert the event row ────────────────────────────────────────────────────
@@ -305,7 +511,9 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
     starts_at: dateForDatabase(prepared.date),
     status: prepared.status,
     banner_path: prepared.banner,
-    capacity: prepared.capacity > 0 ? prepared.capacity : null,
+    // Zero is a legitimate unconfigured duplicate state. Do not coerce it to
+    // null, because that causes later hydration to treat it as missing data.
+    capacity: prepared.capacity,
     content: prepared.content ?? {},
     payment_settings: prepared.payments ?? {},
     scheduled_for: prepared.publication?.scheduledFor,
@@ -322,6 +530,16 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
 
   // ── Upsert surviving packages ───────────────────────────────────────────────
   const packages = (prepared.packages ?? []).filter(pkg => pkg.enabled !== false && !pkg.deletedAt)
+  const invalidPackage = packages.find(pkg =>
+    !UUID_PATTERN.test(pkg.id)
+    || !Number.isFinite(pkg.price)
+    || pkg.price < 0
+    || !Number.isFinite(pkg.originalPrice ?? pkg.price)
+    || (pkg.originalPrice ?? pkg.price) < 0
+  )
+  if (invalidPackage) {
+    throw new Error(`${invalidPackage.name || 'Package'} needs a valid UUID and a non-negative draft price.`)
+  }
   if (packages.length) {
     const { error: packageError } = await supabase.from('packages').upsert(packages.map((pkg, idx) => ({
       id: pkg.id,
@@ -329,17 +547,37 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
       name: pkg.name,
       price: pkg.price,
       original_price: pkg.originalPrice ?? pkg.price,
-      discount_price: pkg.discountedPrice ?? null,
+      discount_price: pkg.discountEnabled ? pkg.discountedPrice ?? null : null,
       discount_enabled: Boolean(pkg.discountEnabled),
-      discount_ends_at: pkg.discountEndsAt ?? null,
+      discount_ends_at: pkg.discountEnabled ? pkg.discountEndsAt ?? null : null,
       capacity: pkg.capacity,
       display_order: pkg.displayOrder ?? idx,
       seat_selection_enabled: pkg.seatSelectionEnabled !== false,
       enabled: true,
       deleted_at: null,
-      offer: JSON.stringify({ description: pkg.description, benefits: pkg.benefits, color: pkg.color }),
+      offer: JSON.stringify({
+        description: pkg.description,
+        benefits: pkg.benefits,
+        color: pkg.color,
+        icon: pkg.icon,
+        category: pkg.category,
+        badge: pkg.badge,
+        accent: pkg.accent,
+        glow: pkg.glow,
+        sections: pkg.sections ?? [],
+      }),
     })), { onConflict: 'id' })
-    if (packageError) throw packageError
+    if (packageError) {
+      console.error('[event-packages] package upsert failed', {
+        code: packageError.code,
+        message: packageError.message,
+        details: packageError.details,
+        hint: packageError.hint,
+        packageCount: packages.length,
+        packages: packages.map(pkg => ({ id: pkg.id, idIsUuid: UUID_PATTERN.test(pkg.id), price: pkg.price, originalPrice: pkg.originalPrice ?? pkg.price })),
+      })
+      throw new Error(packageError.message)
+    }
   }
 
   // ── Soft-delete packages that are no longer in the active list ─────────────
@@ -348,20 +586,25 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
   // list gets its deleted_at set, making the removal permanent.
   const activePackageIds = packages.map(pkg => pkg.id)
   if (activePackageIds.length > 0) {
-    // Soft-delete packages not in the active list
-    await supabase
-      .from('packages')
-      .update({ deleted_at: new Date().toISOString(), enabled: false, updated_at: new Date().toISOString() })
-      .eq('event_id', prepared.id)
-      .is('deleted_at', null)
+    // Use the protected removal RPC so packages with sold or reserved seats
+    // are archived rather than deleting their historical relationships.
+    const { data: stalePackages, error: staleError } = await supabase
+      .from('packages').select('id').eq('event_id', prepared.id).is('deleted_at', null)
       .not('id', 'in', `(${activePackageIds.join(',')})`)
+    if (staleError) throw staleError
+    for (const stale of stalePackages ?? []) {
+      const { error: removeError } = await supabase.rpc('admin_remove_package', { p_package_id: stale.id })
+      if (removeError) throw removeError
+    }
   } else if (prepared.packages !== undefined) {
     // All packages were removed — soft-delete everything
-    await supabase
-      .from('packages')
-      .update({ deleted_at: new Date().toISOString(), enabled: false, updated_at: new Date().toISOString() })
-      .eq('event_id', prepared.id)
-      .is('deleted_at', null)
+    const { data: stalePackages, error: staleError } = await supabase
+      .from('packages').select('id').eq('event_id', prepared.id).is('deleted_at', null)
+    if (staleError) throw staleError
+    for (const stale of stalePackages ?? []) {
+      const { error: removeError } = await supabase.rpc('admin_remove_package', { p_package_id: stale.id })
+      if (removeError) throw removeError
+    }
   }
 
   // ── Upsert seats ────────────────────────────────────────────────────────────

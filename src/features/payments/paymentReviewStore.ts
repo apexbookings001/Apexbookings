@@ -7,6 +7,19 @@ export type PaymentReviewRecord = { id: string; reference: string; eventId: stri
 export type PaymentReviewUpdateResult = { ticketId?: string; ticketNumber?: string; qrToken?: string }
 
 const cache = createProtectedMemoryStore<PaymentReviewRecord[]>(() => [])
+const unavailableProofPaths = new Set<string>()
+
+async function signedProofUrl(bucket: string, path: string) {
+  const proofKey = `${bucket}/${path}`
+  if (!supabase || unavailableProofPaths.has(proofKey)) return null
+  const signed = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60)
+  if (signed.error || !signed.data?.signedUrl) {
+    unavailableProofPaths.add(proofKey)
+    if (import.meta.env.DEV) console.warn('[payment-review] proof preview unavailable', { bucket, path, code: signed.error?.statusCode, message: signed.error?.message })
+    return null
+  }
+  return signed.data.signedUrl
+}
 
 function fromRow(row: Record<string, unknown>): PaymentReviewRecord {
   const booking = row.bookings as Record<string, unknown>
@@ -80,8 +93,7 @@ export const paymentReviewStore = {
         const proofs = (row.payment_proofs ?? []) as unknown as { media?: { bucket?: string; path?: string } | null }[]
         const signedProofUrls = (await Promise.all(proofs.map(async proof => {
           if (!proof.media?.bucket || !proof.media.path) return null
-          const signed = await supabase!.storage.from(proof.media.bucket).createSignedUrl(proof.media.path, 60 * 60)
-          return signed.data?.signedUrl ?? null
+          return signedProofUrl(proof.media.bucket, proof.media.path)
         }))).filter((url): url is string => Boolean(url))
         return fromRow({ ...(row as unknown as Record<string, unknown>), signedProofUrls })
       }))

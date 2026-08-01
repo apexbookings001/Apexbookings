@@ -1,17 +1,21 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import { ticketStore, type TicketRecord } from '../features/bookings/ticketStore'
+import { downloadTicketPng } from '../features/tickets/ticketDownloadService'
+import { createTicketViewModel } from '../features/tickets/ticketViewModel'
 import { ThemeCtx, DARK } from '../theme'
 import movieTicketLogo from '../../icons/movie-ticket.gif'
 import verifiedIcon from '../../icons/verified.png'
 import { useLocale } from '../i18n/LocaleContext'
 
 export function TicketVerificationPage() {
-  const { t: translate, formatDate } = useLocale()
+  const { t: translate, formatDate, locale } = useLocale()
   const { ticketId } = useParams()
   const navigate = useNavigate()
   const [ticket, setTicket] = useState<TicketRecord | null>(null)
   const [loading, setLoading] = useState(true)
+  const [isPreparingTicket, setIsPreparingTicket] = useState(false)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
 
   // Use the standard dark theme for a premium look
   const t = DARK
@@ -37,6 +41,25 @@ export function TicketVerificationPage() {
       document.body.style.color = ''
     }
   }, [t])
+
+  const ticketView = ticket ? createTicketViewModel(ticket, {}, {
+    locale: locale.bcp47,
+    verificationUrl: `${window.location.origin}/ticket/${encodeURIComponent(ticket.qrToken ?? ticket.id)}`,
+  }) : null
+
+  const downloadTicket = async () => {
+    if (!ticketView || isPreparingTicket) return
+    setIsPreparingTicket(true)
+    setDownloadError(null)
+    try {
+      await downloadTicketPng(ticketView)
+    } catch (error) {
+      console.error('[ticket-download] Unable to prepare ticket', error)
+      setDownloadError('Unable to prepare your ticket. Please try again.')
+    } finally {
+      setIsPreparingTicket(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -137,11 +160,11 @@ export function TicketVerificationPage() {
               
               {/* Event Banner */}
               <div className="h-40 relative">
-                <img src={ticket.eventBanner} alt={ticket.eventName} className="w-full h-full object-cover" />
-                <div className="absolute inset-0 bg-gradient-to-t from-[#111113] to-transparent opacity-90" />
-                <div className="absolute bottom-4 left-5 right-5">
-                  <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: ticket.packageAccent }}>{translate('ticket.presents', { host: ticket.eventHost })}</div>
-                  <div className="font-serif text-2xl font-bold leading-tight" style={{ color: '#FFFFFF' }}>{ticket.eventName}</div>
+              <img src={ticketView?.eventImage} alt={ticketView?.eventTitle} className="w-full h-full object-cover" />
+              <div className="absolute inset-0 bg-gradient-to-t from-[#111113] to-transparent opacity-90" />
+              <div className="absolute bottom-4 left-5 right-5">
+                  <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: ticket.packageAccent }}>{translate('ticket.presents', { host: ticketView?.eventHost || ticket.eventHost || ticket.eventName })}</div>
+                  <div className="font-serif text-2xl font-bold leading-tight break-words" style={{ color: '#FFFFFF' }}>{ticketView?.eventTitle}</div>
                 </div>
               </div>
 
@@ -151,7 +174,7 @@ export function TicketVerificationPage() {
                 {/* Customer */}
                 <div>
                   <div className="text-xs font-mono uppercase tracking-wider mb-1" style={{ color: t.textMuted }}>{translate('ticket.admitOne')}</div>
-                  <div className="text-xl font-bold" style={{ color: t.text }}>{ticket.customerName}</div>
+                  <div className="text-xl font-bold break-words" style={{ color: t.text }}>{ticketView?.customerName}</div>
                 </div>
 
                 <div className="h-px w-full" style={{ background: `linear-gradient(90deg, transparent, ${t.border}, transparent)` }} />
@@ -160,23 +183,23 @@ export function TicketVerificationPage() {
                 <div className="grid grid-cols-2 gap-y-5 gap-x-4">
                   <div>
                     <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.eventDate')}</div>
-                    <div className="text-sm font-semibold text-white">{ticket.eventDate}</div>
+                    <div className="text-sm font-semibold text-white break-words">{ticketView?.eventDate}</div>
                   </div>
                   <div>
                     <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.time')}</div>
-                    <div className="text-sm font-semibold text-white">{ticket.eventTime}</div>
+                    <div className="text-sm font-semibold text-white break-words">{ticketView?.eventTime}</div>
                   </div>
                   <div className="col-span-2">
                     <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.venue')}</div>
-                    <div className="text-sm font-semibold text-white">{ticket.eventVenue}</div>
+                    <div className="text-sm font-semibold text-white break-words">{ticketView?.venue}</div>
                   </div>
                   <div>
                     <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.package')}</div>
-                    <div className="text-sm font-bold" style={{ color: ticket.packageAccent }}>{ticket.packageName}</div>
+                    <div className="text-sm font-bold break-words" style={{ color: ticket.packageAccent }}>{ticketView?.packageName}</div>
                   </div>
                   <div>
                     <div className="text-xs font-mono text-zinc-500 uppercase tracking-widest mb-1">{translate('ticket.seat')}</div>
-                    <div className="text-sm font-bold text-white">{ticket.seatLabel}</div>
+                    <div className="text-sm font-bold text-white break-words">{ticketView?.seatLabel}</div>
                   </div>
                 </div>
 
@@ -200,6 +223,13 @@ export function TicketVerificationPage() {
                   </div>
                 </div>
               </div>
+            </div>
+
+            <div className="space-y-3 text-center">
+              <button onClick={() => void downloadTicket()} disabled={isPreparingTicket} className="w-full rounded-2xl px-5 py-3 text-sm font-bold disabled:cursor-wait disabled:opacity-60" style={{ background: '#00FF88', color: '#09090B' }}>
+                {isPreparingTicket ? 'Preparing ticket…' : translate('ticket.download')}
+              </button>
+              {downloadError && <p role="alert" className="text-sm text-red-300">{downloadError}</p>}
             </div>
             
             <div className="text-center text-xs pb-10" style={{ color: t.textMuted }}>

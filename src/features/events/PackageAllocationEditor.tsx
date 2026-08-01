@@ -4,6 +4,7 @@ import { packageService, type PackageSeatStats } from './packageService'
 import { seatService, seatPrefix } from './seatService'
 import { VisualSeatManager } from './VisualSeatManager'
 import { requireSupabase } from '../../services/supabase/client'
+import { validatePackageDiscount } from './packagePricing'
 
 const T = {
   bg2: '#111113', bg3: '#18181B', bg4: '#1E1E21',
@@ -13,6 +14,16 @@ const T = {
   text: '#FAFAFA', textSub: '#A1A1AA', textMuted: '#52525B',
   emerald: '#00FF88', emeraldGlow: 'rgba(0,255,136,0.18)',
   gold: '#F59E0B', red: '#EF4444', purple: '#8B5CF6', cyan: '#22D3EE',
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i
+
+function formatPackagePrice(value: number, currency: string) {
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(value)
+  } catch {
+    return `${currency} ${value.toFixed(2)}`
+  }
 }
 
 type RemoveModalState = {
@@ -118,6 +129,7 @@ export function PackageAllocationEditor({
   eventId,
   packages,
   capacity,
+  currency = 'USD',
   onChange,
   onSave,
   saving = false,
@@ -125,6 +137,7 @@ export function PackageAllocationEditor({
   eventId: string
   packages: TicketPackage[]
   capacity: number
+  currency?: string
   onChange: (packages: TicketPackage[]) => void
   onSave: (packages: TicketPackage[]) => Promise<void>
   saving?: boolean
@@ -134,13 +147,48 @@ export function PackageAllocationEditor({
   const [allocationError, setAllocationError] = useState<Record<string, string>>({})
   const [seatStatsMap, setSeatStatsMap] = useState<Record<string, PackageSeatStats>>({})
   const [addingNew, setAddingNew] = useState(false)
+  const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({})
+  const [allocationDrafts, setAllocationDrafts] = useState<Record<string, string>>({})
 
   // Active (non-removed) packages
   const activePackages = packages.filter(p => p.enabled !== false && !p.deletedAt)
 
-  const totalAllocated = activePackages.reduce((sum, p) => sum + (p.capacity ?? 0), 0)
+  const allocationValue = (pkg: TicketPackage) => {
+    const draft = allocationDrafts[pkg.id]
+    return draft === undefined ? pkg.capacity ?? 0 : /^\d+$/.test(draft) ? Number(draft) : Number.NaN
+  }
+  const priceValue = (pkg: TicketPackage) => {
+    const draft = priceDrafts[pkg.id]
+    return draft === undefined ? pkg.price : Number(draft)
+  }
+  const totalAllocated = activePackages.reduce((sum, pkg) => sum + (Number.isFinite(allocationValue(pkg)) ? allocationValue(pkg) : 0), 0)
   const remaining = capacity - totalAllocated
-  const overCapacity = totalAllocated > capacity && capacity > 0
+  const overCapacity = totalAllocated > capacity
+  const invalidAllocation = activePackages.find(pkg => !Number.isInteger(allocationValue(pkg)) || allocationValue(pkg) < 0)
+  // A package with no allocated seats may remain at zero while the admin is
+  // configuring a duplicate. Paid pricing is required as soon as it receives
+  // seats (free packages are handled by the explicit free-package setting).
+  const invalidPrice = activePackages.find(pkg =>
+    !Number.isFinite(priceValue(pkg))
+    || priceValue(pkg) < 0
+    || (allocationValue(pkg) > 0 && priceValue(pkg) <= 0)
+  )
+  const invalidPackageId = activePackages.find(pkg => !UUID_PATTERN.test(pkg.id))
+  const duplicatePackage = activePackages.find((pkg, index) => activePackages.findIndex(other => other.id === pkg.id) !== index)
+  const saveReason = capacity <= 0
+    ? 'Enter the total venue capacity.'
+    : invalidAllocation
+      ? `Complete the seat allocation for ${invalidAllocation.name}.`
+      : invalidPrice
+        ? `Set the price for ${invalidPrice.name}.`
+        : invalidPackageId || duplicatePackage
+          ? 'Complete all package settings before saving.'
+          : overCapacity
+            ? `Package allocations exceed the venue capacity by ${totalAllocated - capacity} seats.`
+            : remaining > 0
+              ? `Allocate the remaining ${remaining} seat${remaining === 1 ? '' : 's'} before saving.`
+              : null
+  const canSave = !saveReason
 
   const loadSeatStats = useCallback(async (pkgId: string) => {
     try {
@@ -172,11 +220,72 @@ export function PackageAllocationEditor({
     onChange(packages.map(p => p.id === id ? { ...p, ...fields } : p))
   }
 
+  const packageWithDraftValues = (pkg: TicketPackage): TicketPackage => {
+    const priceDraft = priceDrafts[pkg.id]
+    const allocationDraft = allocationDrafts[pkg.id]
+    const price = priceDraft === undefined ? pkg.price : Number(priceDraft)
+    const capacity = allocationDraft === undefined ? pkg.capacity : Number(allocationDraft)
+    return {
+      ...pkg,
+      ...(Number.isFinite(price) ? { price, originalPrice: price } : {}),
+      ...(allocationDraft === undefined || (/^\d+$/.test(allocationDraft) && Number.isInteger(capacity) && capacity >= 0) ? { capacity } : {}),
+    }
+  }
+
+  const commitPrice = (pkg: TicketPackage) => {
+    const draft = priceDrafts[pkg.id]
+    if (draft === undefined) return
+    const price = Number(draft)
+    if (!Number.isFinite(price) || price < 0 || (allocationValue(pkg) > 0 && price <= 0)) {
+      setAllocationError(prev => ({ ...prev, [pkg.id]: allocationValue(pkg) > 0 ? 'Package price must be greater than zero.' : 'Package price cannot be negative.' }))
+      return
+    }
+    setAllocationError(prev => ({ ...prev, [pkg.id]: '' }))
+    setPriceDrafts(prev => {
+      const next = { ...prev }
+      delete next[pkg.id]
+      return next
+    })
+    updatePackage(pkg.id, { price, originalPrice: price })
+  }
+
+  const commitAllocation = (pkg: TicketPackage) => {
+    const draft = allocationDrafts[pkg.id]
+    if (draft === undefined) return
+    const allocation = Number(draft)
+    if (!/^\d+$/.test(draft) || !Number.isInteger(allocation) || allocation < 0) {
+      setAllocationError(prev => ({ ...prev, [pkg.id]: 'Seat allocation must be a whole number of zero or more.' }))
+      return
+    }
+    setAllocationError(prev => ({ ...prev, [pkg.id]: '' }))
+    setAllocationDrafts(prev => {
+      const next = { ...prev }
+      delete next[pkg.id]
+      return next
+    })
+    updatePackage(pkg.id, { capacity: allocation })
+  }
+
+  const saveAllPackages = () => {
+    if (!canSave) return
+    onSave(activePackages.map(packageWithDraftValues))
+  }
+
+  const reconcilePackage = (pkg: TicketPackage) => {
+    const draft = allocationDrafts[pkg.id]
+    if (draft !== undefined && !/^\d+$/.test(draft)) {
+      setAllocationError(prev => ({ ...prev, [pkg.id]: 'Seat allocation must be a whole number of zero or more.' }))
+      return
+    }
+    void saveAllocation(packageWithDraftValues(pkg))
+  }
+
   const addPackage = () => {
     const newPkg: TicketPackage = {
       id: crypto.randomUUID(),
       name: 'New Package',
-      price: 0,
+      price: 75,
+      originalPrice: 75,
       description: '',
       benefits: [],
       capacity: 0,
@@ -225,6 +334,12 @@ export function PackageAllocationEditor({
     const newCount = pkg.capacity ?? 0
     const stats = seatStatsMap[pkg.id]
     const protectedSeats = (stats?.sold ?? 0) + (stats?.reserved ?? 0)
+    const pricingError = validatePackageDiscount(pkg)
+
+    if (pricingError) {
+      setAllocationError(prev => ({ ...prev, [pkg.id]: pricingError }))
+      return
+    }
 
     if (newCount < protectedSeats) {
       setAllocationError(prev => ({ ...prev, [pkg.id]: `Cannot reduce below ${protectedSeats} protected seats (sold + reserved)` }))
@@ -246,6 +361,10 @@ export function PackageAllocationEditor({
         eventId,
         name: pkg.name,
         price: pkg.price,
+        originalPrice: pkg.originalPrice ?? pkg.price,
+        discountedPrice: pkg.discountedPrice ?? null,
+        discountEnabled: pkg.discountEnabled,
+        discountEndsAt: pkg.discountEndsAt ?? null,
         capacity: newCount,
         displayOrder: pkg.displayOrder ?? 0,
         seatSelectionEnabled: pkg.seatSelectionEnabled !== false,
@@ -253,6 +372,12 @@ export function PackageAllocationEditor({
         description: pkg.description,
         benefits: pkg.benefits,
         color: pkg.color,
+        icon: pkg.icon,
+        category: pkg.category,
+        badge: pkg.badge,
+        accent: pkg.accent,
+        glow: pkg.glow,
+        sections: pkg.sections,
       })
 
       // Adjust seat allocation in Supabase
@@ -305,62 +430,37 @@ export function PackageAllocationEditor({
             <div className="flex items-center justify-between px-5 pt-5 pb-3">
               <div className="flex items-center gap-3">
                 <div className="w-3 h-3 rounded-full" style={{ background: pkg.color ?? T.textMuted }} />
-                <input
-                  value={pkg.name}
-                  onChange={e => updatePackage(pkg.id, { name: e.target.value })}
-                  className="text-sm font-bold bg-transparent outline-none border-b border-transparent focus:border-white/20"
-                  style={{ color: T.text, minWidth: 80 }}
-                  placeholder="Package name"
-                />
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full"
-                  style={{ background: 'rgba(255,255,255,0.05)', color: T.textMuted }}>
-                  #{idx + 1}
-                </span>
+                {pkg.icon && <span aria-hidden="true" className="text-base leading-none">{pkg.icon}</span>}
+                <div>
+                  <div className="text-sm font-bold" style={{ color: T.text }}>{pkg.name}</div>
+                  <div className="text-[10px]" style={{ color: T.textMuted }}>Edit package content and card order in Visual Package Cards</div>
+                </div>
               </div>
-              <button
-                onClick={() => openRemoveModal(pkg)}
-                className="text-xs px-3 py-1.5 rounded-lg font-semibold"
-                style={{ background: 'rgba(239,68,68,0.08)', color: T.red, border: '1px solid rgba(239,68,68,0.2)' }}
-              >
-                Remove
-              </button>
+              <span className="rounded-full px-2.5 py-1 text-[10px] font-mono" style={{ background: 'rgba(255,255,255,0.05)', color: T.textMuted }}>
+                {stats?.total ?? 0} / {pkg.capacity} seats generated
+              </span>
             </div>
 
             {/* Fields */}
             <div className="px-5 pb-5 space-y-4">
-              <div className="grid sm:grid-cols-2 gap-3">
+              <div className="max-w-sm">
                 {/* Price */}
                 <div>
-                  <label className="text-[10px] font-mono uppercase tracking-wider block mb-1" style={{ color: T.textMuted }}>Price</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs" style={{ color: T.textMuted }}>$</span>
-                    <input type="number" min={0} step="0.01"
-                      value={pkg.price}
-                      onChange={e => updatePackage(pkg.id, { price: parseFloat(e.target.value) || 0 })}
-                      className="w-full pl-6 pr-3 py-2 rounded-xl text-sm outline-none"
+                  <label className="text-[10px] font-mono uppercase tracking-wider block mb-1" style={{ color: T.textMuted }}>Price ({currency})</label>
+                  <div>
+                    <input type="text" inputMode="decimal"
+                      value={priceDrafts[pkg.id] ?? String(pkg.price)}
+                      onChange={e => setPriceDrafts(prev => ({ ...prev, [pkg.id]: e.target.value }))}
+                      onBlur={() => commitPrice(pkg)}
+                      className="w-full px-3 py-2 rounded-xl text-sm outline-none"
                       style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }} />
+                    <div className="mt-1 text-[10px]" style={{ color: T.textMuted }}>{formatPackagePrice(Number(priceDrafts[pkg.id] ?? pkg.price) || 0, currency)}</div>
                   </div>
-                </div>
-                {/* Display order */}
-                <div>
-                  <label className="text-[10px] font-mono uppercase tracking-wider block mb-1" style={{ color: T.textMuted }}>Display Order</label>
-                  <input type="number" min={0}
-                    value={pkg.displayOrder ?? idx}
-                    onChange={e => updatePackage(pkg.id, { displayOrder: parseInt(e.target.value) || 0 })}
-                    className="w-full px-3 py-2 rounded-xl text-sm outline-none"
-                    style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }} />
                 </div>
               </div>
 
-              {/* Description */}
-              <div>
-                <label className="text-[10px] font-mono uppercase tracking-wider block mb-1" style={{ color: T.textMuted }}>Description</label>
-                <input
-                  value={pkg.description}
-                  onChange={e => updatePackage(pkg.id, { description: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl text-sm outline-none"
-                  style={{ background: T.inputBg, border: `1px solid ${T.border}`, color: T.text }}
-                  placeholder="Short description shown on booking page" />
+              <div className="rounded-xl px-3 py-2 text-xs" style={{ background: T.inputBg, color: T.textSub }}>
+                {pkg.description || 'No description yet. Add it in Visual Package Cards.'}
               </div>
 
               {/* Seat allocation */}
@@ -373,19 +473,22 @@ export function PackageAllocationEditor({
                 </label>
                 <div className="flex items-center gap-2">
                   <input
-                    type="number" min={0} max={capacity}
-                    value={pkg.capacity}
-                    onChange={e => updatePackage(pkg.id, { capacity: Math.max(0, parseInt(e.target.value) || 0) })}
+                    type="text" inputMode="numeric"
+                    value={allocationDrafts[pkg.id] ?? String(pkg.capacity)}
+                    onChange={e => setAllocationDrafts(prev => ({ ...prev, [pkg.id]: e.target.value }))}
+                    onBlur={() => commitAllocation(pkg)}
                     className="w-32 px-3 py-2 rounded-xl text-sm outline-none font-mono"
                     style={{ background: T.inputBg, border: `1px solid ${pkgError ? T.red : T.border}`, color: T.text }} />
                   <button
-                    disabled={pkgSaving}
-                    onClick={() => saveAllocation(pkg)}
+                    disabled
+                    title="Seats are generated after Save Packages & Seats succeeds."
+                    onClick={() => undefined}
                     className="px-4 py-2 rounded-xl text-xs font-bold disabled:opacity-50"
                     style={{ background: 'rgba(0,255,136,0.12)', color: T.emerald, border: '1px solid rgba(0,255,136,0.25)' }}>
                     {pkgSaving ? 'Saving…' : seatsGenerated ? 'Update Seats' : 'Generate Seats'}
                   </button>
                 </div>
+                <div className="mt-1 text-[10px]" style={{ color: T.textMuted }}>Seats are generated only after the complete package configuration is saved.</div>
                 {pkgError && <div className="text-xs mt-1" style={{ color: T.red }}>{pkgError}</div>}
                 <AllocationBar allocated={pkg.capacity} capacity={capacity} />
               </div>
@@ -408,7 +511,8 @@ export function PackageAllocationEditor({
                 </button>
               </div>
 
-              {/* Visual seat manager (reveals after seats are generated) */}
+              {/* The manager appears only after the successful package save
+                  has created the corresponding seat records. */}
               {seatsGenerated && (
                 <VisualSeatManager
                   eventId={eventId}
@@ -428,22 +532,16 @@ export function PackageAllocationEditor({
         )
       })}
 
-      {/* Add package */}
-      <button
-        onClick={addPackage}
-        className="w-full py-3 rounded-2xl text-sm font-semibold border-dashed"
-        style={{ background: 'transparent', border: `2px dashed ${T.border}`, color: T.textSub }}>
-        + Add Package
-      </button>
-
       {/* Global save */}
       <button
-        disabled={saving || overCapacity}
-        onClick={() => onSave(activePackages)}
+        disabled={saving || !canSave}
+        onClick={saveAllPackages}
         className="w-full py-3 rounded-2xl font-bold text-sm disabled:opacity-50"
         style={{ background: 'linear-gradient(135deg,#00FF88,#00C866)', color: '#09090B' }}>
-        {saving ? 'Saving…' : overCapacity ? 'Fix Allocation to Save' : 'Save Packages'}
+        {saving ? 'Saving…' : overCapacity ? 'Fix Allocation to Save' : 'Save Packages & Seats'}
       </button>
+
+      {saveReason && <div className="text-center text-xs" style={{ color: T.gold }}>{saveReason}</div>}
 
       {removeModal && (
         <RemoveConfirmModal

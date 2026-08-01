@@ -39,6 +39,21 @@ const mapRow = (row: Record<string, unknown>): SeatRecord => ({
   status: row.status as SeatStatus,
 })
 
+type SeatAvailabilityRpcResult = { updated?: number; requested?: number }
+
+function isMissingSeatAvailabilityRpc(error: { code?: string; message?: string; details?: string | null }): boolean {
+  const detail = `${error.message ?? ''} ${error.details ?? ''}`
+  return error.code === 'PGRST202'
+    || /(?:could not find|function).*admin_apply_seat_availability/i.test(detail)
+}
+
+function assertEverySeatWasUpdated(result: unknown, expectedCount: number): void {
+  const value = (result ?? {}) as SeatAvailabilityRpcResult
+  if (value.updated !== expectedCount || value.requested !== expectedCount) {
+    throw new Error('Seat availability was not committed for every selected seat.')
+  }
+}
+
 export const seatService = {
   /** Generate seats for a package from scratch */
   async generate(eventId: string, totalSeats: number): Promise<void> {
@@ -130,6 +145,57 @@ export const seatService = {
       label: String(row.label),
       status: (row.status ?? 'available') as SeatStatus,
     }))
+  },
+
+  /**
+   * Apply one explicit, all-or-nothing availability decision to generated
+   * seats. The RPC rejects protected (reserved/sold), stale, and cross-package
+   * selections before it writes anything.
+   */
+  async setAvailability(
+    changes: Array<{ id: string; status: 'available' | 'disabled' }>,
+    eventId: string,
+    packageId: string,
+  ): Promise<void> {
+    if (!changes.length) throw new Error('Select at least one seat before saving availability.')
+    const supabase = requireSupabase()
+    const { data, error } = await supabase.rpc('admin_apply_seat_availability', {
+      p_event_id: eventId,
+      p_package_id: packageId,
+      p_changes: changes,
+    })
+    if (!error) {
+      assertEverySeatWasUpdated(data, changes.length)
+      return
+    }
+
+    if (!isMissingSeatAvailabilityRpc(error)) throw new Error(error.message)
+
+    // Compatibility for existing deployments that have not yet applied the
+    // atomic availability migration. The older RPC is still org-scoped and
+    // status-guarded: it can only move available <-> disabled seats.
+    const groupedChanges = new Map<'available' | 'disabled', string[]>()
+    for (const change of changes) {
+      const ids = groupedChanges.get(change.status) ?? []
+      ids.push(change.id)
+      groupedChanges.set(change.status, ids)
+    }
+
+    for (const [status, seatIds] of groupedChanges) {
+      const { data: fallbackData, error: fallbackError } = await supabase.rpc('admin_bulk_set_seat_status', {
+        p_event_id: eventId,
+        p_package_id: packageId,
+        p_seat_ids: seatIds,
+        p_new_status: status,
+        p_source_status: status === 'disabled' ? 'available' : 'disabled',
+      })
+      if (fallbackError) {
+        throw new Error(
+          'Seat availability could not be saved because its database operation is not deployed. Apply the Packages & Seats Supabase migrations.',
+        )
+      }
+      assertEverySeatWasUpdated(fallbackData, seatIds.length)
+    }
   },
 
   /**

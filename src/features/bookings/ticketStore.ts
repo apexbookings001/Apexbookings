@@ -12,6 +12,7 @@ export type TicketRecord = {
   eventBanner: string
   eventDate: string
   eventTime: string
+  eventTimezone?: string
   eventVenue: string
   eventHost: string
   customerName: string
@@ -39,7 +40,6 @@ function normalizeStatus(status: unknown): TicketRecord['status'] {
 }
 
 function fromPublicSnapshot(row: Record<string, unknown>): TicketRecord {
-  const date = row.eventDate ? new Date(String(row.eventDate)) : null
   return {
     id: String(row.id),
     ticketNumber: String(row.ticketNumber ?? ''),
@@ -48,8 +48,12 @@ function fromPublicSnapshot(row: Record<string, unknown>): TicketRecord {
     eventId: String(row.eventId ?? ''),
     eventName: String(row.eventName ?? ''),
     eventBanner: String(row.eventBanner ?? ''),
-    eventDate: date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : String(row.eventDate ?? ''),
-    eventTime: date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '',
+    // Keep the source event timestamp intact. TicketViewModel formats it with
+    // the event's display time instead of converting it to the viewer's local
+    // timezone during data hydration.
+    eventDate: String(row.eventDate ?? ''),
+    eventTime: String(row.eventTime ?? ''),
+    eventTimezone: row.eventTimezone ? String(row.eventTimezone) : undefined,
     eventVenue: String(row.eventVenue ?? ''),
     eventHost: String(row.eventHost ?? row.eventName ?? ''),
     customerName: String(row.customerName ?? ''),
@@ -89,6 +93,7 @@ function fromAdminRow(row: Record<string, unknown>): TicketRecord {
     eventBanner: event.banner_path,
     eventDate: metadata.eventDate ?? event.starts_at,
     eventTime: metadata.eventTime,
+    eventTimezone: metadata.eventTimezone,
     eventVenue: event.venue,
     eventHost: metadata.eventHost ?? eventStudio.title ?? event.name,
     customerName: customer.full_name,

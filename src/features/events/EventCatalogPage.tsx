@@ -5,7 +5,9 @@ import { createBookingPageData, masterBookingTemplateStore } from './bookingTemp
 import {
   adminEventStore,
   createEventPublication,
+  duplicateBookingTemplateEvent,
   duplicateManagedEvent,
+  verifyDuplicateDatabaseSnapshot,
   type EventLocaleSettings,
   type ManagedEvent,
 } from './adminEventStore'
@@ -91,6 +93,8 @@ export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: s
       let event: ManagedEvent
       if (setupMode === 'duplicate' && duplicateSource) {
         event = duplicateManagedEvent(duplicateSource, { title: form.name.trim(), date: startsAt, venue: form.venue.trim(), locale })
+      } else if (setupMode === 'duplicate') {
+        event = duplicateBookingTemplateEvent(masterBookingTemplateStore.load(), { title: form.name.trim(), date: startsAt, venue: form.venue.trim(), locale })
       } else {
         const page = createBookingPageData({ name: form.name.trim(), venue: form.venue.trim(), date: form.date, start: form.time }, masterBookingTemplateStore.load())
         event = {
@@ -100,6 +104,26 @@ export function EventCatalogPage({ show, createSignal = 0 }: { show: (message: s
         }
       }
       const saved = await adminEventStore.saveAsync(event)
+      // A recovery entry is strictly scoped to its event ID. Clear any stale
+      // entry for this new draft before the editor mounts; the source event's
+      // namespace is never reused.
+      clearUiState(`eventStudio:${saved.id}`)
+      if (setupMode === 'duplicate') {
+        try {
+          const snapshot = await verifyDuplicateDatabaseSnapshot(saved.id)
+          console.info('[event-duplication] duplicate persisted', {
+            sourceEventId: duplicateSource?.id ?? 'booking-template',
+            duplicatedEventId: snapshot.eventId,
+            sourceCapacity: duplicateSource?.capacity ?? masterBookingTemplateStore.load().packages.reduce((sum, item) => sum + item.seats, 0),
+            duplicatedCapacity: snapshot.capacity,
+            sourcePackageIds: duplicateSource?.packages?.map(item => item.id) ?? masterBookingTemplateStore.load().packages.map(item => item.id),
+            duplicatedPackages: snapshot.packages.map(item => ({ id: item.id, price: item.price, allocation: item.capacity })),
+            duplicatedSeatRowCount: snapshot.seatRowCount,
+          })
+        } catch (diagnosticError) {
+          console.warn('[event-duplication] unable to verify duplicate database rows', diagnosticError instanceof Error ? diagnosticError.message : diagnosticError)
+        }
+      }
       setSetupMode(null)
       setDuplicateSourceId(null)
       setReadyName(saved.title)
