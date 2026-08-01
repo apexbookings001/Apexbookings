@@ -176,7 +176,7 @@ export function MobileSocialProofOverlay({
           {/* Row 2: Message & Package Pill */}
           <div className="flex flex-wrap items-center gap-1.5 text-xs" style={{ color: t.isDark ? 'rgba(255,255,255,0.85)' : t.textSub }}>
             <span>{cleanMessage}</span>
-            <span
+            {item.ticketPackage && <span
               className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-bold tracking-wide uppercase shadow-xs shrink-0"
               style={{
                 background: pkgColor.bg,
@@ -185,7 +185,7 @@ export function MobileSocialProofOverlay({
               }}
             >
               {item.ticketPackage}
-            </span>
+            </span>}
           </div>
 
           {/* Row 3: Time & Verified badge */}

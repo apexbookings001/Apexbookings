@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { StudioSeat, TicketPackage } from '../events/adminEventStore'
 import { socialProofStore, type SocialProofItem } from './socialProofStore'
 import { useTheme } from '../../theme'
@@ -10,7 +11,15 @@ import { SOCIAL_PROOF_DEFAULTS } from './socialProofConfig'
 
 const positionClass: Record<SocialProofItem['position'], string> = { 'top-left': 'top-20 left-4', 'top-center': 'top-20 left-1/2 -translate-x-1/2', 'top-right': 'top-20 right-4', 'bottom-left': 'bottom-6 left-4', 'bottom-center': 'bottom-6 left-1/2 -translate-x-1/2', 'bottom-right': 'bottom-6 right-4' }
 
-export function PublicConversionEnhancements({ packages, seats, eventId, isPreview = false, settingsOverride }: { packages: TicketPackage[]; seats: StudioSeat[]; eventId?: string; isPreview?: boolean; settingsOverride?: EventSocialProofOverride }) {
+export type PublicTicketBarState = {
+  packageId: string
+  packageName: string
+  price: number
+  availableSeatCount: number
+  availabilityReady: boolean
+}
+
+export function PublicConversionEnhancements({ packages, seats, eventId, isPreview = false, settingsOverride, ticketBar }: { packages: TicketPackage[]; seats: StudioSeat[]; eventId?: string; isPreview?: boolean; settingsOverride?: EventSocialProofOverride; ticketBar?: PublicTicketBarState | null }) {
   const { t } = useTheme()
   const { formatPrice, translations } = useLocale()
   const [showBar, setShowBar] = useState(false)
@@ -19,10 +28,19 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
   const [socialProofVersion, setSocialProofVersion] = useState(0)
   const [socialProofReady, setSocialProofReady] = useState(isPreview || !eventId)
   const played = useRef(new Set<string>())
-  const startingPrice = Math.min(...packages.map(item => item.price || Infinity))
-  const available = seats.length > 0 
-    ? seats.filter(seat => seat.status === 'available').length 
-    : packages.reduce((sum, pkg: any) => sum + (pkg.seats || pkg.capacity || 0), 0)
+  const fallbackPackage = packages[0]
+  const selectedTicket = ticketBar ?? (fallbackPackage ? {
+    packageId: fallbackPackage.id,
+    packageName: fallbackPackage.name,
+    price: fallbackPackage.price,
+    // Never use allocation as availability when public seat rows are absent.
+    availableSeatCount: isPreview
+      ? seats.filter(seat => seat.packageId === fallbackPackage.id && seat.status === 'available').length
+      : 0,
+    availabilityReady: isPreview,
+  } : null)
+  const ticketSoldOut = !selectedTicket?.availabilityReady || selectedTicket.availableSeatCount <= 0
+  const socialProofDiagnostics = import.meta.env.DEV || new URLSearchParams(window.location.search).has('socialProofDebug')
   const notices = useMemo(() => {
     const configured = socialProofStore.list().filter(item => item.visible && (item.sourceType !== 'demo' || isPreview) && (!item.eventId || item.eventId === eventId))
     // Demo cards are clearly labelled preview data and never enter the production rotation.
@@ -36,10 +54,18 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
     let active = true
     setSocialProofReady(false)
     void socialProofStore.hydratePublic(eventId)
-      .catch(error => { if (import.meta.env.DEV) console.warn('[social-proof] settings not loaded', { eventId, error }) })
+      .then(() => {
+        if (socialProofDiagnostics) console.info('[social-proof]', {
+          eventId,
+          socialProofEnabled: socialProofStore.settings().enabled,
+          itemCount: socialProofStore.list().length,
+          stage: 'public-data-loaded',
+        })
+      })
+      .catch(error => { if (socialProofDiagnostics) console.warn('[social-proof] settings not loaded', { eventId, error }) })
       .finally(() => { if (active) setSocialProofReady(true) })
     return () => { active = false }
-  }, [eventId, isPreview])
+  }, [eventId, isPreview, socialProofDiagnostics])
 
   // Detect mobile (md breakpoint = 768px)
   useEffect(() => {
@@ -88,7 +114,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
     } : stored
     const blocked = !settings.enabled ? 'disabled' : !socialProofReady ? 'settings not loaded' : !notices.length ? 'no active records' : null
     if (blocked) {
-      if (import.meta.env.DEV) console.info('[social-proof] popup not displayed', { eventId, reason: blocked, settings, notices: notices.length, override: settingsOverride })
+      if (socialProofDiagnostics) console.info('[social-proof]', { eventId, socialProofEnabled: settings.enabled, itemCount: notices.length, popupScheduled: false, popupDisplayed: false, reason: blocked })
       setToast(null)
       return
     }
@@ -100,6 +126,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
       if (!item) return
       played.current.add(item.id)
       if (played.current.size >= notices.length) played.current.clear()
+      if (socialProofDiagnostics) console.info('[social-proof]', { eventId, socialProofEnabled: true, itemCount: notices.length, popupScheduled: true, popupDisplayed: true, reason: 'eligible-item' })
       setToast({ ...item, duration: SOCIAL_PROOF_DEFAULTS.displayDurationMs / 1_000, position: isMobile ? SOCIAL_PROOF_DEFAULTS.mobilePosition : SOCIAL_PROOF_DEFAULTS.desktopPosition })
       timeout = setTimeout(() => {
         setToast(null)
@@ -108,18 +135,18 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
     }
     timeout = setTimeout(next, isDefaultTemplatePreview ? Math.min(SOCIAL_PROOF_DEFAULTS.initialDelayMs, 3_000) : SOCIAL_PROOF_DEFAULTS.initialDelayMs)
     return () => clearTimeout(timeout)
-  }, [eventId, isChatActive, isMobile, isPreview, notices, settingsOverride, socialProofReady, socialProofVersion])
+  }, [eventId, isChatActive, isMobile, isPreview, notices, settingsOverride, socialProofDiagnostics, socialProofReady, socialProofVersion])
 
   return (
     <>
-      {toast && isMobile ? (
+      {toast && isMobile ? createPortal((
         <MobileSocialProofOverlay
           item={toast}
           onDismiss={() => setToast(null)}
           onTransitionStart={handleOverlayTransitionStart}
           onTransitionEnd={handleOverlayTransitionEnd}
         />
-      ) : toast ? (
+      ), document.body) : toast ? createPortal((
         <div className={`social-proof-desktop fixed z-[135] flex w-auto max-w-[min(26rem,calc(100%_-_2rem))] items-start gap-3.5 rounded-2xl p-4 shadow-2xl animate-[fade-in-up_.3s_ease] ${positionClass[SOCIAL_PROOF_DEFAULTS.desktopPosition]}`}
           style={{ background: t.isDark ? 'rgba(18,18,22,0.95)' : 'rgba(255,255,255,0.98)', border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.12)' : t.border}`, color: t.text, boxShadow: t.isDark ? '0 16px 48px rgba(0,0,0,0.5)' : '0 14px 32px rgba(23,26,31,0.12), 0 2px 6px rgba(23,26,31,0.04)' }}>
           <div className="relative shrink-0 mt-0.5">
@@ -144,10 +171,10 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
             </div>
             <div className="flex flex-wrap items-center gap-1.5 text-xs" style={{ color: t.isDark ? 'rgba(255,255,255,0.85)' : t.textSub }}>
               <span>{(toast.sourceType === 'verified_booking' ? translations.socialProof.justPurchased : toast.message).replace(/\.?$/, '')}</span>
-              <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase shrink-0"
+              {toast.ticketPackage && <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase shrink-0"
                 style={{ background: t.isDark ? 'rgba(0,255,136,0.12)' : `${t.accent}10`, color: t.isDark ? '#00FF88' : t.accent, border: `1px solid ${t.isDark ? 'rgba(0,255,136,0.3)' : `${t.accent}30`}` }}>
                 {toast.ticketPackage}
-              </span>
+              </span>}
             </div>
             <div className="flex items-center justify-between pt-0.5 text-[10px]" style={{ color: t.textMuted }}>
               <span>{toast.sourceType === 'demo' ? 'Demo preview' : toast.sourceType === 'manual_message' ? 'Promotion' : translations.socialProof.recentBooking}</span>
@@ -161,7 +188,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
           </div>
           <button type="button" onClick={() => setToast(null)} aria-label="Dismiss notification" className="hover:opacity-70 transition-opacity p-0.5 text-lg leading-none" style={{ color: t.textMuted }}>×</button>
         </div>
-      ) : null}
+      ), document.body) : null}
 
       {showBar && (
         <div className="mobile-booking-island fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[130] flex items-center gap-3 p-3 backdrop-blur md:hidden"
@@ -173,14 +200,14 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
             borderRadius: '1rem'
           }}>
           <div className="min-w-0 flex-1">
-            <p className="text-[10px] uppercase tracking-widest" style={{ color: t.textMuted }}>{translations.conversion.ticketsFrom}</p>
+            <p className="text-[10px] uppercase tracking-widest" style={{ color: t.textMuted }}>{selectedTicket?.packageName || translations.conversion.ticketsFrom}</p>
             <p className="text-sm font-bold" style={{ color: t.text }}>
-              {Number.isFinite(startingPrice) ? formatPrice(startingPrice) : '—'}
-              <span className="text-xs font-normal" style={{ color: t.textMuted }}> · {available} {translations.conversion.left}</span>
+              {selectedTicket && Number.isFinite(selectedTicket.price) ? formatPrice(selectedTicket.price) : '—'}
+              <span className="text-xs font-normal" style={{ color: t.textMuted }}> · {ticketSoldOut ? 'Sold Out' : `${selectedTicket!.availableSeatCount} ${translations.conversion.left}`}</span>
             </p>
           </div>
-          <button type="button" onClick={() => document.getElementById('tickets')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-            className="rounded-2xl px-5 py-3 text-xs font-bold transition-all hover:-translate-y-0.5"
+          <button type="button" disabled={ticketSoldOut} onClick={() => document.getElementById('tickets')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            className="rounded-2xl px-5 py-3 text-xs font-bold transition-all hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-45"
             style={{ background: t.isDark ? `${t.accent}18` : `linear-gradient(135deg,${t.accent},${t.accentDim})`, color: t.isDark ? t.accent : t.accentText, border: t.isDark ? `1px solid ${t.accent}40` : 'none', boxShadow: t.isDark ? `0 8px 24px ${t.accentGlow}` : `0 4px 16px ${t.accentGlow}` }}>
             {translations.conversion.getTickets}
           </button>

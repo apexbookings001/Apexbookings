@@ -120,8 +120,14 @@ export const socialProofStore = {
     if (!supabase) return
     const { data, error } = await supabase.rpc('public_social_proof', { target_event_id: eventId })
     if (error) throw error
-    const result = (data ?? {}) as { items?: Record<string, unknown>[]; settings?: Partial<SocialProofSettings> }
-    cache.set({ items: (result.items ?? []).map(fromRow), settings: { enabled: result.settings?.enabled === true } })
+    const result = (data ?? {}) as { socialProofEnabled?: boolean; items?: Record<string, unknown>[]; settings?: Partial<SocialProofSettings> }
+    // The public RPC resolves the event override first, then the organisation
+    // default. Preserve its explicit result instead of treating a missing
+    // settings row as a disabled event.
+    cache.set({
+      items: (result.items ?? []).map(fromRow),
+      settings: { enabled: result.socialProofEnabled === true || (result.socialProofEnabled === undefined && result.settings?.enabled === true) },
+    })
   },
   save: (item: SocialProofItem) => {
     const state = cache.get()

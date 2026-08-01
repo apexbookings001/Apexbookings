@@ -14,7 +14,7 @@ import { PACKAGE_TYPE_LIBRARY, createPackageFromType, type PackageTypeDefinition
 import { mediaLibraryStore } from './features/media/mediaLibraryStore'
 import { MediaLibraryPicker } from './features/media/MediaLibraryPicker'
 import type { LibraryAsset } from './features/media/mediaLibraryStore'
-import { PublicConversionEnhancements } from './features/conversion/PublicConversionEnhancements'
+import { PublicConversionEnhancements, type PublicTicketBarState } from './features/conversion/PublicConversionEnhancements'
 import { SocialProofOverlayProvider, useSocialProofOverlay } from './features/conversion/SocialProofOverlayContext'
 import { SOCIAL_PROOF_DEMO_DISCLOSURE } from './features/conversion/socialProofConfig'
 import { PublicOnboardingGuide } from './components/OnboardingGuide'
@@ -56,6 +56,7 @@ import { packagePricing } from './features/events/packagePricing'
 import { useBookingSessionRecovery } from './features/recovery/BookingSessionRecoveryProvider'
 import { getAdminResumeRoute } from './features/recovery/recoveryStorage'
 import { useDocumentScrollLock } from './hooks/useDocumentScrollLock'
+import { supabase } from './lib/supabase'
 const AdminDashboard = lazy(() => import('./AdminDashboard'))
 
 import { ThemeCtx, useTheme, DARK, LIGHT } from './theme'
@@ -64,8 +65,8 @@ type StudioPreviewState = 'page' | 'packages' | 'checkout' | 'payment-pending' |
 type EditorTarget = { section: BookingSectionId; index?: number; field?: string }
 const BOOKING_SECTION_IDS: BookingSectionId[] = ['hero', 'about', 'venue', 'timeline', 'tickets', 'testimonials', 'faq', 'cta', 'footer']
 const BOOKING_SECTION_LABELS: Record<BookingSectionId, string> = { hero: 'Hero', about: 'About', venue: 'Venue', timeline: 'Timeline', tickets: 'Packages', testimonials: 'Customer reviews', faq: 'FAQ', cta: 'Call to action', footer: 'Footer' }
-type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean; seatPreview?: SeatRecord[] }
-const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false })
+type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean; seatPreview?: SeatRecord[]; ticketBar: PublicTicketBarState | null; setTicketBar: (state: PublicTicketBarState | null) => void }
+const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false, ticketBar: null, setTicketBar: () => {} })
 const useBooking = () => useContext(BookingCtx)
 
 function mergeEditorPreview(previous: BookingPageData, next: BookingPageData, target: EditorTarget | null): BookingPageData {
@@ -2003,7 +2004,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 function TicketSection() {
   const { t } = useTheme()
   const { translations: tr, formatPrice, t: translate } = useLocale()
-  const { data, mode, previewState, simulationOnly, eventId, seatPreview } = useBooking()
+  const { data, mode, previewState, simulationOnly, eventId, seatPreview, ticketBar, setTicketBar } = useBooking()
   const location = useLocation()
   const navigate = useNavigate()
   const bookingRecovery = useBookingSessionRecovery()
@@ -2014,6 +2015,7 @@ function TicketSection() {
   const [sessionExpired, setSessionExpired] = useState(false)
   const [availableSeatsByPackage, setAvailableSeatsByPackage] = useState<Record<string, number>>({})
   const [seatAvailabilityReady, setSeatAvailabilityReady] = useState(false)
+  const [selectedTicketPackageId, setSelectedTicketPackageId] = useState<string | null>(null)
   const previewSeatsByPackage = (seatPreview ?? []).reduce<Record<string, SeatRecord[]>>((groups, seat) => {
     if (seat.packageId) (groups[seat.packageId] ??= []).push(seat)
     return groups
@@ -2034,18 +2036,51 @@ function TicketSection() {
   const lowestPrice = Math.min(...prices)
   const highestPrice = Math.max(...prices)
 
+  const refreshSeatAvailability = useCallback(async () => {
+    if (mode !== 'published' || !eventId) return
+    const entries = await Promise.all(data.packages.map(async tier => {
+      const seats = await seatService.listPublic(eventId, tier.id)
+      return [tier.id, seats.filter(seat => seat.status === 'available').length] as const
+    }))
+    setAvailableSeatsByPackage(Object.fromEntries(entries))
+    setSeatAvailabilityReady(true)
+  }, [data.packages, eventId, mode])
+
   useEffect(() => {
     if (mode !== 'published' || !eventId) return
     let active = true
     setSeatAvailabilityReady(false)
-    void Promise.all(data.packages.map(async tier => {
-      const seats = await seatService.listPublic(eventId, tier.id)
-      return [tier.id, seats.filter(seat => seat.status === 'available').length] as const
-    })).then(entries => {
-      if (active) { setAvailableSeatsByPackage(Object.fromEntries(entries)); setSeatAvailabilityReady(true) }
-    }).catch(() => { if (active) setSeatAvailabilityReady(true) })
-    return () => { active = false }
-  }, [data.packages, eventId, mode])
+    void refreshSeatAvailability().catch(() => { if (active) setSeatAvailabilityReady(true) })
+    const client = supabase
+    if (!client) return () => { active = false }
+    const channel = client.channel(`public-ticket-seat-count:${eventId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'seats', filter: `event_id=eq.${eventId}` }, () => {
+        void refreshSeatAvailability().catch(() => undefined)
+      })
+      .subscribe()
+    return () => { active = false; void client.removeChannel(channel) }
+  }, [eventId, mode, refreshSeatAvailability])
+
+  useEffect(() => {
+    if (!tiers.length) { setTicketBar(null); return }
+    const selected = tiers.find(tier => tier.packageKey === selectedTicketPackageId) ?? tiers[0]
+    if (!selectedTicketPackageId) setSelectedTicketPackageId(selected.packageKey)
+    const nextTicketBar: PublicTicketBarState = {
+      packageId: selected.packageKey,
+      packageName: selected.name,
+      price: packagePricing(selected).chargedUnitPrice,
+      availableSeatCount: mode === 'published' && seatAvailabilityReady ? selected.seats : 0,
+      availabilityReady: mode !== 'published' || seatAvailabilityReady,
+    }
+    if (
+      ticketBar?.packageId === nextTicketBar.packageId
+      && ticketBar.packageName === nextTicketBar.packageName
+      && ticketBar.price === nextTicketBar.price
+      && ticketBar.availableSeatCount === nextTicketBar.availableSeatCount
+      && ticketBar.availabilityReady === nextTicketBar.availabilityReady
+    ) return
+    setTicketBar(nextTicketBar)
+  }, [mode, seatAvailabilityReady, selectedTicketPackageId, setTicketBar, ticketBar, tiers])
 
   const previewStep: BStep = previewState === 'checkout' ? 'details'
     : previewState === 'payment-pending' ? 'payment'
@@ -2111,7 +2146,7 @@ function TicketSection() {
             const isPremium = !t.isDark && valueLevel >= 0.75
             const isElevated = !t.isDark && valueLevel >= 0.35
             return (
-            <EditableTarget key={tier.id} target={{ section: 'tickets', index }}><div onClick={() => { if (mode !== 'editor' && (mode !== 'published' || tier.seats > 0)) setModalTier(tier.id) }}
+            <EditableTarget key={tier.id} target={{ section: 'tickets', index }}><div onClick={() => { setSelectedTicketPackageId(tier.packageKey); if (mode !== 'editor' && (mode !== 'published' || tier.seats > 0)) setModalTier(tier.id) }}
               className="ticket-tier-card relative rounded-3xl p-7 cursor-pointer flex flex-col items-center text-center transition-all duration-300 group"
               style={{ background: t.isDark ? t.card : isPremium ? 'linear-gradient(145deg,#FFFFFF 0%,#EEF4FF 100%)' : isElevated ? 'linear-gradient(145deg,#FFFFFF 0%,#F7F9FF 100%)' : t.card, border: `1px solid ${t.isDark ? t.cardBorder : isPremium ? t.accent : isElevated ? `${t.accent}70` : t.cardBorder}`, boxShadow: t.isDark ? t.cardShadow : isPremium ? `0 16px 32px ${t.accentGlow}` : isElevated ? `0 10px 24px rgba(23,26,31,0.07)` : t.cardShadow }}
               onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-5px)'; (e.currentTarget as HTMLDivElement).style.borderColor = visualAccent; (e.currentTarget as HTMLDivElement).style.boxShadow = t.isDark ? `0 0 40px ${tier.glow}, 0 20px 60px rgba(0,0,0,0.3)` : `0 12px 28px ${visualGlow}` }}
@@ -2708,6 +2743,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   const [packageSaveNotice, setPackageSaveNotice] = useState<string | null>(null)
   const [eventSocialProof, setEventSocialProof] = useState<EventSocialProofOverride>(() => socialProofOverride ?? {})
   const [seatPreview, setSeatPreview] = useState<SeatRecord[] | undefined>(undefined)
+  const [ticketBar, setTicketBar] = useState<PublicTicketBarState | null>(null)
   const latestDataRef = useRef(data)
   const packagesButtonRef = useRef<HTMLButtonElement>(null)
   const lastSavedDataRef = useRef(structuredClone(initialSource))
@@ -2896,7 +2932,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
 
   return (
     <LocaleProvider eventCountryCode={eventCountryCode} eventCurrencyCode={eventCurrencyCode} eventLanguageCode={eventLanguageCode}>
-    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly, seatPreview }}>
+    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly, seatPreview, ticketBar, setTicketBar }}>
       <SocialProofOverlayProvider>
       <div className="booking-experience ios-stable-scroll" data-theme={t.isDark ? 'dark' : 'light'} style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
         {mode === 'preview' && <div role="note" className="fixed right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-[260] rounded-full border border-amber-400/35 bg-zinc-950/95 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-200 shadow-lg">{SOCIAL_PROOF_DEMO_DISCLOSURE}</div>}
@@ -2916,7 +2952,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
           <CTASection />
           <Footer />
           <FloatingChatButton eventId={eventId ?? data?.hero?.title ?? 'default'} isPreview={mode === 'preview'} mode={mode} />
-          {mode !== 'editor' && <PublicConversionEnhancements packages={data.packages as any} seats={[]} eventId={eventId} isPreview={mode === 'preview'} settingsOverride={socialProofOverride} />}
+          {mode !== 'editor' && <PublicConversionEnhancements packages={data.packages as any} seats={[]} eventId={eventId} isPreview={mode === 'preview'} settingsOverride={socialProofOverride} ticketBar={ticketBar} />}
           {mode !== 'published' && <PublicOnboardingGuide context={mode === 'editor' ? 'booking-page editor' : 'booking preview'} />}
         </div>
         {mode === 'editor' && <BookingEditorPanel data={data} target={selected} eventId={eventId} onDraftChange={next => setData(previous => mergeEditorPreview(previous, next, selected))} onApply={applyEditorChanges} close={() => setSelected(null)} />}

@@ -1148,6 +1148,157 @@ svg {
   max-height: 100%;
 }
 
+/* Packages & Seats uses one scrollable mobile shell. The editor sections are
+   deliberately compact below the desktop breakpoint so decorative nested
+   cards cannot add width or create a second horizontal scroll surface. */
+@media (max-width: 767px) {
+  .package-seat-modal {
+    display: grid;
+    width: 100%;
+    height: 100vh;
+    height: 100svh;
+    height: 100dvh;
+    padding-top: max(12px, env(safe-area-inset-top, 0px));
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    overflow: hidden;
+  }
+
+  .package-seat-modal > section {
+    width: calc(100dvw - 24px);
+    max-width: 100%;
+    min-width: 0;
+    max-height: calc(100dvh - 24px);
+    box-sizing: border-box;
+  }
+
+  .package-seat-modal > section > header,
+  .package-seat-modal-content {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .package-seat-modal > section > header,
+  .package-seat-modal-content {
+    padding: 1rem;
+  }
+
+  .package-seat-modal-content {
+    width: 100%;
+    overflow-x: clip;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .package-seat-workspace,
+  .package-seat-content-grid,
+  .package-seat-visual-section,
+  .package-seat-config-section,
+  .package-seat-package-list,
+  .package-seat-package-row,
+  .package-seat-visual-row,
+  .package-seat-visual-editor,
+  .package-seat-seat-manager,
+  .package-seat-seat-grid {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .package-seat-workspace {
+    width: 100%;
+    overflow-x: clip;
+  }
+
+  .package-seat-content-grid {
+    display: block;
+  }
+
+  .package-seat-config-section {
+    margin-top: 1.25rem;
+  }
+
+  .package-seat-draft,
+  .package-seat-visual-editor,
+  .package-seat-config-section > div:not(:first-child),
+  .package-seat-package-row,
+  .package-seat-seat-manager {
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .package-seat-draft,
+  .package-seat-visual-editor,
+  .package-seat-config-section > div:not(:first-child),
+  .package-seat-package-row {
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  .package-seat-visual-row {
+    position: relative;
+    padding: .75rem 0;
+    padding-right: 3.25rem;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+    background: transparent !important;
+  }
+
+  .package-seat-visual-row::after {
+    content: 'Edit';
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    color: #6ee7b7;
+    font-size: .75rem;
+    font-weight: 700;
+  }
+
+  .package-seat-package-row[data-expanded='false'] > :not(:first-child) {
+    display: none;
+  }
+
+  .package-seat-package-row[data-expanded='false'] {
+    padding-top: .75rem;
+    padding-bottom: .75rem;
+  }
+
+  .package-seat-package-row[data-expanded='true'] {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+  }
+
+  .package-seat-package-row input,
+  .package-seat-package-row textarea,
+  .package-seat-visual-editor input,
+  .package-seat-visual-editor textarea,
+  .package-seat-config-section input,
+  .package-seat-config-section textarea,
+  .package-seat-config-section select {
+    min-width: 0;
+    max-width: 100%;
+    font-size: 16px;
+  }
+
+  .package-seat-seat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(3.25rem, 1fr));
+    max-height: 16rem;
+  }
+
+  .package-seat-seat-grid > button {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
 @supports (-webkit-touch-callout: none) {
   /* iOS Safari/WebKit zooms controls whose computed text is below 16px. */
   @media (max-width: 1023px) {

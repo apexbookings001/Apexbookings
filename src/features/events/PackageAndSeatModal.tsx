@@ -42,13 +42,13 @@ export function PackageAndSeatModal({
     onClose()
   }
 
-  return createPortal(<div className="package-seat-modal fixed inset-0 z-[10000] grid place-items-center overflow-y-auto bg-black/80 p-4">
+  return createPortal(<div className="package-seat-modal fixed inset-0 z-[10000] grid place-items-center bg-black/80">
     <section className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#111113] text-white">
       <header className="flex shrink-0 items-center justify-between border-b border-white/10 p-6">
         <div><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Settings</p><h2 className="mt-1 font-serif text-2xl font-bold">Packages &amp; Seats</h2></div>
         <button type="button" disabled={dirtyState.isSaving} onClick={requestClose} className="rounded-xl bg-white/5 px-4 py-2 text-sm font-bold text-white hover:bg-white/10 disabled:opacity-50">Close</button>
       </header>
-      <div className="flex-1 overflow-y-auto p-6 ios-stable-scroll">
+      <div className="package-seat-modal-content flex-1 overflow-y-auto p-6 ios-stable-scroll">
         <PackagesAndSeatsWorkspace eventId={eventId} fallbackPage={data} onSaved={onApply} onDraftChange={onDraftChange} onDirtyStateChange={handleDirtyStateChange} onSaveSuccess={onSaveSuccess} onClose={requestClose} />
       </div>
     </section>
