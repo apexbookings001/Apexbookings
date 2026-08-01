@@ -1,4 +1,3 @@
-import { socialProofStore } from '../conversion/socialProofStore'
 import { emailService } from '../email/emailService'
 import { mediaLibraryStore } from '../media/mediaLibraryStore'
 import { platformPaymentStore } from '../payments/platformPaymentStore'
@@ -13,7 +12,6 @@ export function getSettingsReadiness(): Record<SetupSection, SetupReadiness> {
   const admin = adminSettingsStore.get()
   const payments = platformPaymentStore.get()
   const email = emailService.configuration()
-  const socialProof = socialProofStore.settings()
 
   const organizationIssues: string[] = []
   if (!admin.organization.name.trim()) organizationIssues.push('Add the organization name')
@@ -53,14 +51,6 @@ export function getSettingsReadiness(): Record<SetupSection, SetupReadiness> {
   if (!/^#[0-9a-f]{6}$/i.test(admin.branding.accent)) brandingIssues.push('Choose a valid accent color')
 
   const notificationIssues = Object.values(admin.notifications).some(Boolean) ? [] : ['Enable at least one admin notification']
-  const socialProofIssues: string[] = []
-  if (socialProof.enabled) {
-    if (!socialProof.defaultCustomerName.trim()) socialProofIssues.push('Add the default customer name')
-    if (!socialProof.city.trim()) socialProofIssues.push('Add the default customer location')
-    if (!socialProof.packageName.trim()) socialProofIssues.push('Add the default package name')
-    if (!socialProof.message.trim()) socialProofIssues.push('Add the popup message')
-  }
-
   return {
     organization: result(organizationIssues),
     email: result(emailIssues),
@@ -68,7 +58,7 @@ export function getSettingsReadiness(): Record<SetupSection, SetupReadiness> {
     payments: result(paymentIssues),
     media: result(mediaLibraryStore.listEventAssets().length ? [] : ['Upload at least one reusable event asset']),
     notifications: result(notificationIssues),
-    'social proof': result(socialProofIssues),
+    'social proof': result([]),
     localization: result([]),
   }
 }

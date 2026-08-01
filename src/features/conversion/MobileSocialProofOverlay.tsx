@@ -107,9 +107,9 @@ export function MobileSocialProofOverlay({
 
   return (
     <div
-      className="social-proof-mobile fixed left-1/2 z-[10050] w-[calc(100%-1.25rem)] max-w-[440px]"
+      className="social-proof-mobile fixed left-1/2 z-[135] w-[calc(100%-1.25rem)] max-w-[440px]"
       style={{
-        top: `max(0.75rem, env(safe-area-inset-top, 0.75rem))`,
+        top: `max(4.75rem, calc(env(safe-area-inset-top, 0px) + 4rem))`,
         transform: 'translateX(-50%)',
         opacity: isAnimating ? 0 : 1,
         transition: reduceMotion

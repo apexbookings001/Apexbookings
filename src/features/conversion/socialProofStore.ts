@@ -1,6 +1,7 @@
 import { supabase } from '../../lib/supabase'
 import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
+import { SOCIAL_PROOF_DEFAULTS } from './socialProofConfig'
 
 export type SocialProofPosition = 'top-left' | 'top-center' | 'top-right' | 'bottom-left' | 'bottom-center' | 'bottom-right'
 export type SocialProofAnimation = 'fade' | 'slide-up' | 'slide-left' | 'scale' | 'fade-slide'
@@ -13,32 +14,12 @@ export type SocialProofItem = {
 }
 export type SocialProofSettings = {
   enabled: boolean
-  paused: boolean
-  mode: 'demo' | 'live'
-  defaultCustomerName: string
-  city: string
-  state: string
-  customerImage?: string
-  packageName: string
-  message: string
-  duration: number
-  delay: number
-  animation: SocialProofAnimation
-  position: SocialProofPosition
-  pageTargeting: string[]
-  mobileVisible: boolean
-  desktopVisible: boolean
-  maxCards: number
-  includeVerifiedBookings: boolean
-  privacyMode: SocialProofPrivacyMode
 }
 
 type SocialProofState = { items: SocialProofItem[]; settings: SocialProofSettings }
 
 const defaultSettings: SocialProofSettings = {
-  enabled: false, paused: false, mode: 'live', defaultCustomerName: '', city: '', state: '',
-  packageName: 'VIP', message: 'just purchased a ticket.', duration: 5, delay: 8, animation: 'fade-slide',
-  position: 'bottom-left', pageTargeting: ['event'], mobileVisible: true, desktopVisible: true, maxCards: 20, includeVerifiedBookings: true, privacyMode: 'first_name',
+  enabled: false,
 }
 const cache = createProtectedMemoryStore<SocialProofState>(() => ({ items: [], settings: defaultSettings }))
 
@@ -110,10 +91,7 @@ export const socialProofStore = {
   list: () => cache.get().items,
   settings: () => cache.get().settings,
   previewItems: () => previewItems,
-  defaultItem: (): SocialProofItem => {
-    const settings = cache.get().settings
-    return { id: 'global-default', avatar: settings.customerImage, name: settings.defaultCustomerName, city: settings.city, state: settings.state, ticketPackage: settings.packageName, message: settings.message, duration: settings.duration, animation: settings.animation, position: settings.position, visible: true, mobileVisible: true, desktopVisible: true, sourceType: 'manual_message', displayOrder: 0, createdAt: new Date().toISOString() }
-  },
+  defaultItem: (): SocialProofItem => ({ id: 'global-default', name: 'Promotion', city: '', state: '', ticketPackage: '', message: 'Update available.', duration: SOCIAL_PROOF_DEFAULTS.displayDurationMs / 1_000, animation: 'fade-slide', position: SOCIAL_PROOF_DEFAULTS.desktopPosition, visible: true, mobileVisible: true, desktopVisible: true, sourceType: 'manual_message', displayOrder: 0, createdAt: new Date().toISOString() }),
   subscribe: cache.subscribe,
   snapshot: cache.snapshot,
   hydrate: async () => {
@@ -129,7 +107,8 @@ export const socialProofStore = {
       // That is a valid state: retain the safe disabled defaults until an
       // administrator saves the first configuration.
       if (settingsResult.error && settingsResult.error.code !== 'PGRST116') throw settingsResult.error
-      const settings = { ...defaultSettings, ...((settingsResult.data?.social_proof ?? {}) as Partial<SocialProofSettings>) }
+      const persisted = (settingsResult.data?.social_proof ?? {}) as Partial<SocialProofSettings>
+      const settings = { enabled: persisted.enabled === true }
       cache.set({ items: (itemsResult.data ?? []).map(row => fromRow(row)), settings })
       return cache.get()
     } catch (error) {
@@ -142,7 +121,7 @@ export const socialProofStore = {
     const { data, error } = await supabase.rpc('public_social_proof', { target_event_id: eventId })
     if (error) throw error
     const result = (data ?? {}) as { items?: Record<string, unknown>[]; settings?: Partial<SocialProofSettings> }
-    cache.set({ items: (result.items ?? []).map(fromRow), settings: { ...defaultSettings, ...result.settings } })
+    cache.set({ items: (result.items ?? []).map(fromRow), settings: { enabled: result.settings?.enabled === true } })
   },
   save: (item: SocialProofItem) => {
     const state = cache.get()
@@ -167,6 +146,6 @@ export const socialProofStore = {
     void cache.optimistic({ ...state, settings }, () => saveSettings(settings)).catch(() => undefined)
   },
   duplicate: (item: SocialProofItem) => socialProofStore.save({ ...item, id: crypto.randomUUID(), name: `${item.name} copy`, createdAt: new Date().toISOString() }),
-  create: (): SocialProofItem => ({ id: crypto.randomUUID(), name: 'Promotion', city: '', state: '', ticketPackage: '', message: 'Early-bird pricing ends soon.', duration: 5, animation: 'fade-slide', position: 'bottom-left', visible: true, mobileVisible: true, desktopVisible: true, sourceType: 'manual_message', displayOrder: 0, createdAt: new Date().toISOString() }),
+  create: (): SocialProofItem => ({ id: crypto.randomUUID(), name: 'Promotion', city: '', state: '', ticketPackage: '', message: 'Early-bird pricing ends soon.', duration: SOCIAL_PROOF_DEFAULTS.displayDurationMs / 1_000, animation: 'fade-slide', position: SOCIAL_PROOF_DEFAULTS.desktopPosition, visible: true, mobileVisible: true, desktopVisible: true, sourceType: 'manual_message', displayOrder: 0, createdAt: new Date().toISOString() }),
   clear: cache.reset,
 }

@@ -41,19 +41,6 @@ export type EventPublication = { slug: string; shortCode: string; publishedAt?: 
 export type EventLocaleSettings = { countryCode: string; languageCode: string; currencyCode: string }
 export type EventSocialProofOverride = {
   enabled?: boolean
-  defaultCustomerName?: string
-  city?: string
-  state?: string
-  customerImage?: string
-  packageName?: string
-  message?: string
-  duration?: number
-  delay?: number
-  animation?: string
-  position?: string
-  pageTargeting?: string[]
-  mobileVisible?: boolean
-  desktopVisible?: boolean
 }
 export type EventContent = {
   hero: { title: string; subtitle: string; date: string; venue: string; hostName: string; ctaText: string; ctaLink: string; images: string[] }

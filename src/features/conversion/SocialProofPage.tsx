@@ -1,73 +1,42 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { adminEventStore } from '../events/adminEventStore'
-import { mediaLibraryStore } from '../media/mediaLibraryStore'
-import { socialProofStore, type SocialProofItem, type SocialProofSettings, type SocialProofSourceType } from './socialProofStore'
-import { useAdminRecoveryState } from '../recovery/AdminSessionRecoveryProvider'
+import { useEffect, useState } from 'react'
+import { socialProofStore } from './socialProofStore'
+import { SOCIAL_PROOF_DEFAULTS } from './socialProofConfig'
 
-const inputClass = 'mt-1.5 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white outline-none focus:border-emerald-400'
-const sourceLabel: Record<SocialProofSourceType, string> = { verified_booking: 'Verified Booking', manual_message: 'Manual Message', demo: 'Demo Preview' }
-
+/** The public rotation is intentionally not a tuning panel. */
 export function SocialProofPage({ show }: { show: (message: string) => void }) {
-  const [settings, setSettings] = useAdminRecoveryState<SocialProofSettings>('socialProof.page.draft', socialProofStore.settings(), (value): value is SocialProofSettings => Boolean(value && typeof value === 'object' && typeof (value as SocialProofSettings).enabled === 'boolean'))
-  const [items, setItems] = useState<SocialProofItem[]>(socialProofStore.list)
-  const [selected, setSelected] = useState<SocialProofItem | null>(null)
-  const [sourceFilter, setSourceFilter] = useState<'all' | SocialProofSourceType>('all')
-  const [eventFilter, setEventFilter] = useState('all')
-  const [preview, setPreview] = useState<'desktop' | 'mobile' | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
-  const itemInput = useRef<HTMLInputElement>(null)
-  const [events, setEvents] = useState(() => adminEventStore.list())
+  const [enabled, setEnabled] = useState(() => socialProofStore.settings().enabled)
 
-  useEffect(() => socialProofStore.subscribe(() => { setSettings(socialProofStore.settings()); setItems(socialProofStore.list()) }), [])
-  useEffect(() => adminEventStore.subscribe(() => setEvents(adminEventStore.list())), [])
-  const update = <K extends keyof SocialProofSettings>(key: K, value: SocialProofSettings[K]) => setSettings(current => ({ ...current, [key]: value }))
-  const visibleItems = useMemo(() => items.filter(item => (sourceFilter === 'all' || item.sourceType === sourceFilter) && (eventFilter === 'all' || (eventFilter === 'global' ? !item.eventId : item.eventId === eventFilter))), [eventFilter, items, sourceFilter])
-  const saveDefaults = () => { socialProofStore.updateSettings(settings); show('Social Proof settings saved') }
-  const create = (sourceType: 'manual_message' | 'demo') => {
-    const item = { ...socialProofStore.create(), sourceType, name: sourceType === 'demo' ? 'Demo guest' : 'Promotion', message: sourceType === 'demo' ? 'Preview data only.' : 'Early-bird pricing ends soon.' }
-    socialProofStore.save(item); setSelected(item)
+  useEffect(() => socialProofStore.subscribe(() => setEnabled(socialProofStore.settings().enabled)), [])
+
+  const toggle = () => {
+    const nextEnabled = !enabled
+    setEnabled(nextEnabled)
+    socialProofStore.updateSettings({ enabled: nextEnabled })
+    show(nextEnabled ? 'Social Proof enabled' : 'Social Proof disabled')
   }
-  const upload = async (file: File | undefined, target: 'defaults' | 'item') => {
-    if (!file) return
-    setUploading(true); setUploadError(null)
-    try {
-      const asset = await mediaLibraryStore.upload(file, 'Artist Photos')
-      if (target === 'defaults') setSettings(current => ({ ...current, customerImage: asset.url }))
-      else setSelected(current => current ? { ...current, avatar: asset.url } : current)
-    } catch (error) { setUploadError(error instanceof Error ? error.message : 'Image upload failed') }
-    finally { setUploading(false) }
-  }
-  const canEditFacts = selected?.sourceType !== 'verified_booking'
-  const toggleItem = (item: SocialProofItem) => socialProofStore.save({ ...item, visible: !item.visible })
 
-  return <div className="space-y-6 text-white">
-    <div className="flex flex-wrap items-end justify-between gap-4"><div><p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Conversion management</p><h1 className="mt-1 font-serif text-2xl font-bold">Social Proof</h1><p className="mt-1 text-sm text-zinc-500">Manage truthful booking activity and promotional notices. Demo cards are preview-only.</p></div><div className="flex gap-2"><button onClick={() => setPreview('desktop')} className="rounded-xl bg-white/5 px-3 py-2 text-xs">Preview desktop</button><button onClick={() => setPreview('mobile')} className="rounded-xl bg-white/5 px-3 py-2 text-xs">Preview mobile</button></div></div>
-
-    <section className="rounded-2xl border border-white/10 bg-white/[.03] p-5">
-      <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="font-serif text-lg font-bold">Global popup settings</h2><p className="text-xs text-zinc-500">Applied unless an Event Studio override explicitly supplies a value.</p></div><button type="button" role="switch" aria-checked={settings.enabled} onClick={() => update('enabled', !settings.enabled)} className={`h-7 w-12 overflow-hidden rounded-full p-1 ${settings.enabled ? 'bg-emerald-400' : 'bg-zinc-700'}`}><span className={`block h-5 w-5 rounded-full bg-white transition-transform ${settings.enabled ? 'translate-x-5' : 'translate-x-0'}`}/></button></div>
-      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <label className="text-xs text-zinc-400">Initial display delay (seconds)<input type="number" min="2" max="120" className={inputClass} value={settings.delay} onChange={event => update('delay', Math.max(2, Number(event.target.value) || 2))}/></label>
-        <label className="text-xs text-zinc-400">Display duration (seconds)<input type="number" min="3" max="30" className={inputClass} value={settings.duration} onChange={event => update('duration', Math.max(3, Number(event.target.value) || 3))}/></label>
-        <label className="text-xs text-zinc-400">Maximum cards in rotation<input type="number" min="1" max="20" className={inputClass} value={settings.maxCards} onChange={event => update('maxCards', Math.min(20, Math.max(1, Number(event.target.value) || 1)))}/></label>
-        <label className="text-xs text-zinc-400">Animation<select className={inputClass} value={settings.animation} onChange={event => update('animation', event.target.value as SocialProofSettings['animation'])}>{['fade','slide-up','slide-left','scale','fade-slide'].map(value => <option key={value}>{value}</option>)}</select></label>
-        <label className="text-xs text-zinc-400">Popup position<select className={inputClass} value={settings.position} onChange={event => update('position', event.target.value as SocialProofSettings['position'])}>{['top-left','top-center','top-right','bottom-left','bottom-center','bottom-right'].map(value => <option key={value}>{value}</option>)}</select></label>
-        <label className="text-xs text-zinc-400">Verified-booking privacy<select className={inputClass} value={settings.privacyMode} onChange={event => update('privacyMode', event.target.value as SocialProofSettings['privacyMode'])}><option value="first_name">First name only</option><option value="first_name_last_initial">First name + surname initial</option><option value="anonymous">Anonymous guest</option></select></label>
-        <label className="flex items-center justify-between rounded-xl bg-white/[.03] p-3 text-sm">Show on mobile<input type="checkbox" checked={settings.mobileVisible} onChange={event => update('mobileVisible', event.target.checked)}/></label>
-        <label className="flex items-center justify-between rounded-xl bg-white/[.03] p-3 text-sm">Show on desktop<input type="checkbox" checked={settings.desktopVisible} onChange={event => update('desktopVisible', event.target.checked)}/></label>
-        <label className="flex items-center justify-between rounded-xl bg-white/[.03] p-3 text-sm">Include verified bookings<input type="checkbox" checked={settings.includeVerifiedBookings} onChange={event => update('includeVerifiedBookings', event.target.checked)}/></label>
-        <div className="sm:col-span-2 lg:col-span-3"><div className="text-xs text-zinc-400">Page targeting</div><div className="mt-2 flex flex-wrap gap-2">{['event','checkout','payment','ticket'].map(page => <label key={page} className="rounded-lg bg-white/5 px-3 py-2 text-xs capitalize"><input className="mr-2" type="checkbox" checked={settings.pageTargeting.includes(page)} onChange={event => update('pageTargeting', event.target.checked ? [...settings.pageTargeting, page] : settings.pageTargeting.filter(item => item !== page))}/>{page}</label>)}</div></div>
+  return (
+    <div className="max-w-2xl space-y-6 text-white">
+      <div>
+        <p className="font-mono text-xs uppercase tracking-widest text-emerald-400">Conversion management</p>
+        <h1 className="mt-1 font-serif text-2xl font-bold">Social Proof</h1>
+        <p className="mt-1 text-sm text-zinc-500">Show truthful booking activity and approved promotional notices on published event pages.</p>
       </div>
-      <button onClick={saveDefaults} className="mt-5 rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save Social Proof Settings</button>
-    </section>
 
-    <section className="rounded-2xl border border-white/10 bg-white/[.03] p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-serif text-lg font-bold">Social-proof cards</h2><p className="text-xs text-zinc-500">Verified facts are locked; only their visibility and privacy-safe presentation can be changed.</p></div><div className="flex flex-wrap gap-2"><button onClick={() => create('manual_message')} className="rounded-xl bg-emerald-400/10 px-3 py-2 text-xs text-emerald-200">Create manual card</button><button onClick={() => create('demo')} className="rounded-xl bg-white/5 px-3 py-2 text-xs text-zinc-200">Create demo card</button></div></div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2"><select aria-label="Filter cards by source" value={sourceFilter} onChange={event => setSourceFilter(event.target.value as typeof sourceFilter)} className={inputClass.replace('mt-1.5', '')}><option value="all">All sources</option><option value="verified_booking">Verified Booking</option><option value="manual_message">Manual Message</option><option value="demo">Demo Preview</option></select><select aria-label="Filter cards by event" value={eventFilter} onChange={event => setEventFilter(event.target.value)} className={inputClass.replace('mt-1.5', '')}><option value="all">All events</option><option value="global">Global cards</option>{events.map(event => <option key={event.id} value={event.id}>{event.title}</option>)}</select></div>
-      <div className="mt-4 grid gap-3 lg:grid-cols-2">{visibleItems.map(item => <article key={item.id} className="flex min-w-0 items-center gap-3 rounded-2xl border border-white/10 bg-black/15 p-3"><div>{item.avatar ? <img src={item.avatar} alt="" className="h-11 w-11 rounded-full object-cover"/> : <span className="grid h-11 w-11 place-items-center rounded-full bg-emerald-400/10 text-xs text-emerald-300">{item.name.slice(0,2).toUpperCase()}</span>}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap gap-2"><strong className="truncate text-sm">{item.name}</strong><span className={`rounded-full px-2 py-0.5 text-[10px] ${item.sourceType === 'verified_booking' ? 'bg-sky-400/10 text-sky-200' : item.sourceType === 'demo' ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{sourceLabel[item.sourceType]}</span></div><p className="mt-1 truncate text-xs text-zinc-400">{item.message} {item.ticketPackage && `· ${item.ticketPackage}`}</p><p className="mt-1 text-[10px] text-zinc-500">{item.city}{item.country ? `${item.city ? ', ' : ''}${item.country}` : ''}{item.eventId ? ' · Event-specific' : ' · Global'}</p></div><div className="flex shrink-0 flex-col gap-1"><button onClick={() => toggleItem(item)} className="rounded-lg bg-white/5 px-2 py-1 text-[10px]">{item.visible ? 'Disable' : 'Enable'}</button><button onClick={() => setSelected(item)} className="rounded-lg bg-white/5 px-2 py-1 text-[10px]">Edit</button></div></article>)}{visibleItems.length === 0 && <p className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-zinc-500">No cards match these filters.</p>}</div>
-    </section>
-
-    {preview && <div className="fixed inset-0 z-[500] grid place-items-center bg-black/75 p-4" onMouseDown={() => setPreview(null)}><div onMouseDown={event => event.stopPropagation()} className={`relative rounded-3xl border border-white/10 bg-[#111113] p-5 ${preview === 'mobile' ? 'w-[min(23rem,100%)]' : 'w-full max-w-md'}`}><button onClick={() => setPreview(null)} className="absolute right-4 top-3 text-zinc-400">×</button><p className="text-[10px] font-mono uppercase tracking-widest text-amber-300">{preview === 'mobile' ? 'Mobile' : 'Desktop'} preview</p><div className="mt-5 rounded-2xl border border-emerald-400/20 bg-zinc-900 p-4"><strong className="text-sm">{items.find(item => item.visible && item.sourceType !== 'demo')?.name ?? 'No production card'}</strong><p className="mt-1 text-xs text-zinc-400">{items.find(item => item.visible && item.sourceType !== 'demo')?.message ?? 'Create a verified or manual card to preview it.'}</p></div><p className="mt-3 text-xs text-zinc-500">Demo cards are shown only in Event Studio preview and are never displayed to published-event visitors.</p></div></div>}
-
-    {selected && <div className="fixed inset-0 z-[500] grid place-items-center overflow-y-auto bg-black/75 p-4"><section className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#111113] p-6"><div className="flex items-start justify-between"><div><p className="text-[10px] font-mono uppercase tracking-widest text-emerald-300">{sourceLabel[selected.sourceType]}</p><h2 className="mt-1 font-serif text-xl font-bold">Edit social-proof card</h2></div><button onClick={() => setSelected(null)}>×</button></div>{selected.sourceType === 'demo' && <p className="mt-3 rounded-xl bg-amber-400/10 p-3 text-xs text-amber-100">Demo preview data never appears as a production purchase or booking.</p>}{selected.sourceType === 'verified_booking' && <p className="mt-3 rounded-xl bg-sky-400/10 p-3 text-xs text-sky-100">Verified booking details are read-only to protect truthful customer activity.</p>}<div className="mt-5 flex items-center gap-3">{selected.avatar ? <img src={selected.avatar} alt={selected.name} className="h-20 w-20 rounded-2xl object-cover"/> : <div className="grid h-20 w-20 place-items-center rounded-2xl bg-white/5 text-xs text-zinc-500">No image</div>}{canEditFacts && <><input ref={itemInput} hidden type="file" accept="image/*" onChange={event => void upload(event.target.files?.[0], 'item')}/><div className="space-y-2"><button onClick={() => itemInput.current?.click()} className="block rounded-lg bg-white/5 px-3 py-2 text-xs">Replace Image</button><button onClick={() => setSelected(current => current ? { ...current, avatar: undefined } : current)} className="block text-xs text-red-300">Remove Image</button></div></>}</div><div className="mt-5 grid gap-3 sm:grid-cols-2"><label className="text-xs text-zinc-400">Display name<input disabled={!canEditFacts} className={inputClass} value={selected.name} onChange={event => setSelected({ ...selected, name: event.target.value })}/></label><label className="text-xs text-zinc-400">Package<input disabled={!canEditFacts} className={inputClass} value={selected.ticketPackage} onChange={event => setSelected({ ...selected, ticketPackage: event.target.value })}/></label><label className="text-xs text-zinc-400">City<input disabled={!canEditFacts} className={inputClass} value={selected.city} onChange={event => setSelected({ ...selected, city: event.target.value })}/></label><label className="text-xs text-zinc-400">Country<input disabled={!canEditFacts} className={inputClass} value={selected.country ?? ''} onChange={event => setSelected({ ...selected, country: event.target.value })}/></label><label className="sm:col-span-2 text-xs text-zinc-400">Message<input disabled={!canEditFacts} className={inputClass} value={selected.message} onChange={event => setSelected({ ...selected, message: event.target.value })}/></label><label className="sm:col-span-2 text-xs text-zinc-400">Event target<select disabled={!canEditFacts} className={inputClass} value={selected.eventId ?? ''} onChange={event => setSelected({ ...selected, eventId: event.target.value || undefined })}><option value="">All published events</option>{events.map(event => <option key={event.id} value={event.id}>{event.title}</option>)}</select></label><label className="flex items-center justify-between rounded-xl bg-white/[.03] p-3 text-sm">Visible<input type="checkbox" checked={selected.visible} onChange={event => setSelected({ ...selected, visible: event.target.checked })}/></label><label className="flex items-center justify-between rounded-xl bg-white/[.03] p-3 text-sm">Mobile visibility<input type="checkbox" checked={selected.mobileVisible} onChange={event => setSelected({ ...selected, mobileVisible: event.target.checked })}/></label><label className="flex items-center justify-between rounded-xl bg-white/[.03] p-3 text-sm">Desktop visibility<input type="checkbox" checked={selected.desktopVisible} onChange={event => setSelected({ ...selected, desktopVisible: event.target.checked })}/></label></div>{uploading && <p className="mt-3 text-xs text-emerald-300">Uploading image…</p>}{uploadError && <p className="mt-3 rounded-xl bg-red-500/10 p-3 text-xs text-red-300">{uploadError}</p>}<div className="mt-6 flex justify-between gap-2">{selected.sourceType !== 'verified_booking' ? <button onClick={() => { socialProofStore.remove(selected.id); setSelected(null); show('Social-proof card deleted') }} className="rounded-xl bg-red-500/10 px-4 py-2.5 text-sm text-red-300">Delete</button> : <span/>}<button onClick={() => { socialProofStore.save(selected); setSelected(null); show('Social-proof card saved') }} className="rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950">Save card</button></div></section></div>}
-  </div>
+      <section className="rounded-2xl border border-white/10 bg-white/[.03] p-5">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="font-serif text-lg font-bold">Social Proof</h2>
+            <p className="mt-1 text-xs text-zinc-500">Use the standard display and rotation behaviour across every event.</p>
+          </div>
+          <button type="button" role="switch" aria-checked={enabled} onClick={toggle} className={`h-8 w-14 rounded-full p-1 transition-colors ${enabled ? 'bg-emerald-400' : 'bg-zinc-700'}`}>
+            <span className={`block h-6 w-6 rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-6' : 'translate-x-0'}`} />
+          </button>
+        </div>
+        <p className="mt-5 rounded-xl border border-white/10 bg-black/15 p-3 text-xs leading-5 text-zinc-400">
+          One card rotates at a time after a short delay, remains readable for {SOCIAL_PROOF_DEFAULTS.displayDurationMs / 1_000} seconds, and pauses while a visitor has public chat open. Verified bookings and approved promotions are production data; sample records are isolated to clearly labelled preview environments.
+        </p>
+      </section>
+    </div>
+  )
 }

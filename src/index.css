@@ -563,6 +563,58 @@
   max-width: 100%;
 }
 
+/* Public chat is portalled to document.body. These are deliberate fixed
+   viewport shells: the message list, not the page, owns vertical scrolling. */
+.public-prechat-shell,
+.public-chat-shell {
+  width: 100%;
+  max-width: 100%;
+  height: 100vh;
+  height: 100svh;
+  height: 100dvh;
+  min-width: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+}
+
+.public-prechat-shell {
+  padding-top: max(1rem, env(safe-area-inset-top, 0px));
+  padding-right: max(1rem, env(safe-area-inset-right, 0px));
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  padding-left: max(1rem, env(safe-area-inset-left, 0px));
+}
+
+.public-prechat-shell .support-email-card {
+  min-width: 0;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transform: none;
+}
+
+.public-chat-surface {
+  min-width: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.public-chat-surface .chat-messages-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@supports (-webkit-touch-callout: none) {
+  .public-prechat-shell {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+
 @keyframes premium-float-card {
   0%, 100% { transform: translate3d(0, 0, 0); }
   50% { transform: translate3d(0, -6px, 0); }
@@ -846,7 +898,8 @@ img, video:not(.admin-login-video) { height: auto; }
   .booking-nav { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
   .booking-experience { min-height: 100vh; min-height: 100svh; min-height: 100dvh; }
   .admin-mobile-chat-shell { position: fixed !important; inset: 0 !important; z-index: 1000; width: 100%; height: 100vh !important; height: 100svh !important; height: 100dvh !important; border-radius: 0 !important; border: 0 !important; padding-bottom: env(safe-area-inset-bottom, 0px); }
-  .support-chat-surface { height: 100vh !important; height: 100svh !important; height: 100dvh !important; min-height: 0 !important; }
+  .support-chat-surface:not(.public-chat-surface) { height: 100vh !important; height: 100svh !important; height: 100dvh !important; min-height: 0 !important; }
+  .support-chat-surface.public-chat-surface { height: 100% !important; min-height: 0 !important; max-height: 100% !important; }
   .admin-login-screen { min-height:100vh; min-height:100svh; min-height:100dvh; padding-top:max(1rem, env(safe-area-inset-top, 0px)); padding-bottom:max(1rem, env(safe-area-inset-bottom, 0px)); }
   .admin-login-video { object-position: 58% center; }
 }

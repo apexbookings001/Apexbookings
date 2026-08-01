@@ -791,7 +791,7 @@ function ConversationPanel({
               {showSep && <DateSep label={fmtDateSep(msg.createdAt)} />}
               <MessageBubble
                 message={msg}
-                onReply={m => setReplyTo({ messageId: m.id, body: m.body, from: m.from, type: m.type, attachmentUrl: m.attachment?.url })}
+                onReply={m => { if (m.from !== 'system') setReplyTo({ messageId: m.id, body: m.body, from: m.from, type: m.type, attachmentUrl: m.attachment?.url }) }}
                 onExpand={(url, type) => setMediaViewer({ url, type })}
                 onDelete={onDeleteMessage}
               />

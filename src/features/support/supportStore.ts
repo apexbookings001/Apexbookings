@@ -8,7 +8,7 @@ export type MessageType = 'text' | 'image' | 'video' | 'audio' | 'voice' | 'docu
 export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed'
 export type AttachmentMeta = { name: string; size: number; mimeType: string; url: string; thumbnail?: string; duration?: number; width?: number; height?: number; file?: Blob }
 export type ReplyRef = { messageId: string; body: string; from: 'customer' | 'admin'; type: MessageType; attachmentUrl?: string }
-export type SupportMessage = { id: string; type: MessageType; body: string; from: 'customer' | 'admin'; createdAt: string; readAt?: string; status: MessageStatus; internal?: boolean; attachment?: AttachmentMeta; replyTo?: ReplyRef; reactions?: string[] }
+export type SupportMessage = { id: string; type: MessageType; body: string; from: 'customer' | 'admin' | 'system'; createdAt: string; readAt?: string; status: MessageStatus; internal?: boolean; attachment?: AttachmentMeta; replyTo?: ReplyRef; reactions?: string[] }
 export type ConversationDraft = { text: string; replyTo?: ReplyRef; attachments: AttachmentMeta[]; scrollPosition?: number }
 export type SupportConversation = {
   id: string; eventId: string; customer: string; email: string; avatar?: string; avatarColor?: string; status: SupportStatus; unread: number; notes: string; messages: SupportMessage[]; updatedAt: string; bookingRef?: string; eventName?: string; packageName?: string; seatNumber?: string; paymentStatus?: string; createdAt: string; lastActivity: string; accessToken?: string
@@ -28,11 +28,12 @@ function writeDrafts(drafts: Record<string, ConversationDraft>) { localStorage.s
 function colorForEmail(email: string) { let hash = 0; for (const character of email) hash = (hash * 31 + character.charCodeAt(0)) | 0; return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length] }
 
 function messageFromSnapshot(row: Record<string, unknown>): SupportMessage {
+  const sender = String(row.from ?? row.sender_type ?? 'admin')
   return {
     id: String(row.id),
     type: String(row.type ?? row.message_type ?? 'text') as MessageType,
     body: String(row.body ?? ''),
-    from: String(row.from ?? (row.sender_type === 'customer' ? 'customer' : 'admin')) as 'customer' | 'admin',
+    from: sender === 'customer' || sender === 'system' ? sender : 'admin',
     createdAt: String(row.createdAt ?? row.created_at ?? new Date().toISOString()),
     readAt: row.readAt || row.read_at ? String(row.readAt ?? row.read_at) : undefined,
     status: String(row.status ?? (row.read_at ? 'read' : row.delivered_at ? 'delivered' : 'sent')) as MessageStatus,
@@ -156,11 +157,13 @@ export const supportStore = {
       const attachment = payload.attachment ? await uploadChatAttachment(conversation, payload.attachment) : undefined
       const remotePayload = { ...payload, attachment }
       let saved: Record<string, unknown> | null = null
+      let publicResponse: Record<string, unknown> | null = null
       if (payload.from === 'customer') {
         if (!conversation.accessToken) throw new Error('This support conversation is not authorized.')
         const { data, error } = await supabase.rpc('send_public_support_message', { conversation_access_token: conversation.accessToken, message_payload: remotePayload })
         if (error) throw error
-        saved = data as Record<string, unknown>
+        publicResponse = data as Record<string, unknown> | null
+        saved = (publicResponse?.message ?? data) as Record<string, unknown>
       } else {
         const { data, error } = await supabase.from('chat_messages').insert({ conversation_id: id, sender_type: 'admin', sender_user_id: getWorkspaceMembership()?.userId, body: payload.body, message_type: payload.type ?? 'text', delivered_at: new Date().toISOString(), metadata: { attachment, replyTo: payload.replyTo } }).select().single()
         if (error) throw error
@@ -170,7 +173,17 @@ export const supportStore = {
       const current = cache.get().find(item => item.id === id)
       if (!saved?.id || !saved.conversation_id || !saved.sender_type) throw new Error('The saved support message was incomplete.')
       const confirmed = messageFromSnapshot({ ...saved, ...((saved.metadata as Record<string, unknown> | null) ?? {}) })
-      if (current) cache.set(cache.get().map(item => item.id === id ? { ...current, lastActivity: confirmed.createdAt, messages: current.messages.map(item => item.id === message.id ? { ...confirmed, attachment, status: 'sent' } : item) } : item))
+      const responseNotice = payload.from === 'customer' ? publicResponse?.responseNotice as Record<string, unknown> | null : null
+      const notice = responseNotice ? messageFromSnapshot({ ...responseNotice, ...((responseNotice.metadata as Record<string, unknown> | null) ?? {}) }) : null
+      if (current) cache.set(cache.get().map(item => {
+        if (item.id !== id) return item
+        const messages: SupportMessage[] = current.messages.map(item => item.id === message.id ? { ...confirmed, attachment, status: 'sent' as MessageStatus } : item)
+        return {
+          ...current,
+          lastActivity: notice?.createdAt ?? confirmed.createdAt,
+          messages: notice && !messages.some(item => item.id === notice.id) ? [...messages, notice] : messages,
+        }
+      }))
     })().catch(error => {
       const current = cache.get().find(item => item.id === id)
       if (current) cache.set(cache.get().map(item => item.id === id ? { ...current, messages: current.messages.map(item => item.id === message.id ? { ...item, status: 'failed' } : item) } : item))

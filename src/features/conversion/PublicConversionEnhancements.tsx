@@ -6,6 +6,7 @@ import { MobileSocialProofOverlay } from './MobileSocialProofOverlay'
 import { useSocialProofOverlay } from './SocialProofOverlayContext'
 import { useLocale } from '../../i18n/LocaleContext'
 import type { EventSocialProofOverride } from '../events/adminEventStore'
+import { SOCIAL_PROOF_DEFAULTS } from './socialProofConfig'
 
 const positionClass: Record<SocialProofItem['position'], string> = { 'top-left': 'top-20 left-4', 'top-center': 'top-20 left-1/2 -translate-x-1/2', 'top-right': 'top-20 right-4', 'bottom-left': 'bottom-6 left-4', 'bottom-center': 'bottom-6 left-1/2 -translate-x-1/2', 'bottom-right': 'bottom-6 right-4' }
 
@@ -23,11 +24,10 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
     ? seats.filter(seat => seat.status === 'available').length 
     : packages.reduce((sum, pkg: any) => sum + (pkg.seats || pkg.capacity || 0), 0)
   const notices = useMemo(() => {
-    const settings = socialProofStore.settings()
-    const configured = socialProofStore.list().filter(item => item.visible && (item.sourceType !== 'demo' || isPreview) && (item.sourceType !== 'verified_booking' || settings.includeVerifiedBookings) && (!item.eventId || item.eventId === eventId))
+    const configured = socialProofStore.list().filter(item => item.visible && (item.sourceType !== 'demo' || isPreview) && (!item.eventId || item.eventId === eventId))
     // Demo cards are clearly labelled preview data and never enter the production rotation.
     const preview = isPreview ? [...configured, ...socialProofStore.previewItems()] : configured
-    return preview.filter(item => isMobile ? item.mobileVisible : item.desktopVisible).slice(0, Math.max(1, Math.min(20, settings.maxCards ?? 20)))
+    return preview.filter(item => isMobile ? item.mobileVisible : item.desktopVisible).slice(0, SOCIAL_PROOF_DEFAULTS.maxCards)
   }, [eventId, isMobile, isPreview, socialProofVersion])
 
   useEffect(() => socialProofStore.subscribe(() => setSocialProofVersion(version => version + 1)), [])
@@ -80,19 +80,13 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
 
   useEffect(() => {
     if (isChatActive) { setToast(null); return }
-    const stored = Object.fromEntries(Object.entries({ ...socialProofStore.settings(), ...(settingsOverride ?? {}) }).filter(([, value]) => value !== undefined && value !== null)) as typeof socialProofStore extends never ? never : ReturnType<typeof socialProofStore.settings>
+    const stored = { enabled: settingsOverride?.enabled ?? socialProofStore.settings().enabled }
     const isDefaultTemplatePreview = isPreview && !eventId
     const settings = isDefaultTemplatePreview ? {
       ...stored,
       enabled: true,
-      paused: false,
-      mobileVisible: true,
-      desktopVisible: true,
-      pageTargeting: ['event'],
-      delay: Math.min(stored.delay || 8, 3),
     } : stored
-    const visibleOnDevice = isMobile ? settings.mobileVisible : settings.desktopVisible
-    const blocked = !settings.enabled ? 'disabled' : settings.paused ? 'paused' : !socialProofReady ? 'settings not loaded' : !visibleOnDevice ? 'mobile/desktop visibility disabled' : !settings.pageTargeting?.includes('event') ? 'page target mismatch' : !notices.length ? 'no active records' : null
+    const blocked = !settings.enabled ? 'disabled' : !socialProofReady ? 'settings not loaded' : !notices.length ? 'no active records' : null
     if (blocked) {
       if (import.meta.env.DEV) console.info('[social-proof] popup not displayed', { eventId, reason: blocked, settings, notices: notices.length, override: settingsOverride })
       setToast(null)
@@ -100,19 +94,19 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
     }
     let timeout: ReturnType<typeof setTimeout>
     const next = () => {
-      if (document.hidden) { timeout = setTimeout(next, settings.delay * 1000); return }
+      if (document.hidden) { timeout = setTimeout(next, SOCIAL_PROOF_DEFAULTS.rotationIntervalMs); return }
       const choices = notices.filter(item => !played.current.has(item.id))
       const item = choices[Math.floor(Math.random() * choices.length)] ?? notices[Math.floor(Math.random() * notices.length)]
       if (!item) return
       played.current.add(item.id)
       if (played.current.size >= notices.length) played.current.clear()
-      setToast({ ...item, duration: settings.duration ?? item.duration })
+      setToast({ ...item, duration: SOCIAL_PROOF_DEFAULTS.displayDurationMs / 1_000, position: isMobile ? SOCIAL_PROOF_DEFAULTS.mobilePosition : SOCIAL_PROOF_DEFAULTS.desktopPosition })
       timeout = setTimeout(() => {
         setToast(null)
-        timeout = setTimeout(next, settings.delay * 1000)
-      }, (settings.duration ?? item.duration) * 1000)
+        timeout = setTimeout(next, SOCIAL_PROOF_DEFAULTS.rotationIntervalMs)
+      }, SOCIAL_PROOF_DEFAULTS.displayDurationMs)
     }
-    timeout = setTimeout(next, settings.delay * 1000)
+    timeout = setTimeout(next, isDefaultTemplatePreview ? Math.min(SOCIAL_PROOF_DEFAULTS.initialDelayMs, 3_000) : SOCIAL_PROOF_DEFAULTS.initialDelayMs)
     return () => clearTimeout(timeout)
   }, [eventId, isChatActive, isMobile, isPreview, notices, settingsOverride, socialProofReady, socialProofVersion])
 
@@ -126,7 +120,7 @@ export function PublicConversionEnhancements({ packages, seats, eventId, isPrevi
           onTransitionEnd={handleOverlayTransitionEnd}
         />
       ) : toast ? (
-        <div className={`social-proof-desktop fixed z-[135] flex w-auto max-w-[min(26rem,calc(100%_-_2rem))] items-start gap-3.5 rounded-2xl p-4 shadow-2xl animate-[fade-in-up_.3s_ease] ${positionClass[toast.position]}`}
+        <div className={`social-proof-desktop fixed z-[135] flex w-auto max-w-[min(26rem,calc(100%_-_2rem))] items-start gap-3.5 rounded-2xl p-4 shadow-2xl animate-[fade-in-up_.3s_ease] ${positionClass[SOCIAL_PROOF_DEFAULTS.desktopPosition]}`}
           style={{ background: t.isDark ? 'rgba(18,18,22,0.95)' : 'rgba(255,255,255,0.98)', border: `1px solid ${t.isDark ? 'rgba(255,255,255,0.12)' : t.border}`, color: t.text, boxShadow: t.isDark ? '0 16px 48px rgba(0,0,0,0.5)' : '0 14px 32px rgba(23,26,31,0.12), 0 2px 6px rgba(23,26,31,0.04)' }}>
           <div className="relative shrink-0 mt-0.5">
             {toast.avatar ? (

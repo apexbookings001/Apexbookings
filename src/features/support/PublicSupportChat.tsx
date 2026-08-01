@@ -8,6 +8,7 @@ import { emailService } from '../email/emailService'
 import { useSocialProofOverlay } from '../conversion/SocialProofOverlayContext'
 import { useBookingRecoveryState } from '../recovery/BookingSessionRecoveryProvider'
 import { useLocale } from '../../i18n/LocaleContext'
+import { useDocumentScrollLock } from '../../hooks/useDocumentScrollLock'
 
 // ─── Brand palettes ───────────────────────────────────────────────────────────
 // Dark mode: emerald  |  Light mode: blue
@@ -531,6 +532,14 @@ function MessageBubble({
   isDark?: boolean
 }) {
   const C = isDark ? E : B
+  if (message.from === 'system') {
+    return (
+      <div id={`msg-${message.id}`} data-message-id={message.id} role="status" style={{ alignSelf: 'center', maxWidth: 'min(100%, 34rem)', margin: '10px 0 14px', borderRadius: 14, border: `1px solid ${isDark ? 'rgba(0,214,107,0.24)' : 'rgba(37,99,235,0.22)'}`, background: isDark ? 'rgba(0,214,107,0.08)' : 'rgba(37,99,235,0.06)', padding: '10px 13px', color: isDark ? '#D1FAE5' : '#1E3A8A', fontSize: 13, lineHeight: 1.5, textAlign: 'center', overflowWrap: 'anywhere' }}>
+        <strong style={{ display: 'block', marginBottom: 3, fontSize: 11, letterSpacing: '0.03em', textTransform: 'uppercase' }}>Automatic support notice</strong>
+        {message.body}
+      </div>
+    )
+  }
   const isCustomer = message.from === 'customer'
   const [hovered, setHovered] = useState(false)
   // Swipe to reply (mobile)
@@ -569,6 +578,7 @@ function MessageBubble({
   return (
     <div
       id={`msg-${message.id}`}
+      data-message-id={message.id}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onTouchStart={onTouchStart}
@@ -867,7 +877,7 @@ function Composer({
       {/* Reply strip */}
       {replyTo && <ReplyStrip replyTo={replyTo} onCancel={onClearReply} isDark={isDark} />}
 
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, padding: '12px 14px', position: 'relative' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, padding: '12px max(14px, env(safe-area-inset-right, 0px)) 12px max(14px, env(safe-area-inset-left, 0px))', position: 'relative' }}>
         {/* Emoji */}
         <div style={{ position: 'relative', flexShrink: 0 }}>
           {showEmoji && <EmojiPicker onSelect={e => { setText(t => t + e); setShowEmoji(false) }} onClose={() => setShowEmoji(false)} />}
@@ -911,7 +921,7 @@ function Composer({
               borderRadius: 14,
               padding: '10px 14px',
               color: isDark ? '#FAFAFA' : '#0F172A',
-              fontSize: 14,
+              fontSize: 16,
               outline: 'none',
               resize: 'none',
               lineHeight: 1.5,
@@ -976,12 +986,70 @@ function ChatWindow({
   const [mediaViewer, setMediaViewer] = useState<{ url: string; type: 'image' | 'video' } | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const isDesktop = window.innerWidth >= 640
+  const [isDesktop, setIsDesktop] = useState(() => window.matchMedia('(min-width: 640px)').matches)
+  const [visualViewport, setVisualViewport] = useState(() => ({ height: Math.round(window.visualViewport?.height ?? window.innerHeight), offsetTop: Math.round(window.visualViewport?.offsetTop ?? 0) }))
+  const isNearBottomRef = useRef(true)
+  const previousConversationRef = useRef<string | null>(null)
+  const previousMessageCountRef = useRef(0)
+  const [newMessageCount, setNewMessageCount] = useState(0)
 
-  // Auto-scroll on new message
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [conversation.messages.length])
+    const media = window.matchMedia('(min-width: 640px)')
+    const update = () => setIsDesktop(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  // iOS keeps the layout viewport behind the software keyboard. This observes
+  // only viewport resize/offset changes and avoids page-scroll state updates.
+  useEffect(() => {
+    if (isDesktop) return
+    const viewport = window.visualViewport
+    let frame = 0
+    const update = () => {
+      frame = 0
+      const next = { height: Math.round(viewport?.height ?? window.innerHeight), offsetTop: Math.round(viewport?.offsetTop ?? 0) }
+      setVisualViewport(previous => previous.height === next.height && previous.offsetTop === next.offsetTop ? previous : next)
+    }
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
+    update()
+    viewport?.addEventListener('resize', schedule)
+    viewport?.addEventListener('scroll', schedule)
+    window.addEventListener('resize', schedule)
+    return () => {
+      viewport?.removeEventListener('resize', schedule)
+      viewport?.removeEventListener('scroll', schedule)
+      window.removeEventListener('resize', schedule)
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [isDesktop])
+
+  const isNearBottom = () => {
+    const container = containerRef.current
+    return !container || container.scrollHeight - container.scrollTop - container.clientHeight < 72
+  }
+  const scrollToBottom = (behavior: ScrollBehavior) => {
+    const container = containerRef.current
+    if (container) container.scrollTo({ top: container.scrollHeight, behavior })
+  }
+
+  useEffect(() => {
+    const initialConversation = previousConversationRef.current !== conversation.id
+    const countChanged = previousMessageCountRef.current !== conversation.messages.length
+    if (initialConversation || countChanged) {
+      const shouldFollow = initialConversation || isNearBottomRef.current || isNearBottom()
+      if (shouldFollow) {
+        requestAnimationFrame(() => scrollToBottom(initialConversation ? 'auto' : 'smooth'))
+        isNearBottomRef.current = true
+        setNewMessageCount(0)
+      } else if (countChanged) {
+        setNewMessageCount(count => count + 1)
+      }
+    }
+    previousConversationRef.current = conversation.id
+    previousMessageCountRef.current = conversation.messages.length
+  }, [conversation.id, conversation.messages.length])
 
   // Simulate typing indicator after customer sends
   const lastMsg = conversation.messages[conversation.messages.length - 1]
@@ -994,10 +1062,13 @@ function ChatWindow({
   }, [lastMsg?.id, lastMsg?.from, isPreview])
 
   const scrollToMessage = (id: string) => {
-    document.getElementById(`msg-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const container = containerRef.current
+    const target = container?.querySelector<HTMLElement>(`[data-message-id="${id}"]`)
+    if (container && target) container.scrollTo({ top: Math.max(0, target.offsetTop - 72), behavior: 'smooth' })
   }
 
   const handleReply = (msg: SupportMessage) => {
+    if (msg.from === 'system') return
     const ref: ReplyRef = {
       messageId: msg.id,
       body: msg.body,
@@ -1049,37 +1120,46 @@ function ChatWindow({
     renderItems.push({ kind: 'msg', message: msg, isFirst, isLast })
   }
 
-  return (
+  const handleMessageScroll = () => {
+    isNearBottomRef.current = isNearBottom()
+    if (isNearBottomRef.current) setNewMessageCount(0)
+  }
+
+  return createPortal((
     <>
       {/* Overlay */}
       <div
+        className="public-chat-shell"
         style={{
-          position: 'fixed', inset: 0, zIndex: 10000,
+          position: 'fixed', zIndex: 10020,
           background: isDesktop ? 'rgba(0,0,0,0.72)' : '#09090B',
           backdropFilter: isDesktop ? 'blur(16px)' : 'none',
           display: 'flex', alignItems: isDesktop ? 'center' : 'stretch', justifyContent: 'center',
           padding: isDesktop ? '24px' : 0,
           animation: 'fade-in 0.2s ease',
+          ...(isDesktop ? { inset: 0 } : { top: `${visualViewport.offsetTop}px`, left: 0, right: 0, height: `${visualViewport.height}px`, overflow: 'hidden' }),
         }}
       >
         <div
-          className="support-chat-surface"
+          className="support-chat-surface public-chat-surface"
           style={{
-            display: 'flex', flexDirection: 'column',
+            display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr) auto',
             width: isDesktop ? 'min(980px, 100%)' : '100%',
-            height: isDesktop ? 'min(88vh, 720px)' : '100dvh',
+            height: isDesktop ? 'min(88vh, 720px)' : '100%',
             minHeight: 0,
             background: isDark ? '#111113' : '#F8FAFC',
             borderRadius: isDesktop ? 24 : 0,
             border: isDesktop ? `1px solid ${isDark ? 'rgba(255,255,255,0.07)' : '#E2E8F0'}` : 'none',
             overflow: 'hidden',
             boxShadow: isDesktop ? (isDark ? '0 40px 100px rgba(0,0,0,0.75)' : '0 24px 80px rgba(15,23,42,0.15)') : 'none',
-            animation: 'slide-in-scale 0.28s cubic-bezier(0.34,1.56,0.64,1)',
+            animation: isDesktop ? 'slide-in-scale 0.28s cubic-bezier(0.34,1.56,0.64,1)' : 'none',
           }}
         >
           {/* Header */}
           <div style={{
             display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px',
+            paddingLeft: 'max(20px, env(safe-area-inset-left, 0px))',
+            paddingRight: 'max(20px, env(safe-area-inset-right, 0px))',
             background: isDark ? '#09090B' : '#FFFFFF',
             borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid #E2E8F0',
             flexShrink: 0,
@@ -1135,7 +1215,8 @@ function ChatWindow({
           <div
             ref={containerRef}
             className={`chat-messages-scroll${isDark ? '' : ' chat-messages-scroll-light'}`}
-            style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 0, background: isDark ? 'transparent' : '#F8FAFC' }}
+            onScroll={handleMessageScroll}
+            style={{ minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', padding: '12px max(16px, env(safe-area-inset-right, 0px)) 12px max(16px, env(safe-area-inset-left, 0px))', display: 'flex', flexDirection: 'column', gap: 0, background: isDark ? 'transparent' : '#F8FAFC' }}
           >
             {/* Welcome state */}
             {visibleMessages.length === 0 && !showTyping && (
@@ -1178,6 +1259,8 @@ function ChatWindow({
             <div ref={messagesEndRef} />
           </div>
 
+          {newMessageCount > 0 && <button type="button" onClick={() => { scrollToBottom('smooth'); isNearBottomRef.current = true; setNewMessageCount(0) }} style={{ position: 'absolute', left: '50%', bottom: 82, transform: 'translateX(-50%)', zIndex: 1, border: `1px solid ${isDark ? 'rgba(0,214,107,0.35)' : 'rgba(37,99,235,0.28)'}`, borderRadius: 999, padding: '7px 12px', background: isDark ? '#17251E' : '#FFFFFF', color: isDark ? '#D1FAE5' : '#1D4ED8', boxShadow: '0 6px 20px rgba(0,0,0,0.18)', fontSize: 12, fontWeight: 700, touchAction: 'manipulation' }}>{newMessageCount} new message{newMessageCount === 1 ? '' : 's'}</button>}
+
           {/* Composer */}
           <div style={{ flexShrink: 0, paddingBottom: 'env(safe-area-inset-bottom, 0px)', background: isDark ? 'transparent' : '#FFFFFF', borderTop: `1px solid ${isDark ? 'rgba(255,255,255,0.07)' : '#E2E8F0'}` }}>
           <Composer
@@ -1197,7 +1280,7 @@ function ChatWindow({
         <FullscreenViewer url={mediaViewer.url} type={mediaViewer.type} onClose={() => setMediaViewer(null)} />
       )}
     </>
-  )
+  ), document.body)
 }
 
 // ─── Public Support Chat (exported component) ─────────────────────────────────
@@ -1216,22 +1299,7 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
   const dockFrameRef = useRef<number | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const { setChatActive } = useSocialProofOverlay()
-
-  // A mobile chat is an isolated viewport, never a second page scroll area.
-  useEffect(() => {
-    if (!open) return
-    const scrollY = window.scrollY
-    const useFixedBody = window.innerWidth < 640
-    const body = document.body
-    const html = document.documentElement
-    const previous = { bodyOverflow: body.style.overflow, bodyPosition: body.style.position, bodyTop: body.style.top, bodyWidth: body.style.width, htmlOverflow: html.style.overflow }
-    body.style.overflow = 'hidden'; html.style.overflow = 'hidden'
-    if (useFixedBody) { body.style.position = 'fixed'; body.style.top = `-${scrollY}px`; body.style.width = '100%' }
-    return () => {
-      body.style.overflow = previous.bodyOverflow; body.style.position = previous.bodyPosition; body.style.top = previous.bodyTop; body.style.width = previous.bodyWidth; html.style.overflow = previous.htmlOverflow
-      if (useFixedBody) window.scrollTo(0, scrollY)
-    }
-  }, [open])
+  useDocumentScrollLock(open)
 
   useEffect(() => {
     setChatActive(open)
@@ -1410,16 +1478,16 @@ export function PublicSupportChat({ eventId, isPreview = false }: { eventId: str
         )}
       </button>}
 
-      {open && !isPreview && !customerEmail && (
-        <div className="fixed inset-0 z-[10010] grid place-items-center bg-black/60 p-4 backdrop-blur-sm">
-          <form onSubmit={submitEmail} className="support-email-card w-full max-w-sm rounded-3xl p-6 shadow-2xl" style={{ background: isDark ? '#111113' : '#FFFFFF', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}` }}>
+      {open && !isPreview && !customerEmail && createPortal(
+        <div className="public-prechat-shell fixed inset-0 z-[10010] grid place-items-center bg-black/60 backdrop-blur-sm">
+          <form onSubmit={submitEmail} className="support-email-card w-full max-w-sm rounded-3xl p-6 shadow-2xl" style={{ background: isDark ? '#111113' : '#FFFFFF', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}`, touchAction: 'manipulation' }}>
             <div className="grid h-11 w-11 place-items-center rounded-2xl" style={{ background: isDark ? 'rgba(0,255,136,.12)' : 'rgba(21,94,239,.1)', color: isDark ? '#00FF88' : '#155EEF' }}>?</div>
             <h2 className="mt-4 font-serif text-2xl font-bold" style={{ color: isDark ? '#FAFAFA' : '#171A1F' }}>{translate('chat.welcome')}</h2>
             <p className="mt-2 text-sm" style={{ color: isDark ? '#A1A1AA' : '#5F6773' }}>{translate('chat.emailPrompt')}</p>
-            <label className="mt-5 block text-xs font-mono uppercase tracking-wider" style={{ color: isDark ? '#A1A1AA' : '#87909D' }}>{translate('chat.email')}<input autoFocus type="email" required value={emailDraft} onChange={event => setEmailDraft(event.target.value)} placeholder="you@example.com" className="mt-2 w-full rounded-xl px-4 py-3 text-sm outline-none" style={{ background: isDark ? 'rgba(255,255,255,.05)' : '#FAFBFC', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}`, color: isDark ? '#FAFAFA' : '#171A1F' }}/></label>
-            <div className="mt-5 flex gap-3"><button type="button" onClick={() => setOpen(false)} className="flex-1 rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: isDark ? 'rgba(255,255,255,.06)' : '#F1F3F5', color: isDark ? '#FAFAFA' : '#171A1F' }}>{translate('common.cancel')}</button><button type="submit" className="flex-1 rounded-xl px-4 py-3 text-sm font-bold" style={{ background: isDark ? '#00FF88' : '#155EEF', color: isDark ? '#09090B' : '#FFFFFF' }}>{translate('chat.continue')}</button></div>
+            <label className="mt-5 block text-xs font-mono uppercase tracking-wider" style={{ color: isDark ? '#A1A1AA' : '#87909D' }}>{translate('chat.email')}<input type="email" required value={emailDraft} onChange={event => setEmailDraft(event.target.value)} placeholder="you@example.com" className="mt-2 w-full rounded-xl px-4 py-3 text-sm outline-none" style={{ background: isDark ? 'rgba(255,255,255,.05)' : '#FAFBFC', border: `1px solid ${isDark ? 'rgba(255,255,255,.1)' : '#E1E5EA'}`, color: isDark ? '#FAFAFA' : '#171A1F', fontSize: 16, touchAction: 'manipulation' }}/></label>
+            <div className="mt-5 flex gap-3"><button type="button" onClick={() => setOpen(false)} className="flex-1 rounded-xl px-4 py-3 text-sm font-semibold" style={{ background: isDark ? 'rgba(255,255,255,.06)' : '#F1F3F5', color: isDark ? '#FAFAFA' : '#171A1F', touchAction: 'manipulation' }}>{translate('common.cancel')}</button><button type="submit" className="flex-1 rounded-xl px-4 py-3 text-sm font-bold" style={{ background: isDark ? '#00FF88' : '#155EEF', color: isDark ? '#09090B' : '#FFFFFF', touchAction: 'manipulation' }}>{translate('chat.continue')}</button></div>
           </form>
-        </div>
+        </div>, document.body
       )}
 
       {/* Chat window */}
