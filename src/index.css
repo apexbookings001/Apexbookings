@@ -272,23 +272,6 @@
   background: linear-gradient(145deg, rgba(255,255,255,.075), transparent 28%, transparent 76%, rgba(var(--experience-accent-rgb), .08));
 }
 
-.about-media-kind {
-  position: absolute;
-  z-index: 3;
-  top: 1rem;
-  left: 1rem;
-  padding: .4rem .65rem;
-  border: 1px solid rgba(255,255,255,.18);
-  border-radius: 999px;
-  background: rgba(5,7,7,.72);
-  color: rgba(255,255,255,.86);
-  font-size: .58rem;
-  font-weight: 700;
-  letter-spacing: .13em;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
 .about-media-details {
   position: relative;
   z-index: 3;
@@ -788,11 +771,6 @@
 
   .about-media-card {
     border-radius: 1.25rem;
-  }
-
-  .about-media-kind {
-    top: .75rem;
-    left: .75rem;
   }
 
   .about-media-details {

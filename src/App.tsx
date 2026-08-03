@@ -73,7 +73,12 @@ function mergeEditorPreview(previous: BookingPageData, next: BookingPageData, ta
   if (!target) return next
   const merged = structuredClone(previous)
   if (target.section === 'hero') merged.hero = next.hero
-  if (target.section === 'about') merged.about = next.about
+  if (target.section === 'about') {
+    merged.about = next.about
+    // The About card owns the presentation, but its date/time deliberately
+    // share the single event schedule used by the Hero section.
+    merged.hero = { ...merged.hero, date: next.hero.date, show: next.hero.show }
+  }
   if (target.section === 'venue') {
     merged.venue = next.venue
     merged.venueFacts = next.venueFacts
@@ -555,6 +560,19 @@ function AboutShow() {
   const { data, mode } = useBooking()
   const about = data.about
   const mediaIsVideo = about.mediaType === 'video'
+  const eventDate = data.hero.date.trim()
+  const eventTime = data.hero.show.trim()
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(eventDate)
+  const eventDateParts = dateOnlyMatch
+    ? (() => {
+        const date = new Date(`${eventDate}T12:00:00`)
+        return {
+          label: new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date),
+          detail: new Intl.DateTimeFormat(undefined, { weekday: 'long', year: 'numeric' }).format(date),
+        }
+      })()
+    : { label: eventDate || 'Date to be announced', detail: '' }
+  const eventDateDetail = [eventDateParts.detail, eventTime].filter(Boolean).join(' · ')
 
   if (!data.visibility.about && mode !== 'editor') return null
 
@@ -573,13 +591,12 @@ function AboutShow() {
                   <div className="grid h-full min-h-72 place-items-center px-6 text-center text-sm" style={{ color: t.textMuted }}>{translate('about.mediaEmpty')}</div>
                 )}
                 <div className="about-media-sheen" aria-hidden="true" />
-                <span className="about-media-kind">{translate(mediaIsVideo ? 'about.eventVideo' : 'about.eventImage')}</span>
               </div>
               <div className="about-media-details">
                 <div>
                   <div className="text-[10px] font-mono uppercase tracking-[0.18em]" style={{ color: t.textMuted }}>{translate('about.showDate')}</div>
-                  <div className="mt-1 font-serif text-2xl font-bold" style={{ color: t.text }}>{about.dateLabel}</div>
-                  <div className="mt-1 text-xs" style={{ color: t.textSub }}>{about.dateDetail}</div>
+                  <div className="mt-1 font-serif text-2xl font-bold" style={{ color: t.text }}>{eventDateParts.label}</div>
+                  {eventDateDetail && <div className="mt-1 text-xs" style={{ color: t.textSub }}>{eventDateDetail}</div>}
                 </div>
                 <div className="about-media-official" style={{ color: t.accent, borderColor: `${t.accent}45`, background: `${t.accent}12` }}><span className="h-1.5 w-1.5 rounded-full" style={{ background: t.accent }} /> {translate('about.official')}</div>
               </div>
@@ -2556,6 +2573,8 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
     </>
     if (target.section === 'about') return <>
       {headingInput('about', 'About the Show')}
+      {input('Event date (shown on the event card)', draft.hero.date, value => mutate(next => { next.hero.date = value }))}
+      {input('Show time (shown on the event card)', draft.hero.show, value => mutate(next => { next.hero.show = value }))}
       {input('Heading', draft.about.heading, value => mutate(next => { next.about.heading = value }))}
       {input('Accent heading', draft.about.accentHeading, value => mutate(next => { next.about.accentHeading = value }))}
       {input('Description', draft.about.body, value => mutate(next => { next.about.body = value }), true)}
