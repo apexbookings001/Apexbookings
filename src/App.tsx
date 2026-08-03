@@ -53,6 +53,9 @@ import type { PackageSeatPreview } from './features/events/PackagesAndSeatsWorks
 import { PackageTypeLibraryPicker } from './features/events/PackageTypeLibraryPicker'
 import { DiscountCountdown } from './features/events/DiscountCountdown'
 import { packagePricing } from './features/events/packagePricing'
+import { TicketSalesCountdown } from './features/events/TicketSalesCountdown'
+import { TicketSalesCountdownSettings } from './features/events/TicketSalesCountdownSettings'
+import { getCountdownState, type EventCountdownSettings } from './features/events/countdown'
 import { useBookingSessionRecovery } from './features/recovery/BookingSessionRecoveryProvider'
 import { getAdminResumeRoute } from './features/recovery/recoveryStorage'
 import { useDocumentScrollLock } from './hooks/useDocumentScrollLock'
@@ -65,8 +68,8 @@ type StudioPreviewState = 'page' | 'packages' | 'checkout' | 'payment-pending' |
 type EditorTarget = { section: BookingSectionId; index?: number; field?: string }
 const BOOKING_SECTION_IDS: BookingSectionId[] = ['hero', 'about', 'venue', 'timeline', 'tickets', 'testimonials', 'faq', 'cta', 'footer']
 const BOOKING_SECTION_LABELS: Record<BookingSectionId, string> = { hero: 'Hero', about: 'About', venue: 'Venue', timeline: 'Timeline', tickets: 'Packages', testimonials: 'Customer reviews', faq: 'FAQ', cta: 'Call to action', footer: 'Footer' }
-type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean; seatPreview?: SeatRecord[]; ticketBar: PublicTicketBarState | null; setTicketBar: (state: PublicTicketBarState | null) => void }
-const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false, ticketBar: null, setTicketBar: () => {} })
+type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean; seatPreview?: SeatRecord[]; ticketBar: PublicTicketBarState | null; setTicketBar: (state: PublicTicketBarState | null) => void; ticketSalesOpen: boolean }
+const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false, ticketBar: null, setTicketBar: () => {}, ticketSalesOpen: true })
 const useBooking = () => useContext(BookingCtx)
 
 function mergeEditorPreview(previous: BookingPageData, next: BookingPageData, target: EditorTarget | null): BookingPageData {
@@ -247,9 +250,10 @@ function Particles() {
 function NavBookBtn({ mobile }: { mobile?: boolean }) {
   const { translations: tr } = useLocale()
   const { t } = useTheme()
+  const { ticketSalesOpen } = useBooking()
   return (
-    <button onClick={() => scrollTo('tickets')}
-      className={`btn-magnetic font-bold rounded-xl transition-all hover:-translate-y-0.5 ${mobile ? 'flex-1 text-sm py-2.5 text-center' : 'text-sm px-5 py-2'}`}
+    <button disabled={!ticketSalesOpen} onClick={() => scrollTo('tickets')}
+      className={`btn-magnetic font-bold rounded-xl transition-all hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-45 ${mobile ? 'flex-1 text-sm py-2.5 text-center' : 'text-sm px-5 py-2'}`}
       style={{ background: t.isDark ? `${t.accent}18` : `linear-gradient(135deg,${t.accent},${t.accentDim})`, color: t.isDark ? t.accent : t.accentText, border: t.isDark ? `1px solid ${t.accent}40` : 'none', boxShadow: t.isDark ? `0 8px 24px ${t.accentGlow}` : `0 4px 16px ${t.accentGlow}`, borderRadius: 14 }}>
       {tr.nav.bookTickets}
     </button>
@@ -272,8 +276,9 @@ function LocalizedBookBtn({ tier, premium = false, soldOut = false }: { tier: { 
   const { translations: tr } = useLocale()
   const { t } = useTheme()
   const accent = t.isDark ? tier.accent : t.accent
+  const { ticketSalesOpen } = useBooking()
   return (
-    <button disabled={soldOut} className="w-full py-3.5 rounded-2xl font-bold text-sm text-center transition-all duration-300 hover:-translate-y-1 disabled:cursor-not-allowed disabled:opacity-50"
+    <button disabled={soldOut || !ticketSalesOpen} className="w-full py-3.5 rounded-2xl font-bold text-sm text-center transition-all duration-300 hover:-translate-y-1 disabled:cursor-not-allowed disabled:opacity-50"
       style={{ background: t.isDark ? `${accent}18` : premium ? `linear-gradient(135deg,${t.accent},${t.accentDim})` : `${accent}0D`, color: t.isDark || !premium ? accent : '#FFFFFF', border: `1.5px solid ${t.isDark ? `${accent}40` : accent}`, boxShadow: t.isDark ? `0 8px 24px ${tier.glow}` : premium ? `0 10px 20px ${t.accentGlow}` : `0 3px 8px ${t.accentGlow}` }}>
       {tr.tickets.bookNow} {tier.name} →
     </button>
@@ -871,7 +876,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   const { t } = useTheme()
   const checkoutAccent = t.isDark ? tier.accent : t.accent
   const { translations: tr, formatPrice, locale, t: translate } = useLocale()
-  const { data, payments, eventId, mode, seatPreview } = useBooking()
+  const { data, payments, eventId, mode, seatPreview, ticketSalesOpen } = useBooking()
   const location = useLocation()
   const navigate = useNavigate()
   const bookingRecovery = useBookingSessionRecovery()
@@ -1076,6 +1081,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
   }
 
   const handleConfirm = async () => {
+    if (!previewOnly && !ticketSalesOpen) { showSeatMsg('Ticket sales have closed.'); return }
     if (previewOnly) { go('waiting'); return }
     if (processing || submitInFlightRef.current) return
     submitInFlightRef.current = true
@@ -1147,6 +1153,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   const bankRequest = bankTransferStore.find(bankRequestId)
   const createBankTransferRequest = async () => {
+    if (!previewOnly && !ticketSalesOpen) { showSeatMsg('Ticket sales have closed.'); return }
     if (previewOnly) { setStep('bank_details'); return }
     if (bankRequestId || serverBookingId) { setStep(bankRequestId ? 'bank_waiting' : 'waiting'); return }
     if (!eventId) {
@@ -1900,13 +1907,13 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 
   const canContinue = previewOnly
     ? Boolean(previewSeatNumber) && !processing
-    : selectedSeat?.status === 'available'
+    : ticketSalesOpen && selectedSeat?.status === 'available'
       && selectedSeat.eventId === eventId
       && selectedSeat.packageId === tier.packageKey
       && !seatsLoading
       && !processing
   const canAdvance = (step === 'seats' && canContinue) || (step === 'details' && !!info.name && !!info.email) || step === 'payment'
-  const submitDisabled = processing || proofFiles.length === 0 || (payMethod === 'bank_transfer' && bankTimer === 0)
+  const submitDisabled = !ticketSalesOpen || processing || proofFiles.length === 0 || (payMethod === 'bank_transfer' && bankTimer === 0)
 
   return (
     <>
@@ -2021,7 +2028,7 @@ function BookingModal({ tier, onClose, initialStep = 'seats', previewOnly = fals
 function TicketSection() {
   const { t } = useTheme()
   const { translations: tr, formatPrice, t: translate } = useLocale()
-  const { data, mode, previewState, simulationOnly, eventId, seatPreview, ticketBar, setTicketBar } = useBooking()
+  const { data, mode, previewState, simulationOnly, eventId, seatPreview, ticketBar, setTicketBar, ticketSalesOpen } = useBooking()
   const location = useLocation()
   const navigate = useNavigate()
   const bookingRecovery = useBookingSessionRecovery()
@@ -2164,7 +2171,7 @@ function TicketSection() {
             const isPremium = !t.isDark && valueLevel >= 0.75
             const isElevated = !t.isDark && valueLevel >= 0.35
             return (
-            <EditableTarget key={tier.id} target={{ section: 'tickets', index }}><div onClick={() => { setSelectedTicketPackageId(tier.packageKey); if (mode !== 'editor' && (mode !== 'published' || tier.seats > 0)) setModalTier(tier.id) }}
+            <EditableTarget key={tier.id} target={{ section: 'tickets', index }}><div onClick={() => { setSelectedTicketPackageId(tier.packageKey); if (ticketSalesOpen && mode !== 'editor' && (mode !== 'published' || tier.seats > 0)) setModalTier(tier.id) }}
               className="ticket-tier-card relative rounded-3xl p-7 cursor-pointer flex flex-col items-center text-center transition-all duration-300 group"
               style={{ background: t.isDark ? t.card : isPremium ? 'linear-gradient(145deg,#FFFFFF 0%,#EEF4FF 100%)' : isElevated ? 'linear-gradient(145deg,#FFFFFF 0%,#F7F9FF 100%)' : t.card, border: `1px solid ${t.isDark ? t.cardBorder : isPremium ? t.accent : isElevated ? `${t.accent}70` : t.cardBorder}`, boxShadow: t.isDark ? t.cardShadow : isPremium ? `0 16px 32px ${t.accentGlow}` : isElevated ? `0 10px 24px rgba(23,26,31,0.07)` : t.cardShadow }}
               onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-5px)'; (e.currentTarget as HTMLDivElement).style.borderColor = visualAccent; (e.currentTarget as HTMLDivElement).style.boxShadow = t.isDark ? `0 0 40px ${tier.glow}, 0 20px 60px rgba(0,0,0,0.3)` : `0 12px 28px ${visualGlow}` }}
@@ -2720,7 +2727,7 @@ function BookingEditorPanel({ data, target, eventId, onApply, onDraftChange, clo
 type PublicationReview = { pageName: string; eventDate: string; venue: string; currency: string; language: string; publicUrl: string }
 type EventStudioRecoverySnapshot = { eventId: string; data: BookingPageData; selected: EditorTarget | null; previewState: StudioPreviewState; deviceMode: 'desktop' | 'tablet' | 'mobile'; publicationOpen: boolean; socialProofOpen: boolean; updatedAt: number }
 
-export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, payments: sourcePayments, eventId, eventCountryCode, eventCurrencyCode, eventLanguageCode, eventTitle, publicationReview, socialProofOverride, simulationOnly = false, onSocialProofChange, onSave, onPublish, onExit }: {
+export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, payments: sourcePayments, eventId, eventCountryCode, eventCurrencyCode, eventLanguageCode, eventTitle, eventStartsAt, countdownSettings, serverTime, publicationReview, socialProofOverride, simulationOnly = false, onSocialProofChange, onCountdownSave, onCountdownReset, onSave, onPublish, onExit }: {
   onAdminClick: () => void
   mode?: BookingMode
   data?: BookingPageData
@@ -2730,10 +2737,15 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   eventCurrencyCode?: string
   eventLanguageCode?: string
   eventTitle?: string
+  eventStartsAt?: string
+  countdownSettings?: EventCountdownSettings
+  serverTime?: string
   publicationReview?: PublicationReview
   socialProofOverride?: EventSocialProofOverride
   simulationOnly?: boolean
   onSocialProofChange?: (settings: EventSocialProofOverride) => void | Promise<void>
+  onCountdownSave?: (settings: EventCountdownSettings) => Promise<void>
+  onCountdownReset?: (settings: EventCountdownSettings) => Promise<void>
   onSave?: (data: BookingPageData) => void | Promise<void>
   onPublish?: (data: BookingPageData) => Promise<string>
   onExit?: () => void
@@ -2758,7 +2770,10 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   const [publishedToastUrl, setPublishedToastUrl] = useState<string | null>(null)
   const [publishNeedsPackageSave, setPublishNeedsPackageSave] = useState(false)
   const [socialProofOpen, setSocialProofOpen] = useState(() => recoveredEditor?.socialProofOpen ?? false)
-  useDocumentScrollLock(publicationOpen || socialProofOpen)
+  const [countdownOpen, setCountdownOpen] = useState(false)
+  const [countdown, setCountdown] = useState<EventCountdownSettings | undefined>(countdownSettings)
+  const [ticketSalesOpen, setTicketSalesOpen] = useState(true)
+  useDocumentScrollLock(publicationOpen || socialProofOpen || countdownOpen)
   const [packagesOpen, setPackagesOpen] = useState(false)
   const [packageSaveNotice, setPackageSaveNotice] = useState<string | null>(null)
   const [eventSocialProof, setEventSocialProof] = useState<EventSocialProofOverride>(() => socialProofOverride ?? {})
@@ -2772,6 +2787,12 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   const saveTimer = useRef<number | null>(null)
   const saveInFlight = useRef<Promise<void> | null>(null)
   useReveal(data)
+
+  useEffect(() => setCountdown(countdownSettings), [countdownSettings])
+  useEffect(() => {
+    const offset = Number.isFinite(Date.parse(serverTime ?? '')) ? Date.parse(serverTime ?? '') - Date.now() : 0
+    setTicketSalesOpen(!getCountdownState(countdown, eventStartsAt, Date.now() + offset).closed)
+  }, [countdown, eventStartsAt, serverTime])
 
   useEffect(() => { latestDataRef.current = data }, [data])
 
@@ -2952,16 +2973,17 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
 
   return (
     <LocaleProvider eventCountryCode={eventCountryCode} eventCurrencyCode={eventCurrencyCode} eventLanguageCode={eventLanguageCode}>
-    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly, seatPreview, ticketBar, setTicketBar }}>
+    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly, seatPreview, ticketBar, setTicketBar, ticketSalesOpen }}>
       <SocialProofOverlayProvider>
       <div className="booking-experience ios-stable-scroll" data-theme={t.isDark ? 'dark' : 'light'} style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
         {mode === 'preview' && <div role="note" className="fixed right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-[260] rounded-full border border-amber-400/35 bg-zinc-950/95 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-200 shadow-lg">{SOCIAL_PROOF_DEMO_DISCLOSURE}</div>}
         {mode === 'editor' && <div className="fixed inset-x-3 top-3 z-[250] flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950/95 px-3 py-2 shadow-2xl sm:left-1/2 sm:right-auto sm:-translate-x-1/2"><div className="mr-auto sm:mr-3"><div className="text-xs font-bold text-white">{eventTitle ?? 'Booking page editor'}</div><div className="text-[10px] text-zinc-400">Tap any section to edit it in the right panel</div></div><span className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${untouchedSections.length ? 'bg-amber-400/10 text-amber-200' : 'bg-emerald-400/10 text-emerald-200'}`}>{editedSections.length}/{BOOKING_SECTION_IDS.length} sections edited</span><span role="status" className={`rounded-full px-2.5 py-1.5 text-[10px] font-bold ${saveStatus === 'error' ? 'bg-red-400/10 text-red-200' : saveStatus === 'offline' ? 'bg-amber-400/10 text-amber-200' : 'bg-white/5 text-zinc-300'}`}>{saveStatus === 'saving' ? 'Saving…' : saveStatus === 'offline' ? 'Offline — changes pending' : saveStatus === 'error' ? 'Save failed — retry' : saveStatus === 'saved' ? 'Saved' : 'Ready'}</span><select aria-label="Payment-flow preview state" value={previewState} onChange={event => setPreviewState(event.target.value as StudioPreviewState)} className="max-w-48 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2 text-xs text-white"><option value="page">Normal booking page</option><option value="packages">Package selection</option><option value="checkout">Checkout</option><option value="payment-pending">Payment pending</option><option value="awaiting-bank-details">Awaiting bank details</option><option value="payment-submitted">Payment submitted</option><option value="payment-approved">Payment approved / completed</option><option value="payment-declined">Payment declined</option><option value="ticket-confirmation">Ticket confirmation</option></select>{onSocialProofChange && <button type="button" onClick={() => setSocialProofOpen(true)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Social proof</button>}
-<button ref={packagesButtonRef} type="button" onClick={() => setPackagesOpen(true)} className="rounded-xl bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300">Packages & Seats</button><button type="button" onClick={() => void saveDraftNow()} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { void saveDraftNow().then(() => { setPublishedUrl(null); setPublicationError(null); setPublicationNotice(null); setPublishNeedsPackageSave(false); setPublicationOpen(true) }) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={() => { void saveDraftNow().then(() => onExit?.()) }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
+{onCountdownSave && <button type="button" onClick={() => setCountdownOpen(true)} className="rounded-xl bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300">Ticket sales countdown</button>}<button ref={packagesButtonRef} type="button" onClick={() => setPackagesOpen(true)} className="rounded-xl bg-emerald-400/10 px-3 py-2 text-xs font-bold text-emerald-300">Packages & Seats</button><button type="button" onClick={() => void saveDraftNow()} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Save draft</button>{onPublish && <button type="button" onClick={() => { void saveDraftNow().then(() => { setPublishedUrl(null); setPublicationError(null); setPublicationNotice(null); setPublishNeedsPackageSave(false); setPublicationOpen(true) }) }} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-bold text-zinc-950">Publish</button>}<button type="button" onClick={() => { void saveDraftNow().then(() => onExit?.()) }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-white">Exit</button></div>}
         {mode === 'editor' && <select aria-label="Editor device mode" value={deviceMode} onChange={event => setDeviceMode(event.target.value as 'desktop' | 'tablet' | 'mobile')} className="fixed right-3 top-24 z-[249] rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white shadow-xl"><option value="desktop">Desktop</option><option value="tablet">Tablet</option><option value="mobile">Mobile</option></select>}
         <div data-editor-device={mode === 'editor' ? deviceMode : undefined} style={mode === 'editor' ? { width: '100%', maxWidth: deviceMode === 'mobile' ? 390 : deviceMode === 'tablet' ? 768 : 'none', marginInline: 'auto' } : undefined}>
           <ScrollProgress />
           <Nav onToggleTheme={toggle} onAdminClick={onAdminClick} />
+          <TicketSalesCountdown settings={countdown} eventStartsAt={eventStartsAt} eventId={eventId} packages={data.packages} serverTime={serverTime} preview={mode !== 'published'} onSalesOpenChange={setTicketSalesOpen} />
           <Hero />
           <AboutShow />
           <VenueMap />
@@ -2976,6 +2998,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
           {mode !== 'published' && <PublicOnboardingGuide context={mode === 'editor' ? 'booking-page editor' : 'booking preview'} />}
         </div>
         {mode === 'editor' && <BookingEditorPanel data={data} target={selected} eventId={eventId} onDraftChange={next => setData(previous => mergeEditorPreview(previous, next, selected))} onApply={applyEditorChanges} close={() => setSelected(null)} />}
+        {countdownOpen && onCountdownSave && <TicketSalesCountdownSettings value={countdown} eventStartsAt={eventStartsAt ?? data.hero.date} onClose={() => setCountdownOpen(false)} onSave={async settings => { setCountdown(settings); await onCountdownSave(settings) }} onReset={async settings => { setCountdown(settings); await onCountdownReset?.(settings) }} />}
         {packagesOpen && <PackageAndSeatModal data={data} eventId={eventId} onApply={applySavedPackages} onDraftChange={applyPackageDraftPreview} onSaveSuccess={finishPackageSave} onDiscardChanges={discardPackageDraft} onClose={() => setPackagesOpen(false)} />}
         {mode === 'editor' && packageSaveNotice && <div role="status" className="fixed bottom-5 left-1/2 z-[10002] -translate-x-1/2 rounded-2xl border border-emerald-400/30 bg-zinc-950 px-4 py-3 text-sm font-semibold text-emerald-200 shadow-2xl">{packageSaveNotice}</div>}
         {mode === 'editor' && publishedToastUrl && <div role="status" className="fixed bottom-5 left-1/2 z-[10002] flex w-[min(94vw,42rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-2xl border border-emerald-400/30 bg-zinc-950 px-4 py-3 text-sm text-emerald-100 shadow-2xl"><span className="font-semibold">Event published.</span><button type="button" onClick={() => void copyPublishedLink()} className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white">Copy Link</button><button type="button" onClick={openPublishedPage} className="rounded-lg bg-emerald-400 px-3 py-1.5 text-xs font-bold text-zinc-950">View Published Page</button><button type="button" onClick={() => setPublishedToastUrl(null)} className="rounded-lg bg-white/5 px-2.5 py-1.5 text-xs text-zinc-300">Close</button>{publicationNotice && <span className="w-full text-center text-xs text-emerald-300">{publicationNotice}</span>}</div>}
@@ -3035,6 +3058,9 @@ function BookingEditorRoute() {
     payments={event?.payments}
     eventId={event?.id}
     eventTitle={isTemplate ? 'Default Booking Template' : event?.title}
+    eventStartsAt={event?.date}
+    countdownSettings={event?.countdown}
+    serverTime={event?.serverTime}
     eventCountryCode={event?.locale?.countryCode}
     eventCurrencyCode={event?.locale?.currencyCode}
     eventLanguageCode={event?.locale?.languageCode}
@@ -3050,6 +3076,13 @@ function BookingEditorRoute() {
     onAdminClick={() => navigate(ROUTES.admin.events)}
     onSave={save}
     onSocialProofChange={event ? async settings => { setEvent(await adminEventStore.saveAsync({ ...event, socialProofOverride: settings })) } : undefined}
+    onCountdownSave={event ? async settings => { const current = adminEventStore.list().find(item => item.id === event.id) ?? event; setEvent(await adminEventStore.saveAsync({ ...current, countdown: settings })) } : undefined}
+    onCountdownReset={event ? async settings => {
+      const current = adminEventStore.list().find(item => item.id === event.id) ?? event
+      if (settings.mode === 'fixed_deadline') { setEvent(await adminEventStore.saveAsync({ ...current, countdown: settings })); return }
+      await adminEventStore.saveAsync({ ...current, countdown: settings })
+      setEvent(await adminEventStore.resetCountdown(event.id))
+    } : undefined}
     onPublish={isTemplate ? undefined : publish}
     onExit={() => navigate(ROUTES.admin.events)}
   />
@@ -3061,7 +3094,7 @@ function AdminEventPreviewRoute() {
   useEffect(() => adminEventStore.subscribe(() => setEvent(adminEventStore.list().find(item => item.id === id))), [id])
   if (!event) return <Navigate to={ROUTES.admin.events} replace />
   const data = event.bookingPage ? normalizeBookingPageData(event.bookingPage) : createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
-  return <BookingSite mode="preview" data={data} payments={event.payments} eventId={event.id} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} simulationOnly onAdminClick={() => navigate(`/admin/events/${event.id}/edit`)} />
+  return <BookingSite mode="preview" data={data} payments={event.payments} eventId={event.id} eventStartsAt={event.date} countdownSettings={event.countdown} serverTime={event.serverTime} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} simulationOnly onAdminClick={() => navigate(`/admin/events/${event.id}/edit`)} />
 }
 function PublicEventRoute({ short = false }: { short?: boolean }) {
   const params = useParams()
@@ -3078,7 +3111,7 @@ function PublicEventRoute({ short = false }: { short?: boolean }) {
   if (loading && !event) return <main className="grid min-h-screen place-items-center bg-[#09090B] text-zinc-400">Loading event…</main>
   if (!event || event.status !== 'published') return <Navigate to="/" replace />
   const data = event.bookingPage ? normalizeBookingPageData(event.bookingPage) : createBookingPageData({ name: event.title, venue: event.venue, banners: event.setup?.banners })
-  return <BookingSite mode="published" data={data} payments={event.payments} eventId={event.id} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} socialProofOverride={event.socialProofOverride} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} />
+  return <BookingSite mode="published" data={data} payments={event.payments} eventId={event.id} eventStartsAt={event.date} countdownSettings={event.countdown} serverTime={event.serverTime} eventCountryCode={event.locale?.countryCode} eventCurrencyCode={event.locale?.currencyCode} eventLanguageCode={event.locale?.languageCode} socialProofOverride={event.socialProofOverride} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} />
 }
 function DefaultPreviewRoute() { const [data, setData] = useState(() => masterBookingTemplateStore.load()); useEffect(() => { let active = true; void masterBookingTemplateStore.hydratePublic().then(next => { if (active) setData(next) }).catch(() => undefined); const unsubscribe = masterBookingTemplateStore.subscribe(() => setData(masterBookingTemplateStore.load())); return () => { active = false; unsubscribe() } }, []); return <BookingSite mode="preview" data={data} onAdminClick={() => { window.location.assign(ROUTES.adminLogin) }} /> }
 function RootRoute() { const { session, loading } = useAuth(); if (loading) return <main className="grid min-h-screen place-items-center bg-[#09090B] text-zinc-400">Restoring session…</main>; return <Navigate to={session ? (getAdminResumeRoute(session.user.id) ?? ROUTES.admin.dashboard) : ROUTES.adminLogin} replace /> }

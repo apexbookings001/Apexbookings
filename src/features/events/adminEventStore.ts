@@ -5,6 +5,7 @@ import { createProtectedMemoryStore } from '../../services/supabase/memoryStore'
 import { requireOrganizationId } from '../../services/supabase/workspace'
 import { seatLabelForPackage } from './seatLabels'
 import { validatePackageDiscount } from './packagePricing'
+import { DEFAULT_EVENT_COUNTDOWN, isCountdownDuration, type EventCountdownSettings } from './countdown'
 
 export type TimelineItem = { id: string; time: string; title: string; description: string }
 export type Testimonial = { id: string; name: string; photo: string; review: string; rating: number }
@@ -61,6 +62,9 @@ export type ManagedEvent = {
   bookingPage?: BookingPageData
   content?: EventContent; packages?: TicketPackage[]; seats?: StudioSeat[]; payments?: EventPaymentSettings; publication?: EventPublication
   locale?: EventLocaleSettings; socialProofOverride?: EventSocialProofOverride
+  countdown?: EventCountdownSettings
+  /** Server clock supplied only by the public snapshot RPC. Never persisted. */
+  serverTime?: string
 }
 
 const id = () => crypto.randomUUID()
@@ -218,6 +222,7 @@ export const ensureStudioEvent = (event: ManagedEvent): ManagedEvent => {
     payments: paymentSettings(event.payments),
     publication: { ...publication, publishedAt: scheduledNow ? new Date().toISOString() : publication.publishedAt },
     locale: event.locale ?? { countryCode: 'US', languageCode: 'en-US', currencyCode: 'USD' },
+    countdown: { ...DEFAULT_EVENT_COUNTDOWN, ...event.countdown },
   }
 }
 
@@ -298,6 +303,9 @@ export function duplicateManagedEvent(source: ManagedEvent, change: {
     locale: change.locale,
     publication: createEventPublication(change.title),
     capacity: 0,
+    // The duplicate inherits the chosen mode and visual intent, never an
+    // active window. An organizer must explicitly start/configure it.
+    countdown: duplicate.countdown ? { ...duplicate.countdown, startedAt: null, endsAt: null, lastResetAt: null, nextResetAt: null } : undefined,
   }
 }
 
@@ -436,6 +444,20 @@ const fromDatabase = (row: EventRow): ManagedEvent => {
       currencyCode: String(row.currency_code ?? stored.locale?.currencyCode ?? 'USD'),
     },
     socialProofOverride: (row.social_proof_override as EventSocialProofOverride | null) ?? stored.socialProofOverride,
+    countdown: {
+      ...(stored.countdown ?? DEFAULT_EVENT_COUNTDOWN),
+      enabled: Boolean(row.countdown_enabled ?? stored.countdown?.enabled ?? false),
+      mode: (row.countdown_mode ?? stored.countdown?.mode ?? DEFAULT_EVENT_COUNTDOWN.mode) as EventCountdownSettings['mode'],
+      durationSeconds: row.countdown_duration_seconds == null ? (stored.countdown?.durationSeconds ?? DEFAULT_EVENT_COUNTDOWN.durationSeconds) : Number(row.countdown_duration_seconds),
+      startedAt: row.countdown_started_at ? String(row.countdown_started_at) : stored.countdown?.startedAt ?? null,
+      endsAt: row.countdown_ends_at ? String(row.countdown_ends_at) : stored.countdown?.endsAt ?? null,
+      timezone: String(row.countdown_timezone ?? stored.countdown?.timezone ?? DEFAULT_EVENT_COUNTDOWN.timezone),
+      renewalTime: String(row.countdown_renewal_time ?? stored.countdown?.renewalTime ?? DEFAULT_EVENT_COUNTDOWN.renewalTime),
+      resetThreshold: Number(row.countdown_reset_threshold ?? stored.countdown?.resetThreshold ?? DEFAULT_EVENT_COUNTDOWN.resetThreshold),
+      lastResetAt: row.countdown_last_reset_at ? String(row.countdown_last_reset_at) : stored.countdown?.lastResetAt ?? null,
+      nextResetAt: row.countdown_next_reset_at ? String(row.countdown_next_reset_at) : stored.countdown?.nextResetAt ?? null,
+    },
+    serverTime: row.server_time ? String(row.server_time) : undefined,
   })
 }
 
@@ -445,6 +467,24 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
   const prepared = ensureStudioEvent(event)
   const invalidDiscount = (prepared.packages ?? []).find(pkg => pkg.enabled !== false && !pkg.deletedAt && pkg.discountEnabled && validatePackageDiscount(pkg))
   if (invalidDiscount) throw new Error(`${invalidDiscount.name}: ${validatePackageDiscount(invalidDiscount)}`)
+
+  const countdown = prepared.countdown
+  if (prepared.status === 'published' && countdown?.enabled) {
+    try { new Intl.DateTimeFormat('en-US', { timeZone: countdown.timezone }) } catch { throw new Error('Choose a valid event timezone for the ticket sales countdown.') }
+    const eventStart = Date.parse(prepared.date)
+    if (!Number.isFinite(eventStart)) throw new Error('Set a valid event start time before publishing a ticket sales countdown.')
+    if (countdown.mode === 'fixed_deadline') {
+      const deadline = Date.parse(countdown.endsAt ?? '')
+      if (!Number.isFinite(deadline) || deadline <= Date.now()) throw new Error('The fixed ticket-sales deadline must be in the future.')
+      if (deadline > eventStart) throw new Error('The fixed ticket-sales deadline cannot be later than the event start time.')
+    } else {
+      if (!isCountdownDuration(countdown.durationSeconds)) throw new Error('Choose a valid rolling booking-window duration.')
+      const started = Date.parse(countdown.startedAt ?? '')
+      const ends = Date.parse(countdown.endsAt ?? '')
+      if (!Number.isFinite(started) || !Number.isFinite(ends)) throw new Error('Start or reset the rolling booking window before publishing.')
+      if (ends > eventStart || ends <= started) throw new Error('The rolling booking-window timestamps are invalid for this event.')
+    }
+  }
 
   // Duplicate drafts deliberately begin with zero capacity, prices and seats.
   // Publishing is the boundary where the complete, saved configuration is
@@ -510,6 +550,16 @@ async function syncEvent(event: ManagedEvent): Promise<void> {
     language_code: prepared.locale?.languageCode ?? 'en-US',
     currency_code: prepared.locale?.currencyCode ?? 'USD',
     social_proof_override: prepared.socialProofOverride ?? {},
+    countdown_enabled: Boolean(prepared.countdown?.enabled),
+    countdown_mode: prepared.countdown?.mode ?? DEFAULT_EVENT_COUNTDOWN.mode,
+    countdown_duration_seconds: prepared.countdown?.durationSeconds,
+    countdown_started_at: prepared.countdown?.startedAt,
+    countdown_ends_at: prepared.countdown?.endsAt,
+    countdown_timezone: prepared.countdown?.timezone ?? DEFAULT_EVENT_COUNTDOWN.timezone,
+    countdown_renewal_time: prepared.countdown?.renewalTime ?? DEFAULT_EVENT_COUNTDOWN.renewalTime,
+    countdown_reset_threshold: prepared.countdown?.resetThreshold ?? DEFAULT_EVENT_COUNTDOWN.resetThreshold,
+    countdown_last_reset_at: prepared.countdown?.lastResetAt,
+    countdown_next_reset_at: prepared.countdown?.nextResetAt,
     studio: prepared,
   }, { onConflict: 'id' }).select('slug,short_code').single()
   if (error) throw error
@@ -625,7 +675,7 @@ export const adminEventStore = {
       if (!supabase) throw new Error('Supabase is not configured.')
       cache.loading()
       const orgId = requireOrganizationId()
-      const { data, error } = await supabase.from('events').select('id,slug,name,venue,starts_at,banner_path,status,content,payment_settings,short_code,published_at,scheduled_for,archived_at,country_code,language_code,currency_code,social_proof_override,studio,capacity').eq('organization_id', orgId).is('deleted_at', null).order('created_at', { ascending: false })
+      const { data, error } = await supabase.from('events').select('id,slug,name,venue,starts_at,banner_path,status,content,payment_settings,short_code,published_at,scheduled_for,archived_at,country_code,language_code,currency_code,social_proof_override,studio,capacity,countdown_enabled,countdown_mode,countdown_duration_seconds,countdown_started_at,countdown_ends_at,countdown_timezone,countdown_renewal_time,countdown_reset_threshold,countdown_last_reset_at,countdown_next_reset_at').eq('organization_id', orgId).is('deleted_at', null).order('created_at', { ascending: false })
       if (error) throw error
       const events = (data ?? []).map(row => fromDatabase(row as EventRow))
       cache.set(events)
@@ -642,8 +692,8 @@ export const adminEventStore = {
     const { data, error } = await supabase.rpc('public_event_snapshot', { event_identifier: identifier })
     if (error) throw error
     if (!data || typeof data !== 'object') return null
-    const snapshot = data as { event?: EventRow }
-    return snapshot.event ? fromDatabase(snapshot.event) : null
+    const snapshot = data as { event?: EventRow; server_time?: string }
+    return snapshot.event ? fromDatabase({ ...snapshot.event, server_time: snapshot.server_time }) : null
   },
   save: (event: ManagedEvent): ManagedEvent => {
     const next = ensureStudioEvent(event)
@@ -670,4 +720,14 @@ export const adminEventStore = {
     await cache.optimistic(read().filter(event => event.id !== eventId), () => removeFromDatabase(eventId))
   },
   clear: cache.reset,
+  resetCountdown: async (eventId: string): Promise<ManagedEvent> => {
+    if (!supabase) throw new Error('Supabase is not configured.')
+    const { data, error } = await supabase.rpc('admin_reset_event_countdown', { target_event_id: eventId })
+    if (error) throw error
+    const payload = data as { event?: EventRow; server_time?: string }
+    if (!payload.event) throw new Error('The countdown reset did not return the event.')
+    const next = fromDatabase({ ...payload.event, server_time: payload.server_time })
+    cache.set(read().map(event => event.id === eventId ? next : event))
+    return next
+  },
 }
