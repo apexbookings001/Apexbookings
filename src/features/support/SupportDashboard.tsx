@@ -912,9 +912,14 @@ export function SupportDashboard() {
       <div style={{ padding: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <h2 style={{ fontWeight: 800, fontSize: 18, color: '#FAFAFA', margin: 0 }}>Support</h2>
-          <span style={{ fontSize: 11, color: '#52525B', background: 'rgba(255,255,255,0.05)', padding: '3px 10px', borderRadius: 20, border: '1px solid rgba(255,255,255,0.07)' }}>
-            {conversations.filter(c => c.status === 'open').length} open
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 11, color: '#52525B', background: 'rgba(255,255,255,0.05)', padding: '3px 10px', borderRadius: 20, border: '1px solid rgba(255,255,255,0.07)' }}>
+              {conversations.filter(c => c.status === 'open').length} open
+            </span>
+            {isMobile && <button type="button" onClick={() => navigate('/admin')} aria-label="Close support chat and return to dashboard" style={{ minHeight: 34, padding: '6px 10px', borderRadius: 9, border: `1px solid ${EA.border}`, background: EA.glow8, color: EA.primary, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              Close
+            </button>}
+          </div>
         </div>
 
         {/* Search */}
