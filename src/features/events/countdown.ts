@@ -90,7 +90,7 @@ export function formatCountdown(ms: number, compact = false) {
   const minutes = Math.floor((seconds % 3600) / 60)
   const secs = seconds % 60
   const base = `${String(days).padStart(2, '0')}d ${String(hours).padStart(2, '0')}h ${String(minutes).padStart(2, '0')}m`
-  return compact || days > 0 ? base : `${base} ${String(secs).padStart(2, '0')}s`
+  return compact ? base : `${base} ${String(secs).padStart(2, '0')}s`
 }
 
 export function countdownSummary(settings: EventCountdownSettings) {

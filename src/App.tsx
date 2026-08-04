@@ -68,8 +68,8 @@ type StudioPreviewState = 'page' | 'packages' | 'checkout' | 'payment-pending' |
 type EditorTarget = { section: BookingSectionId; index?: number; field?: string }
 const BOOKING_SECTION_IDS: BookingSectionId[] = ['hero', 'about', 'venue', 'timeline', 'tickets', 'testimonials', 'faq', 'cta', 'footer']
 const BOOKING_SECTION_LABELS: Record<BookingSectionId, string> = { hero: 'Hero', about: 'About', venue: 'Venue', timeline: 'Timeline', tickets: 'Packages', testimonials: 'Customer reviews', faq: 'FAQ', cta: 'Call to action', footer: 'Footer' }
-type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean; seatPreview?: SeatRecord[]; ticketBar: PublicTicketBarState | null; setTicketBar: (state: PublicTicketBarState | null) => void; ticketSalesOpen: boolean }
-const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false, ticketBar: null, setTicketBar: () => {}, ticketSalesOpen: true })
+type BookingContextValue = { data: BookingPageData; mode: BookingMode; select: (target: EditorTarget) => void; payments: EventPaymentSettings; eventId?: string; previewState: StudioPreviewState; simulationOnly: boolean; seatPreview?: SeatRecord[]; ticketBar: PublicTicketBarState | null; setTicketBar: (state: PublicTicketBarState | null) => void; ticketSalesOpen: boolean; setTicketSalesOpen: (open: boolean) => void; countdown?: EventCountdownSettings; eventStartsAt?: string; serverTime?: string }
+const BookingCtx = createContext<BookingContextValue>({ data: DEFAULT_BOOKING_TEMPLATE, mode: 'preview', select: () => { }, payments: PLATFORM_PAYMENT_DEFAULTS, previewState: 'page', simulationOnly: false, ticketBar: null, setTicketBar: () => {}, ticketSalesOpen: true, setTicketSalesOpen: () => {} })
 const useBooking = () => useContext(BookingCtx)
 
 function mergeEditorPreview(previous: BookingPageData, next: BookingPageData, target: EditorTarget | null): BookingPageData {
@@ -339,7 +339,7 @@ const NAV_LINKS = [
 function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdminClick: () => void }) {
   const { t } = useTheme()
   const { t: translate } = useLocale()
-  const { data } = useBooking()
+  const { data, countdown, eventStartsAt, eventId, serverTime, mode, setTicketSalesOpen } = useBooking()
   const [scrolled, setScrolled] = useState(false)
   const [open, setOpen] = useState(false)
   const { show } = useToast()
@@ -374,7 +374,7 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
         />
       )}
       <nav
-        className="booking-nav fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-7xl rounded-2xl px-5 py-3 flex items-center gap-4 transition-all duration-500"
+        className="booking-nav fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-7xl rounded-2xl px-5 py-3 flex flex-wrap items-center gap-4 transition-all duration-500"
         style={{
           background: scrolled ? t.navBg : 'transparent',
           backdropFilter: scrolled ? 'blur(24px) saturate(180%)' : 'none',
@@ -396,6 +396,8 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
         </div>
         <span className="font-serif font-bold text-lg" style={{ color: t.text, textShadow: t.isDark ? '0 1px 2px rgba(0,0,0,0.45)' : '0 1px 2px rgba(255,255,255,0.7)' }}>{data.footer.brand}</span>
       </div>
+
+      <TicketSalesCountdown settings={countdown} eventStartsAt={eventStartsAt} eventId={eventId} packages={data.packages} serverTime={serverTime} preview={mode !== 'published'} onSalesOpenChange={setTicketSalesOpen} />
 
       {/* Desktop links */}
       <div className="hidden lg:flex items-center gap-0.5 flex-1">
@@ -2973,7 +2975,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
 
   return (
     <LocaleProvider eventCountryCode={eventCountryCode} eventCurrencyCode={eventCurrencyCode} eventLanguageCode={eventLanguageCode}>
-    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly, seatPreview, ticketBar, setTicketBar, ticketSalesOpen }}>
+    <ThemeCtx.Provider value={{ t, toggle }}><BookingCtx.Provider value={{ data, mode, select: setSelected, payments: sourcePayments ?? PLATFORM_PAYMENT_DEFAULTS, eventId, previewState, simulationOnly, seatPreview, ticketBar, setTicketBar, ticketSalesOpen, setTicketSalesOpen, countdown, eventStartsAt, serverTime }}>
       <SocialProofOverlayProvider>
       <div className="booking-experience ios-stable-scroll" data-theme={t.isDark ? 'dark' : 'light'} style={{ background: t.bg, color: t.text, transition: 'background 0.4s ease, color 0.4s ease', minHeight: '100dvh' }}>
         {mode === 'preview' && <div role="note" className="fixed right-3 top-[max(0.75rem,env(safe-area-inset-top))] z-[260] rounded-full border border-amber-400/35 bg-zinc-950/95 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-200 shadow-lg">{SOCIAL_PROOF_DEMO_DISCLOSURE}</div>}
@@ -2983,7 +2985,6 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
         <div data-editor-device={mode === 'editor' ? deviceMode : undefined} style={mode === 'editor' ? { width: '100%', maxWidth: deviceMode === 'mobile' ? 390 : deviceMode === 'tablet' ? 768 : 'none', marginInline: 'auto' } : undefined}>
           <ScrollProgress />
           <Nav onToggleTheme={toggle} onAdminClick={onAdminClick} />
-          <TicketSalesCountdown settings={countdown} eventStartsAt={eventStartsAt} eventId={eventId} packages={data.packages} serverTime={serverTime} preview={mode !== 'published'} onSalesOpenChange={setTicketSalesOpen} />
           <Hero />
           <AboutShow />
           <VenueMap />
