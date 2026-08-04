@@ -62,6 +62,8 @@ export type ManagedEvent = {
   bookingPage?: BookingPageData
   content?: EventContent; packages?: TicketPackage[]; seats?: StudioSeat[]; payments?: EventPaymentSettings; publication?: EventPublication
   locale?: EventLocaleSettings; socialProofOverride?: EventSocialProofOverride
+  /** Publicly safe organization payment settings, provided only for a published event snapshot. */
+  platformPayments?: EventPaymentSettings
   countdown?: EventCountdownSettings
   /** Server clock supplied only by the public snapshot RPC. Never persisted. */
   serverTime?: string
@@ -444,6 +446,9 @@ const fromDatabase = (row: EventRow): ManagedEvent => {
       currencyCode: String(row.currency_code ?? stored.locale?.currencyCode ?? 'USD'),
     },
     socialProofOverride: (row.social_proof_override as EventSocialProofOverride | null) ?? stored.socialProofOverride,
+    platformPayments: row.platform_payment_settings && typeof row.platform_payment_settings === 'object'
+      ? paymentSettings(row.platform_payment_settings as EventPaymentSettings)
+      : undefined,
     countdown: {
       ...(stored.countdown ?? DEFAULT_EVENT_COUNTDOWN),
       enabled: Boolean(row.countdown_enabled ?? stored.countdown?.enabled ?? false),
@@ -692,8 +697,8 @@ export const adminEventStore = {
     const { data, error } = await supabase.rpc('public_event_snapshot', { event_identifier: identifier })
     if (error) throw error
     if (!data || typeof data !== 'object') return null
-    const snapshot = data as { event?: EventRow; server_time?: string }
-    return snapshot.event ? fromDatabase({ ...snapshot.event, server_time: snapshot.server_time }) : null
+    const snapshot = data as { event?: EventRow; server_time?: string; platform_payment_settings?: EventPaymentSettings }
+    return snapshot.event ? fromDatabase({ ...snapshot.event, server_time: snapshot.server_time, platform_payment_settings: snapshot.platform_payment_settings }) : null
   },
   save: (event: ManagedEvent): ManagedEvent => {
     const next = ensureStudioEvent(event)
