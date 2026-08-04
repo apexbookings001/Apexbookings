@@ -29,7 +29,7 @@ function useTrustedNow(serverTime?: string, settings?: EventCountdownSettings, e
   return now
 }
 
-export function TicketSalesCountdown({ settings, eventStartsAt, eventId, packages, serverTime, preview = false, onSalesOpenChange }: {
+export function TicketSalesCountdown({ settings, eventStartsAt, eventId, packages, serverTime, preview = false, onSalesOpenChange, collapsed = false }: {
   settings?: EventCountdownSettings
   eventStartsAt?: string
   eventId?: string
@@ -37,6 +37,7 @@ export function TicketSalesCountdown({ settings, eventStartsAt, eventId, package
   serverTime?: string
   preview?: boolean
   onSalesOpenChange?: (open: boolean) => void
+  collapsed?: boolean
 }) {
   const now = useTrustedNow(serverTime, settings, eventStartsAt)
   const state = getCountdownState(settings, eventStartsAt, now)
@@ -70,16 +71,16 @@ export function TicketSalesCountdown({ settings, eventStartsAt, eventId, package
   const urgency = state.remainingMs < 3600000 ? 'border-amber-300/60 shadow-[0_0_18px_rgba(251,191,36,.14)]' : state.remainingMs < 21600000 ? 'border-emerald-300/50' : state.remainingMs < 86400000 ? 'border-emerald-400/45' : 'border-emerald-400/25'
   const availability = available === null ? null : `${available} ${available === 1 ? 'seat' : 'seats'} available`
   return (
-    <>
-      <div aria-label={state.closed ? 'Ticket sales have closed' : `${state.label}: ${timeText}`} className={`hidden min-w-0 items-center gap-2 rounded-lg border bg-zinc-950/75 px-2.5 py-1.5 xl:flex ${urgency}`}>
-        <span className="max-w-36 truncate text-[10px] font-semibold text-zinc-300">{state.label}</span>
-        <time dateTime={state.endAt ? new Date(state.endAt).toISOString() : undefined} className="whitespace-nowrap font-mono text-xs font-bold tabular-nums text-emerald-300">{timeText}</time>
-        {availability && <span className="whitespace-nowrap text-[10px] font-semibold text-zinc-300">· {availability}</span>}
+    <section aria-label={state.closed ? 'Ticket sales have closed' : `${state.label}: ${timeText}`} className={`fixed left-1/2 top-[5.5rem] z-40 w-[calc(100%-2rem)] max-w-7xl -translate-x-1/2 rounded-xl border bg-zinc-950/90 px-3 py-2.5 text-white shadow-xl backdrop-blur-md transition-[transform,opacity] duration-300 ease-out motion-reduce:transition-none ${collapsed ? '-translate-y-[calc(100%+1.25rem)] opacity-0' : 'translate-y-0 opacity-100'} ${urgency}`}>
+      <div className="mx-auto hidden grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 md:grid">
+        <p className="min-w-0 text-xs font-semibold text-zinc-200">{state.label}</p>
+        <time dateTime={state.endAt ? new Date(state.endAt).toISOString() : undefined} className="whitespace-nowrap font-mono text-base font-bold tabular-nums text-emerald-300">{timeText}</time>
+        {availability ? <span className="truncate text-right text-xs font-semibold text-zinc-200">{availability}</span> : <span />}
       </div>
-      <div aria-label={state.closed ? 'Ticket sales have closed' : `${state.label}: ${timeText}`} className={`order-last mt-2 grid w-full min-w-0 basis-full gap-1 border-t pt-2 xl:hidden ${urgency.includes('amber') ? 'border-amber-300/45' : 'border-emerald-400/25'}`}>
+      <div className="grid min-w-0 gap-1 md:hidden">
         <div className="flex min-w-0 items-start justify-between gap-3 text-[11px] font-semibold leading-4"><span className="min-w-0 text-zinc-200">{state.label}</span>{availability && <span className="shrink-0 text-emerald-200">{availability}</span>}</div>
         <time dateTime={state.endAt ? new Date(state.endAt).toISOString() : undefined} className="font-mono text-sm font-bold tabular-nums text-emerald-300">{timeText}</time>
       </div>
-    </>
+    </section>
   )
 }

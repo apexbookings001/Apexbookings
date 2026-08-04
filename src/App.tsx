@@ -336,21 +336,28 @@ const NAV_LINKS = [
   { key: 'navigation.faq', id: 'faq' }, { key: 'navigation.contact', id: 'footer' },
 ]
 
-function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdminClick: () => void }) {
+function Nav({ onToggleTheme, onAdminClick, onCountdownCollapsed }: { onToggleTheme: () => void; onAdminClick: () => void; onCountdownCollapsed: (collapsed: boolean) => void }) {
   const { t } = useTheme()
   const { t: translate } = useLocale()
-  const { data, countdown, eventStartsAt, eventId, serverTime, mode, setTicketSalesOpen } = useBooking()
+  const { data } = useBooking()
   const [scrolled, setScrolled] = useState(false)
   const [open, setOpen] = useState(false)
   const { show } = useToast()
   const { isOverlayActive } = useSocialProofOverlay()
   const logoTaps = useRef({ count: 0, timer: 0 })
+  const previousScrollY = useRef(0)
 
   useEffect(() => {
-    const fn = () => setScrolled(window.scrollY > 40)
+    const fn = () => {
+      const nextScrollY = window.scrollY
+      setScrolled(nextScrollY > 40)
+      onCountdownCollapsed(nextScrollY > 56 && nextScrollY > previousScrollY.current)
+      previousScrollY.current = nextScrollY
+    }
     window.addEventListener('scroll', fn, { passive: true })
+    fn()
     return () => window.removeEventListener('scroll', fn)
-  }, [])
+  }, [onCountdownCollapsed])
 
   const handleLogoClick = () => {
     scrollTo('hero')
@@ -374,7 +381,7 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
         />
       )}
       <nav
-        className="booking-nav fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-7xl rounded-2xl px-5 py-3 flex flex-wrap items-center gap-4 transition-all duration-500"
+        className="booking-nav fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-7xl rounded-2xl px-5 py-3 flex items-center gap-4 transition-all duration-500"
         style={{
           background: scrolled ? t.navBg : 'transparent',
           backdropFilter: scrolled ? 'blur(24px) saturate(180%)' : 'none',
@@ -396,8 +403,6 @@ function Nav({ onToggleTheme, onAdminClick }: { onToggleTheme: () => void; onAdm
         </div>
         <span className="font-serif font-bold text-lg" style={{ color: t.text, textShadow: t.isDark ? '0 1px 2px rgba(0,0,0,0.45)' : '0 1px 2px rgba(255,255,255,0.7)' }}>{data.footer.brand}</span>
       </div>
-
-      <TicketSalesCountdown settings={countdown} eventStartsAt={eventStartsAt} eventId={eventId} packages={data.packages} serverTime={serverTime} preview={mode !== 'published'} onSalesOpenChange={setTicketSalesOpen} />
 
       {/* Desktop links */}
       <div className="hidden lg:flex items-center gap-0.5 flex-1">
@@ -2774,6 +2779,7 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
   const [socialProofOpen, setSocialProofOpen] = useState(() => recoveredEditor?.socialProofOpen ?? false)
   const [countdownOpen, setCountdownOpen] = useState(false)
   const [countdown, setCountdown] = useState<EventCountdownSettings | undefined>(countdownSettings)
+  const [countdownCollapsed, setCountdownCollapsed] = useState(false)
   const [ticketSalesOpen, setTicketSalesOpen] = useState(true)
   useDocumentScrollLock(publicationOpen || socialProofOpen || countdownOpen)
   const [packagesOpen, setPackagesOpen] = useState(false)
@@ -2984,7 +2990,8 @@ export function BookingSite({ onAdminClick, mode = 'preview', data: sourceData, 
         {mode === 'editor' && <select aria-label="Editor device mode" value={deviceMode} onChange={event => setDeviceMode(event.target.value as 'desktop' | 'tablet' | 'mobile')} className="fixed right-3 top-24 z-[249] rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 text-xs text-white shadow-xl"><option value="desktop">Desktop</option><option value="tablet">Tablet</option><option value="mobile">Mobile</option></select>}
         <div data-editor-device={mode === 'editor' ? deviceMode : undefined} style={mode === 'editor' ? { width: '100%', maxWidth: deviceMode === 'mobile' ? 390 : deviceMode === 'tablet' ? 768 : 'none', marginInline: 'auto' } : undefined}>
           <ScrollProgress />
-          <Nav onToggleTheme={toggle} onAdminClick={onAdminClick} />
+          <Nav onToggleTheme={toggle} onAdminClick={onAdminClick} onCountdownCollapsed={setCountdownCollapsed} />
+          <TicketSalesCountdown settings={countdown} eventStartsAt={eventStartsAt} eventId={eventId} packages={data.packages} serverTime={serverTime} preview={mode !== 'published'} onSalesOpenChange={setTicketSalesOpen} collapsed={countdownCollapsed} />
           <Hero />
           <AboutShow />
           <VenueMap />
